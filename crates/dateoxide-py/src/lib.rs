@@ -615,9 +615,13 @@ impl PyDateDataParser {
         }
     }
 
-    fn parse_batch(&self, py: Python<'_>, date_strings: Vec<String>) -> PyResult<Py<PyList>> {
+    fn parse_batch(
+        &self,
+        py: Python<'_>,
+        date_strings: Vec<Option<String>>,
+    ) -> PyResult<Py<PyList>> {
         let cfg = &self.settings;
-        let results = py.allow_threads(|| dateoxide_core::parse_batch(&date_strings, cfg));
+        let results = py.allow_threads(|| dateoxide_core::parse_batch_opt(&date_strings, cfg));
         let py_items: Vec<PyObject> = results
             .into_iter()
             .map(|opt| match opt {
@@ -626,6 +630,17 @@ impl PyDateDataParser {
             })
             .collect::<PyResult<_>>()?;
         Ok(PyList::new(py, py_items)?.unbind())
+    }
+
+    fn parse_date_range(
+        &self,
+        py: Python<'_>,
+        date_range_string: &str,
+    ) -> PyResult<Option<(PyObject, PyObject)>> {
+        match dateoxide_core::parse_date_range(date_range_string, &self.settings) {
+            Some((start, end)) => Ok(Some((parsed_to_py(py, start)?, parsed_to_py(py, end)?))),
+            None => Ok(None),
+        }
     }
 }
 
@@ -657,12 +672,12 @@ fn parse(
     }
 }
 
-/// High-throughput, GIL-free parallel batch parser powered by Rayon.
+/// High-throughput, GIL-free parallel batch parser powered by Rayon (supports nullable strings).
 #[pyfunction]
 #[pyo3(signature = (date_strings, date_formats=None, languages=None, locales=None, region=None, settings=None))]
 fn parse_batch(
     py: Python<'_>,
-    date_strings: Vec<String>,
+    date_strings: Vec<Option<String>>,
     date_formats: Option<Vec<String>>,
     languages: Option<Vec<String>>,
     locales: Option<Vec<String>>,
@@ -670,7 +685,7 @@ fn parse_batch(
     settings: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyList>> {
     let cfg = extract_settings(date_formats, languages, locales, region, false, settings)?;
-    let results = py.allow_threads(|| dateoxide_core::parse_batch(&date_strings, &cfg));
+    let results = py.allow_threads(|| dateoxide_core::parse_batch_opt(&date_strings, &cfg));
     let py_items: Vec<PyObject> = results
         .into_iter()
         .map(|opt| match opt {
@@ -679,6 +694,24 @@ fn parse_batch(
         })
         .collect::<PyResult<_>>()?;
     Ok(PyList::new(py, py_items)?.unbind())
+}
+
+/// Parse natural-language or numeric date ranges into `(start, end)`.
+#[pyfunction]
+#[pyo3(signature = (date_range_string, languages=None, locales=None, region=None, settings=None))]
+fn parse_date_range(
+    py: Python<'_>,
+    date_range_string: &str,
+    languages: Option<Vec<String>>,
+    locales: Option<Vec<String>>,
+    region: Option<String>,
+    settings: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<(PyObject, PyObject)>> {
+    let cfg = extract_settings(None, languages, locales, region, false, settings)?;
+    match dateoxide_core::parse_date_range(date_range_string, &cfg) {
+        Some((start, end)) => Ok(Some((parsed_to_py(py, start)?, parsed_to_py(py, end)?))),
+        None => Ok(None),
+    }
 }
 
 /// Drop-in replacement for `dateparser.search.search_dates(...)`.
@@ -875,6 +908,7 @@ fn _dateoxide(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SettingValidationError", py.get_type::<SettingValidationError>())?;
     m.add_function(wrap_pyfunction!(parse, m)?)?;
     m.add_function(wrap_pyfunction!(parse_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_date_range, m)?)?;
     m.add_function(wrap_pyfunction!(search_dates, m)?)?;
     m.add_function(wrap_pyfunction!(parse_freshness, m)?)?;
     m.add_function(wrap_pyfunction!(pop_tz_offset_from_string, m)?)?;

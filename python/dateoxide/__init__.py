@@ -15,6 +15,7 @@ from ._dateoxide import (
     __version__,
     parse,
     parse_batch,
+    parse_date_range,
     search_dates,
     supported_languages,
 )
@@ -77,6 +78,7 @@ __all__ = [
     "freshness_date_parser",
     "parse",
     "parse_batch",
+    "parse_date_range",
     "search",
     "search_dates",
     "supported_languages",

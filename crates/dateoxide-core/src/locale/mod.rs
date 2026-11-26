@@ -394,6 +394,20 @@ impl LocaleRegistry {
                 return Some(id);
             }
         }
+        // Legacy / ISO 639-1 macro aliases when exact code isn't present
+        let aliased = match lower.as_str() {
+            "no" => Some("nb"),
+            "iw" => Some("he"),
+            "in" => Some("id"),
+            "ji" => Some("yi"),
+            "fil" => Some("tl"),
+            _ => None,
+        };
+        if let Some(target) = aliased {
+            if let Some(&id) = self.code_to_id.get(target) {
+                return Some(id);
+            }
+        }
         None
     }
 

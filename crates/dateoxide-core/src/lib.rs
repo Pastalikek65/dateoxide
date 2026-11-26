@@ -42,6 +42,7 @@ pub mod absolute;
 pub mod calendars;
 pub mod fast_path;
 pub mod locale;
+pub mod ranges;
 pub mod relative;
 pub mod search;
 pub mod settings;
@@ -348,6 +349,41 @@ pub fn parse_batch<S: AsRef<str> + Sync>(
             .map(|s| parse_with_settings(s.as_ref(), settings))
             .collect()
     }
+}
+
+/// Nullable parallel batch parsing (`Option<String>` inputs skip `None` cleanly).
+pub fn parse_batch_opt<S: AsRef<str> + Sync>(
+    inputs: &[Option<S>],
+    settings: &Settings,
+) -> Vec<Option<ParsedDateTime>> {
+    #[cfg(feature = "rayon")]
+    {
+        if inputs.len() < 256 {
+            return inputs
+                .iter()
+                .map(|opt| opt.as_ref().and_then(|s| parse_with_settings(s.as_ref(), settings)))
+                .collect();
+        }
+        return inputs
+            .par_iter()
+            .map(|opt| opt.as_ref().and_then(|s| parse_with_settings(s.as_ref(), settings)))
+            .collect();
+    }
+    #[cfg(not(feature = "rayon"))]
+    {
+        inputs
+            .iter()
+            .map(|opt| opt.as_ref().and_then(|s| parse_with_settings(s.as_ref(), settings)))
+            .collect()
+    }
+}
+
+/// Parse natural-language or numeric date/time ranges into `(start, end)`.
+pub fn parse_date_range(
+    input: &str,
+    settings: &Settings,
+) -> Option<(ParsedDateTime, ParsedDateTime)> {
+    ranges::parse_date_range(input, settings)
 }
 
 /// Find and parse all date expressions embedded in free-form text.

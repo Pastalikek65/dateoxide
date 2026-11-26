@@ -162,14 +162,30 @@ matches = search_dates(
 # [('December 2025', datetime(2025, 12, ...), 'month', 'en'), ('12 Jan 2026', datetime(2026, 1, 12, 0, 0), 'day', 'en')]
 ```
 
-### Parallel Batch Parsing (GIL-free, Multi-Core)
+### Parallel Batch Parsing (Nullable) & Date Ranges
 
 ```python
 import dateoxide
 
-dates = ["2026-11-26", "3 gün önce", "vor 2 Wochen", "not a date"] * 25_000
-results = dateoxide.parse_batch(dates)  # Runs across all CPU cores via Rayon
+dates = ["2026-11-26", None, "3 gün önce", "vor 2 Wochen", "not a date"]
+results = dateoxide.parse_batch(dates)  # GIL-free Rayon across all CPU cores
+
+start, end = dateoxide.parse_date_range("12 Ocak - 15 Şubat 2026")
+start, end = dateoxide.parse_date_range("March 10-14, 2026")
+start, end = dateoxide.parse_date_range("from 2026-11-01 to 2026-11-15")
 ```
+
+---
+
+## Language Support Tiers (205 Languages)
+
+| Tier | Count | Included Capabilities | Languages |
+| :--- | :---: | :--- | :--- |
+| **Tier 1 (Full NLP)** | **40** | 12 months, 7 weekdays, `relative_exact`, `relative_affix`, `word_numbers`, `time_of_day` | `en`, `tr`, `de`, `fr`, `es`, `pt`, `it`, `nl`, `ru`, `pl`, `uk`, `cs`, `sk`, `sv`, `da`, `nb`/`no`, `fi`, `ro`, `hu`, `el`, `he`, `ar`, `fa`, `ur`, `hi`, `bn`, `id`, `ms`, `vi`, `th`, `zh`, `ja`, `ko`, `az`, `uz`, `kk`, `bg`, `hr`, `sr`, `ca` |
+| **Tier 2 (Full Calendar + Relative)** | **121** | 12 months, 7 weekdays, `relative_exact`, dynamic `relative_affix` (`N units ago/in`) | Tier 1 + 81 additional world languages (African, South/SE Asian, Celtic, Baltic, Caucasian, etc.) |
+| **Tier 3 (CLDR Calendar + Exact Relatives)** | **205** | 12 months, 7 weekdays, `units`, 204 `relative_exact` phrases, Unicode numerals | All 205 Unicode CLDR / `dateparser` locales |
+
+*(Multilingual `time_spans` covers 13 languages: EN, TR, DE, FR, ES, IT, PT, NL, PL, RU, JA, ZH, KO.)*
 
 ### Real-World Examples (`examples/`)
 

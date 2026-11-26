@@ -206,21 +206,59 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
         return None;
     }
 
+    let mut part_of_day: Option<PartOfDay> = None;
+    let mut tod_time: Option<NaiveTime> = None;
     if has_time {
         if is_pm && hour >= 1 && hour < 12 {
             hour += 12;
         } else if is_am && hour == 12 {
             hour = 0;
         }
+    } else {
+        let tod_hour: Option<u8> = [
+            ("真夜中", 0u8),
+            ("午夜", 0),
+            ("자정", 0),
+            ("早上", 9),
+            ("上午", 9),
+            ("아침", 9),
+            ("오전", 9),
+            ("朝", 9),
+            ("正午", 12),
+            ("中午", 12),
+            ("정오", 12),
+            ("午後", 15),
+            ("下午", 15),
+            ("오후", 15),
+            ("夕方", 18),
+            ("傍晚", 18),
+            ("저녁", 18),
+            ("晚上", 20),
+            ("夜", 20),
+            ("밤", 20),
+        ]
+        .into_iter()
+        .find(|(tok, _)| s.contains(tok))
+        .map(|(_, h)| h);
+
+        if let Some(h) = tod_hour {
+            has_time = true;
+            part_of_day = PartOfDay::from_hour(h);
+            if h == 0 || h == 12 {
+                tod_time = NaiveTime::from_hms_opt(h as u32, 0, 0);
+            } else if let Some(p) = part_of_day {
+                tod_time = Some(settings.parts_of_day.time_for(p));
+            }
+        }
     }
 
     let base = settings.effective_base();
     let (y, m, d, period, parts) = complete_partial_date(year, month, day, has_time, base, settings)?;
     let nd = NaiveDate::from_ymd_opt(y, m, d)?;
-    let nt = NaiveTime::from_hms_opt(hour, minute, second)?;
+    let nt = tod_time.or_else(|| NaiveTime::from_hms_opt(hour, minute, second))?;
     let lang = if is_korean {
         "ko"
-    } else if s.contains('時') {
+    } else if s.contains('時') || s.contains('朝') || s.contains('夜') || s.contains("夕方") || s.contains("正午") || s.contains("真夜中") {
         "ja"
     } else {
         "zh"
@@ -232,7 +270,7 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
         locale: lang.to_string(),
         has_time,
         parts,
-        part_of_day: None,
+        part_of_day,
     })
 }
 

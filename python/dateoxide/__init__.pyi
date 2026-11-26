@@ -51,7 +51,8 @@ class DateDataParser:
         date_string: str,
         date_formats: Sequence[str] | None = None,
     ) -> datetime | None: ...
-    def parse_batch(self, date_strings: Sequence[str]) -> list[datetime | None]: ...
+    def parse_batch(self, date_strings: Sequence[str | None]) -> list[datetime | None]: ...
+    def parse_date_range(self, date_range_string: str) -> tuple[datetime, datetime] | None: ...
 
 def parse(
     date_string: str,
@@ -64,13 +65,21 @@ def parse(
 ) -> datetime | None: ...
 
 def parse_batch(
-    date_strings: Sequence[str],
+    date_strings: Sequence[str | None],
     date_formats: Sequence[str] | None = None,
     languages: Sequence[str] | None = None,
     locales: Sequence[str] | None = None,
     region: str | None = None,
     settings: Settings | Mapping[str, Any] | None = None,
 ) -> list[datetime | None]: ...
+
+def parse_date_range(
+    date_range_string: str,
+    languages: Sequence[str] | None = None,
+    locales: Sequence[str] | None = None,
+    region: str | None = None,
+    settings: Settings | Mapping[str, Any] | None = None,
+) -> tuple[datetime, datetime] | None: ...
 
 @overload
 def search_dates(

@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-11-27
+
+### Added
+- **40 Tier-1 full-featured languages** (up from 9): added full word-numbers (`1..10`) and time-of-day anchors (`morning`/`noon`/`afternoon`/`evening`/`night`/`midnight`) across 31 additional languages (`pl`, `uk`, `cs`, `sk`, `sv`, `da`, `nb`, `fi`, `ro`, `hu`, `el`, `he`, `ar`, `fa`, `ur`, `hi`, `bn`, `id`, `ms`, `vi`, `th`, `zh`, `ja`, `ko`, `az`, `uz`, `kk`, `bg`, `hr`, `sr`, `ca`).
+- **ISO 639-1 legacy language aliases** in `resolve_lang_id`: `"no" -> "nb"`, `"iw" -> "he"`, `"in" -> "id"`, `"ji" -> "yi"`, `"fil" -> "tl"`.
+- **Natural & numeric date-range parser** (`dateoxide.parse_date_range` / `DateDataParser.parse_date_range` / `dateoxide_core::parse_date_range`): parses `"12-15 Ocak 2026"`, `"March 10-14, 2026"`, `"12 Ocak - 15 Şubat 2026"`, `"Dec 28 - Jan 3, 2026"`, `"from 2026-11-01 to 2026-11-15"`, and `"10:00 - 12:30"`.
+- **13-language `time_spans`** (`crates/dateoxide-core/src/time_spans.rs`): added Italian, Portuguese, Dutch, Polish, Russian, Japanese, Chinese, and Korean alongside English, Turkish, German, French, and Spanish.
+- **Nullable `parse_batch`** (`Sequence[str | None]`): `dateoxide.parse_batch` and `DateDataParser.parse_batch` now pass `None` elements straight through without failing.
+
 ## [0.2.0] - 2026-11-26
 
 ### Added

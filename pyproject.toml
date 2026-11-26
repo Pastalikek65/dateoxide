@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dateoxide"
-version = "0.2.0"
+version = "0.3.0"
 description = "Blazing-fast, low-memory, multilingual natural-language date parser written in Rust — a drop-in accelerator for Python's dateparser."
 readme = "README.md"
 requires-python = ">=3.9"
