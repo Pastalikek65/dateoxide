@@ -87,6 +87,39 @@ EXTRA_TOD: dict[str, list[tuple[str, int]]] = {
     "hr": [("ujutro", 9), ("podne", 12), ("poslijepodne", 15), ("navečer", 18), ("noću", 20), ("ponoć", 0)],
     "sr": [("ујутру", 9), ("подне", 12), ("поподне", 15), ("увече", 18), ("ноћу", 20), ("поноћ", 0)],
     "ca": [("matí", 9), ("migdia", 12), ("tarda", 15), ("vespre", 18), ("nit", 20), ("mitjanit", 0)],
+    "sl": [("zjutraj", 9), ("poldne", 12), ("popoldne", 15), ("zvečer", 18), ("ponoči", 20), ("polnoč", 0)],
+    "lt": [("rytas", 9), ("ryte", 9), ("vidurdienis", 12), ("popietė", 15), ("vakaras", 18), ("naktis", 20), ("vidurnaktis", 0)],
+    "lv": [("rīts", 9), ("no rīta", 9), ("pusdiena", 12), ("pēcpusdiena", 15), ("vakars", 18), ("nakts", 20), ("pusnakts", 0)],
+    "et": [("hommik", 9), ("hommikul", 9), ("lõuna", 12), ("pärastlõuna", 15), ("õhtu", 18), ("öö", 20), ("kesköö", 0)],
+    "ka": [("დილა", 9), ("შუადღე", 12), ("საღამო", 18), ("ღამე", 20), ("შუაღამე", 0)],
+    "hy": [("առավոտ", 9), ("կեսօր", 12), ("երեկո", 18), ("գիշեր", 20), ("կեսգիշեր", 0)],
+    "sq": [("mëngjes", 9), ("mesditë", 12), ("pasdite", 15), ("mbrëmje", 18), ("natë", 20), ("mesnatë", 0)],
+    "mk": [("утро", 9), ("наутро", 9), ("пладне", 12), ("попладне", 15), ("вечер", 18), ("ноќ", 20), ("полноќ", 0)],
+    "bs": [("ujutro", 9), ("podne", 12), ("poslijepodne", 15), ("navečer", 18), ("noću", 20), ("ponoć", 0)],
+    "be": [("раніцай", 9), ("поўдзень", 12), ("удзень", 15), ("увечары", 18), ("ноччу", 20), ("поўнач", 0)],
+    "is": [("morgunn", 9), ("hádegi", 12), ("síðdegi", 15), ("kvöld", 18), ("nótt", 20), ("miðnætti", 0)],
+    "ga": [("maidin", 9), ("meán lae", 12), ("tráthnóna", 15), ("tráthnóna déanach", 18), ("oíche", 20), ("meán oíche", 0)],
+    "cy": [("bore", 9), ("canol dydd", 12), ("prynhawn", 15), ("gyda'r nos", 18), ("nos", 20), ("hanner nos", 0)],
+    "eu": [("goiza", 9), ("eguerdia", 12), ("arratsaldea", 15), ("iluntzea", 18), ("gaua", 20), ("gauerdia", 0)],
+    "gl": [("mañá", 9), ("mediodía", 12), ("tarde", 15), ("noite", 20), ("medianoite", 0)],
+    "af": [("oggend", 9), ("middag", 12), ("namiddag", 15), ("aand", 18), ("nag", 20), ("middernag", 0)],
+    "sw": [("asubuhi", 9), ("adhuhuri", 12), ("alasiri", 15), ("jioni", 18), ("usiku", 20), ("usiku wa manane", 0)],
+    "ta": [("காலை", 9), ("மதியம்", 12), ("மாலை", 18), ("இரவு", 20), ("நள்ளிரவு", 0)],
+    "te": [("ఉదయం", 9), ("మధ్యాహ్నం", 12), ("సాయంత్రం", 18), ("రాత్రి", 20), ("అర్ధరాత్రి", 0)],
+    "ml": [("രാവിലെ", 9), ("ഉച്ചയ്ക്ക്", 12), ("വൈകുന്നേരം", 18), ("രാത്രി", 20), ("അർദ്ധരാത്രി", 0)],
+    "kn": [("ಬೆಳಿಗ್ಗೆ", 9), ("ಮಧ್ಯಾಹ್ನ", 12), ("ಸಂಜೆ", 18), ("ರಾತ್ರಿ", 20), ("ಮಧ್ಯರಾತ್ರಿ", 0)],
+    "mr": [("सकाळ", 9), ("दुपार", 12), ("संध्याकाळ", 18), ("रात्र", 20), ("मध्यरात्र", 0)],
+    "gu": [("સવાર", 9), ("બપોર", 12), ("સાંજ", 18), ("રાત", 20), ("મધરાત", 0)],
+    "pa": [("ਸਵੇਰ", 9), ("ਦੁਪਹਿਰ", 12), ("ਸ਼ਾਮ", 18), ("ਰਾਤ", 20), ("ਅੱਧੀ ਰਾਤ", 0)],
+    "ne": [("बिहान", 9), ("दिउँसो", 12), ("साँझ", 18), ("राति", 20), ("मध्यरात", 0)],
+    "fil": [("umaga", 9), ("tanghali", 12), ("hapon", 15), ("gabi", 20), ("hatinggabi", 0)],
+    "nn": [("morgon", 9), ("middag", 12), ("ettermiddag", 15), ("kveld", 18), ("natt", 20), ("midnatt", 0)],
+    "my": [("နံနက်", 9), ("မွန်းတည့်", 12), ("ညနေ", 18), ("ည", 20), ("သန်းခေါင်", 0)],
+    "km": [("ព្រឹក", 9), ("ថ្ងៃត្រង់", 12), ("ល្ងាច", 18), ("យប់", 20), ("អធ្រាត្រ", 0)],
+    "si": [("උදේ", 9), ("දවල්", 12), ("හවස", 18), ("රෑ", 20), ("මධ්‍යම රාත්‍රිය", 0)],
+    "mn": [("өглөө", 9), ("үд", 12), ("орой", 18), ("шөнө", 20), ("шөнө дунд", 0)],
+    "ky": [("эртең менен", 9), ("түш", 12), ("кеч", 18), ("түн", 20), ("түн ортосу", 0)],
+    "am": [("ጠዋት", 9), ("ቀን", 12), ("ማታ", 18), ("ሌሊት", 20), ("እኩለ ሌሊት", 0)],
 }
 
 # Match structured numeric capture patterns in relative-type-regex
@@ -241,6 +274,89 @@ EXTRA_WORD_NUMBERS: dict[str, dict[str, int]] = {
         "један": 1, "два": 2, "три": 3, "четири": 4, "пет": 5,
         "шест": 6, "седам": 7, "осам": 8, "девет": 9, "десет": 10,
     },
+    "sl": {"ena": 1, "dva": 2, "tri": 3, "štiri": 4, "pet": 5, "šest": 6, "sedem": 7, "osem": 8, "devet": 9, "deset": 10},
+    "lt": {"vienas": 1, "du": 2, "trys": 3, "keturi": 4, "penki": 5, "šeši": 6, "septyni": 7, "aštuoni": 8, "devyni": 9, "dešimt": 10},
+    "lv": {"viens": 1, "divi": 2, "trīs": 3, "četri": 4, "pieci": 5, "seši": 6, "septiņi": 7, "astoņi": 8, "deviņi": 9, "desmit": 10},
+    "et": {"üks": 1, "kaks": 2, "kolm": 3, "neli": 4, "viis": 5, "kuus": 6, "seitse": 7, "kaheksa": 8, "üheksa": 9, "kümme": 10},
+    "hy": {"մեկ": 1, "երկու": 2, "երեք": 3, "չորս": 4, "հինգ": 5, "վեց": 6, "յոթ": 7, "ութ": 8, "ինը": 9, "տասը": 10},
+    "sq": {"një": 1, "dy": 2, "tre": 3, "katër": 4, "pesë": 5, "gjashtë": 6, "shtatë": 7, "tetë": 8, "nëntë": 9, "dhjetë": 10},
+    "mk": {"еден": 1, "два": 2, "три": 3, "четири": 4, "пет": 5, "шест": 6, "седум": 7, "осум": 8, "девет": 9, "десет": 10},
+    "bs": {"jedan": 1, "dva": 2, "tri": 3, "četiri": 4, "pet": 5, "šest": 6, "sedam": 7, "osam": 8, "devet": 9, "deset": 10},
+    "be": {"адзін": 1, "два": 2, "тры": 3, "чатыры": 4, "пяць": 5, "шэсць": 6, "сем": 7, "восем": 8, "дзевяць": 9, "дзесяць": 10},
+    "is": {"einn": 1, "tveir": 2, "þrír": 3, "fjórir": 4, "fimm": 5, "sex": 6, "sjö": 7, "átta": 8, "níu": 9, "tíu": 10},
+    "ga": {"aon": 1, "dó": 2, "trí": 3, "ceathair": 4, "cúig": 5, "sé": 6, "seacht": 7, "ocht": 8, "naoi": 9, "deich": 10},
+    "cy": {"un": 1, "dau": 2, "tri": 3, "pedwar": 4, "pump": 5, "chwech": 6, "saith": 7, "wyth": 8, "naw": 9, "deg": 10},
+    "eu": {"bat": 1, "bi": 2, "hiru": 3, "lau": 4, "bost": 5, "sei": 6, "zazpi": 7, "zortzi": 8, "bederatzi": 9, "hamar": 10},
+    "gl": {"un": 1, "dous": 2, "tres": 3, "catro": 4, "cinco": 5, "seis": 6, "sete": 7, "oito": 8, "nove": 9, "dez": 10},
+    "af": {"een": 1, "twee": 2, "drie": 3, "vier": 4, "vyf": 5, "ses": 6, "sewe": 7, "agt": 8, "nege": 9, "tien": 10},
+    "sw": {"moja": 1, "mbili": 2, "tatu": 3, "nne": 4, "tano": 5, "sita": 6, "saba": 7, "nane": 8, "tisa": 9, "kumi": 10},
+    "ta": {"ஒன்று": 1, "இரண்டு": 2, "மூன்று": 3, "நான்கு": 4, "ஐந்து": 5, "ஆறு": 6, "ஏழு": 7, "எட்டு": 8, "ஒன்பது": 9, "பத்து": 10},
+    "te": {"ఒకటి": 1, "రెండు": 2, "మూడు": 3, "నాలుగు": 4, "ఐదు": 5, "ఆరు": 6, "ఏడు": 7, "ఎనిమిది": 8, "తొమ్మిది": 9, "పది": 10},
+    "ml": {"ഒന്ന്": 1, "രണ്ട്": 2, "മൂന്ന്": 3, "നാല്": 4, "അഞ്ച്": 5, "ആറ്": 6, "ഏഴ്": 7, "എട്ട്": 8, "ഒമ്പത്": 9, "പത്ത്": 10},
+    "kn": {"ಒಂದು": 1, "ಎರಡು": 2, "ಮೂರು": 3, "ನಾಲ್ಕು": 4, "ಐದು": 5, "ಆರು": 6, "ಏಳು": 7, "ಎಂಟು": 8, "ಒಂಬತ್ತು": 9, "ಹತ್ತು": 10},
+    "mr": {"एक": 1, "दोन": 2, "तीन": 3, "चार": 4, "पाच": 5, "सहा": 6, "सात": 7, "आठ": 8, "नऊ": 9, "दहा": 10},
+    "gu": {"એક": 1, "બે": 2, "ત્રણ": 3, "ચાર": 4, "પાંચ": 5, "છ": 6, "સાત": 7, "આઠ": 8, "નવ": 9, "દસ": 10},
+    "pa": {"ਇੱਕ": 1, "ਦੋ": 2, "ਤਿੰਨ": 3, "ਚਾਰ": 4, "ਪੰਜ": 5, "ਛੇ": 6, "ਸੱਤ": 7, "ਅੱਠ": 8, "ਨੌਂ": 9, "ਦਸ": 10},
+    "ne": {"एक": 1, "दुई": 2, "तीन": 3, "चार": 4, "पाँच": 5, "छ": 6, "सात": 7, "आठ": 8, "नौ": 9, "दस": 10},
+    "fil": {"isa": 1, "dalawa": 2, "tatlo": 3, "apat": 4, "lima": 5, "anim": 6, "pito": 7, "walo": 8, "siyam": 9, "sampu": 10},
+    "nn": {"ein": 1, "to": 2, "tre": 3, "fire": 4, "fem": 5, "seks": 6, "sju": 7, "åtte": 8, "ni": 9, "ti": 10},
+    "my": {"တစ်": 1, "နှစ်": 2, "သုံး": 3, "လေး": 4, "ငါး": 5, "ခြောက်": 6, "ခုနစ်": 7, "ရှစ်": 8, "ကိုး": 9, "တစ်ဆယ်": 10},
+    "km": {"មួយ": 1, "ពីរ": 2, "បី": 3, "បួន": 4, "ប្រាំ": 5, "ប្រាំមួយ": 6, "ប្រាំពីរ": 7, "ប្រាំបី": 8, "ប្រាំបួន": 9, "ដប់": 10},
+    "si": {"එක": 1, "දෙක": 2, "තුන": 3, "හතර": 4, "පහ": 5, "හය": 6, "හත": 7, "අට": 8, "නවය": 9, "දහය": 10},
+    "mn": {"нэг": 1, "хоёр": 2, "гурав": 3, "дөрөв": 4, "тав": 5, "зургаа": 6, "долоо": 7, "найм": 8, "ес": 9, "арав": 10},
+    "ky": {"бир": 1, "эки": 2, "үч": 3, "төрт": 4, "беш": 5, "алты": 6, "жети": 7, "сегиз": 8, "тогуз": 9, "он": 10},
+    "am": {"አንድ": 1, "ሁለት": 2, "ሦስት": 3, "አራት": 4, "አምስት": 5, "ስድስት": 6, "ሰባት": 7, "ስምንት": 8, "ዘጠኝ": 9, "አስር": 10},
+}
+
+# Exact +/-2 day and colloquial relative idioms omitted by CLDR
+EXTRA_RELATIVE_EXACT: dict[str, list[tuple[str, int, int, int]]] = {
+    "tr": [("evvelsi gün", -1, 2, 3), ("dünden önceki gün", -1, 2, 3), ("öbür gün", 1, 2, 3), ("öbürsü gün", 1, 2, 3)],
+    "es": [("anteayer", -1, 2, 3), ("pasado mañana", 1, 2, 3)],
+    "pt": [("anteontem", -1, 2, 3), ("depois de amanhã", 1, 2, 3)],
+    "it": [("l'altro ieri", -1, 2, 3), ("dopodomani", 1, 2, 3)],
+    "pl": [("przedwczoraj", -1, 2, 3), ("pojutrze", 1, 2, 3)],
+    "ko": [("그제", -1, 2, 3), ("그저께", -1, 2, 3), ("모레", 1, 2, 3)],
+    "ar": [("أول أمس", -1, 2, 3), ("أول امس", -1, 2, 3), ("بعد غد", 1, 2, 3)],
+    "fa": [("پریروز", -1, 2, 3), ("پس‌فردا", 1, 2, 3), ("پس فردا", 1, 2, 3)],
+    "he": [("שלשום", -1, 2, 3), ("מחרתיים", 1, 2, 3)],
+    "el": [("προχθές", -1, 2, 3), ("μεθαύριο", 1, 2, 3)],
+    "ro": [("alaltăieri", -1, 2, 3), ("poimâine", 1, 2, 3)],
+    "hu": [("tegnapelőtt", -1, 2, 3), ("holnapután", 1, 2, 3)],
+    "sv": [("i förrgår", -1, 2, 3), ("förrgår", -1, 2, 3), ("i övermorgon", 1, 2, 3), ("övermorgon", 1, 2, 3)],
+    "fi": [("toissapäivänä", -1, 2, 3), ("ylihuomenna", 1, 2, 3)],
+    "da": [("i forgårs", -1, 2, 3), ("i overmorgen", 1, 2, 3)],
+    "nb": [("i forgårs", -1, 2, 3), ("i overmorgen", 1, 2, 3)],
+    "id": [("kemarin lusa", -1, 2, 3), ("lusa", 1, 2, 3)],
+    "vi": [("hôm kia", -1, 2, 3), ("ngày kia", 1, 2, 3)],
+    "th": [("เมื่อวานซืน", -1, 2, 3), ("มะรืน", 1, 2, 3)],
+    "az": [("srağagün", -1, 2, 3), ("birigün", 1, 2, 3)],
+    "uk": [("позавчора", -1, 2, 3), ("післязавтра", 1, 2, 3)],
+    "bg": [("завчера", -1, 2, 3), ("вдругиден", 1, 2, 3)],
+    "hr": [("prekjučer", -1, 2, 3), ("prekosutra", 1, 2, 3)],
+    "sr": [("прекјуче", -1, 2, 3), ("прекосутра", 1, 2, 3)],
+    "sk": [("predvčerom", -1, 2, 3), ("pozajtra", 1, 2, 3)],
+    "cs": [("předevčírem", -1, 2, 3), ("pozítří", 1, 2, 3)],
+}
+
+EXTRA_AGO: dict[str, list[str]] = {
+    "tr": ["evvel"],
+    "az": ["əvvəl"],
+}
+
+EXTRA_IN_WORDS: dict[str, list[str]] = {
+    "ar": ["بعد"],
+    "fa": ["دیگر", "بعد"],
+    "pt": ["daqui a"],
+    "ro": ["peste"],
+    "es": ["dentro de"],
+    "fr": ["dans"],
+    "it": ["tra", "fra"],
+    "nl": ["over"],
+    "pl": ["za"],
+    "sv": ["om"],
+    "el": ["σε"],
+    "he": ["בעוד"],
+    "fi": ["kuluttua"],
 }
 
 # Extra shorthand units often used in real-world data (3d ago, 5 dk önce, etc.)
@@ -310,13 +426,19 @@ def extract_locale(code: str, info: dict[str, Any]) -> dict[str, Any]:
             seen_units.add(key)
             units.append([key[0], unit_id])
 
-    ago = dedup_list(info.get("ago", []))
-    in_words = dedup_list(info.get("in", []))
+    ago = dedup_list(list(info.get("ago", [])) + EXTRA_AGO.get(code, []))
+    in_words = dedup_list(list(info.get("in", [])) + EXTRA_IN_WORDS.get(code, []))
     skip = dedup_list(list(info.get("skip", [])) + list(info.get("pertain", [])))
 
     # Relative exact phrases: preserve multi-sense entries (e.g. Hindi कल = yesterday AND tomorrow)
     relative_exact: list[list[Any]] = []
     seen_rel_exact: set[tuple[str, int, int, int]] = set()
+    for phrase, sign, amount, unit_id in EXTRA_RELATIVE_EXACT.get(code, []):
+        p_norm = norm(phrase)
+        key = (p_norm, sign, amount, unit_id)
+        if p_norm and key not in seen_rel_exact:
+            seen_rel_exact.add(key)
+            relative_exact.append([p_norm, sign, amount, unit_id])
     for target, phrases in info.get("relative-type", {}).items():
         m = PAT_TARGET_EXACT.match(target.strip().lower())
         if not m:

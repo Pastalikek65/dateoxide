@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-11-27
+
+### Added
+- **73 Tier-1 full-featured languages** (up from 40): added word numbers and time-of-day anchors for 33 more languages (`sl`, `lt`, `lv`, `et`, `ka`, `hy`, `sq`, `mk`, `bs`, `be`, `is`, `ga`, `cy`, `eu`, `gl`, `af`, `sw`, `ta`, `te`, `ml`, `kn`, `mr`, `gu`, `pa`, `ne`, `fil`, `nn`, `my`, `km`, `si`, `mn`, `ky`, `am`).
+- **All 18 Unicode decimal numeral systems** normalized to ASCII `0-9` (`Arabic-Indic`, `Persian`, `Devanagari`, `Bengali`, `Gurmukhi`, `Gujarati`, `Oriya`, `Tamil`, `Telugu`, `Kannada`, `Malayalam`, `Sinhala`, `Thai`, `Lao`, `Tibetan`, `Myanmar`, `Khmer`, `Fullwidth`) plus script hints across 23 Unicode scripts and dual-indexing for Unicode-digit month/weekday names (fixing Tibetan/Dzongkha).
+- **`±2 days` relative idioms across 26 languages** (`evvelsi gün`, `öbür gün`, `anteayer`, `pasado mañana`, `dopodomani`, `przedwczoraj`, `pojutrze`, `그제`, `모레`, `أول أمس`, `بعد غد`, `پریروز`, `پس‌فردا`, `שלשום`, `מחרתיים`, `προχθές`, `μεθαύριο`, `alaltăieri`, `poimâine`, `tegnapelőtt`, `holnapután`, `i förrgår`, `toissapäivänä`, `ylihuomenna`, etc.).
+- **Post-positional & CJK/Korean relative weekdays**: `"vendredi dernier"`, `"lundi prochain"`, `"viernes pasado"`, `"venerdì scorso"`, `"sexta-feira passada"`, `"vorige vrijdag"`, `"지난 금요일"`, `"다음 월요일"`, `"上周五"`, `"下周一"`, `"先週の金曜日"`.
+- **Expanded multi-word `in_words` / `ago` prepositions** (`daqui a`, `dentro de`, `peste`, `دیگر`, `بعد`, `evvel`, `əvvəl`) with longest-marker-first stripping.
+- **Extreme multilingual benchmark & tests**: `benchmarks/multilingual_torture.py` (`87/87` in `0.41–0.63 ms` vs `dateparser`'s `48/87` in `400.83 ms`) and `tests/test_multilingual_extreme.py` (`3,218` total tests passing).
+
 ## [0.3.0] - 2026-11-27
 
 ### Added

@@ -160,6 +160,15 @@ impl LocaleRegistry {
                         }
                     }
                     register_token(&name, lang_id, true);
+                    let norm_name = normalize_digits_and_lower(&name);
+                    if norm_name != name {
+                        register_token(&norm_name, lang_id, true);
+                        let nf = fold_diacritics(&norm_name);
+                        if nf != norm_name {
+                            folded_months.entry(nf).or_insert(month_num);
+                        }
+                        months.insert(norm_name, month_num);
+                    }
                     let f = fold_diacritics(&name);
                     if f != name {
                         folded_months.entry(f).or_insert(month_num);
@@ -179,6 +188,15 @@ impl LocaleRegistry {
                         }
                     }
                     register_token(&name, lang_id, true);
+                    let norm_name = normalize_digits_and_lower(&name);
+                    if norm_name != name {
+                        register_token(&norm_name, lang_id, true);
+                        let nf = fold_diacritics(&norm_name);
+                        if nf != norm_name {
+                            folded_weekdays.entry(nf).or_insert(wd_num);
+                        }
+                        weekdays.insert(norm_name, wd_num);
+                    }
                     let f = fold_diacritics(&name);
                     if f != name {
                         folded_weekdays.entry(f).or_insert(wd_num);
@@ -581,9 +599,10 @@ pub fn fold_diacritics(s: &str) -> String {
             'ř' | 'ŕ' | 'ŗ' => 'r',
             'ď' | 'đ' => 'd',
             'ť' | 'ţ' => 't',
-            // Arabic alef normalization & harakat/tatweel stripping
+            // Arabic alef normalization & harakat/tatweel/ZWNJ stripping
             'أ' | 'إ' | 'آ' | 'ٱ' => 'ا',
             'ى' => 'ي',
+            '\u{200C}' => ' ',
             '\u{064B}'..='\u{065F}' | '\u{0670}' | '\u{0640}' | '\u{0300}'..='\u{036F}' => {
                 continue;
             }
@@ -604,6 +623,20 @@ fn detect_script_hint(s: &str) -> Option<&'static [&'static str]> {
     let mut has_greek = false;
     let mut has_thai = false;
     let mut has_devanagari = false;
+    let mut has_bengali = false;
+    let mut has_gurmukhi = false;
+    let mut has_gujarati = false;
+    let mut has_tamil = false;
+    let mut has_telugu = false;
+    let mut has_kannada = false;
+    let mut has_malayalam = false;
+    let mut has_sinhala = false;
+    let mut has_lao = false;
+    let mut has_myanmar = false;
+    let mut has_georgian = false;
+    let mut has_armenian = false;
+    let mut has_ethiopic = false;
+    let mut has_khmer = false;
 
     for ch in s.chars() {
         let c = ch as u32;
@@ -617,6 +650,20 @@ fn detect_script_hint(s: &str) -> Option<&'static [&'static str]> {
             0x0370..=0x03FF => has_greek = true,
             0x0E00..=0x0E7F => has_thai = true,
             0x0900..=0x097F => has_devanagari = true,
+            0x0980..=0x09FF => has_bengali = true,
+            0x0A00..=0x0A7F => has_gurmukhi = true,
+            0x0A80..=0x0AFF => has_gujarati = true,
+            0x0B80..=0x0BFF => has_tamil = true,
+            0x0C00..=0x0C7F => has_telugu = true,
+            0x0C80..=0x0CFF => has_kannada = true,
+            0x0D00..=0x0D7F => has_malayalam = true,
+            0x0D80..=0x0DFF => has_sinhala = true,
+            0x0E80..=0x0EFF => has_lao = true,
+            0x1000..=0x109F => has_myanmar = true,
+            0x10A0..=0x10FF => has_georgian = true,
+            0x0530..=0x058F => has_armenian = true,
+            0x1200..=0x137F => has_ethiopic = true,
+            0x1780..=0x17FF => has_khmer = true,
             _ => {}
         }
     }
@@ -628,7 +675,7 @@ fn detect_script_hint(s: &str) -> Option<&'static [&'static str]> {
     } else if has_han {
         Some(&["zh", "ja"])
     } else if has_cyrillic {
-        Some(&["ru", "uk", "bg", "sr", "be", "kk"])
+        Some(&["ru", "uk", "bg", "sr", "be", "kk", "mk", "ky", "mn"])
     } else if has_arabic {
         Some(&["ar", "fa", "ur"])
     } else if has_hebrew {
@@ -639,12 +686,40 @@ fn detect_script_hint(s: &str) -> Option<&'static [&'static str]> {
         Some(&["th"])
     } else if has_devanagari {
         Some(&["hi", "mr", "ne"])
+    } else if has_bengali {
+        Some(&["bn", "as"])
+    } else if has_gurmukhi {
+        Some(&["pa"])
+    } else if has_gujarati {
+        Some(&["gu"])
+    } else if has_tamil {
+        Some(&["ta"])
+    } else if has_telugu {
+        Some(&["te"])
+    } else if has_kannada {
+        Some(&["kn"])
+    } else if has_malayalam {
+        Some(&["ml"])
+    } else if has_sinhala {
+        Some(&["si"])
+    } else if has_lao {
+        Some(&["lo"])
+    } else if has_myanmar {
+        Some(&["my"])
+    } else if has_georgian {
+        Some(&["ka"])
+    } else if has_armenian {
+        Some(&["hy"])
+    } else if has_ethiopic {
+        Some(&["am", "ti"])
+    } else if has_khmer {
+        Some(&["km"])
     } else {
         None
     }
 }
 
-/// Normalize Unicode digits (Arabic-Indic, Eastern Arabic, Devanagari, Fullwidth) to ASCII 0-9
+/// Normalize all 18 Unicode decimal numeral systems to ASCII 0-9
 /// and collapse whitespace/punctuation for fast matching.
 pub fn normalize_digits_and_lower(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
@@ -654,6 +729,20 @@ pub fn normalize_digits_and_lower(input: &str) -> String {
             '\u{0660}'..='\u{0669}' => char::from_u32('0' as u32 + (ch as u32 - 0x0660)).unwrap(),
             '\u{06F0}'..='\u{06F9}' => char::from_u32('0' as u32 + (ch as u32 - 0x06F0)).unwrap(),
             '\u{0966}'..='\u{096F}' => char::from_u32('0' as u32 + (ch as u32 - 0x0966)).unwrap(),
+            '\u{09E6}'..='\u{09EF}' => char::from_u32('0' as u32 + (ch as u32 - 0x09E6)).unwrap(),
+            '\u{0A66}'..='\u{0A6F}' => char::from_u32('0' as u32 + (ch as u32 - 0x0A66)).unwrap(),
+            '\u{0AE6}'..='\u{0AEF}' => char::from_u32('0' as u32 + (ch as u32 - 0x0AE6)).unwrap(),
+            '\u{0B66}'..='\u{0B6F}' => char::from_u32('0' as u32 + (ch as u32 - 0x0B66)).unwrap(),
+            '\u{0BE6}'..='\u{0BEF}' => char::from_u32('0' as u32 + (ch as u32 - 0x0BE6)).unwrap(),
+            '\u{0C66}'..='\u{0C6F}' => char::from_u32('0' as u32 + (ch as u32 - 0x0C66)).unwrap(),
+            '\u{0CE6}'..='\u{0CEF}' => char::from_u32('0' as u32 + (ch as u32 - 0x0CE6)).unwrap(),
+            '\u{0D66}'..='\u{0D6F}' => char::from_u32('0' as u32 + (ch as u32 - 0x0D66)).unwrap(),
+            '\u{0DE6}'..='\u{0DEF}' => char::from_u32('0' as u32 + (ch as u32 - 0x0DE6)).unwrap(),
+            '\u{0E50}'..='\u{0E59}' => char::from_u32('0' as u32 + (ch as u32 - 0x0E50)).unwrap(),
+            '\u{0ED0}'..='\u{0EDF}' => char::from_u32('0' as u32 + (ch as u32 - 0x0ED0)).unwrap(),
+            '\u{0F20}'..='\u{0F29}' => char::from_u32('0' as u32 + (ch as u32 - 0x0F20)).unwrap(),
+            '\u{1040}'..='\u{1049}' => char::from_u32('0' as u32 + (ch as u32 - 0x1040)).unwrap(),
+            '\u{17E0}'..='\u{17E9}' => char::from_u32('0' as u32 + (ch as u32 - 0x17E0)).unwrap(),
             '\u{FF10}'..='\u{FF19}' => char::from_u32('0' as u32 + (ch as u32 - 0xFF10)).unwrap(),
             // Turkish dotted/dotless I normalization to match lowercase tables cleanly
             '\u{0130}' => 'i',

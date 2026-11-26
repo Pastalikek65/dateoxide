@@ -685,13 +685,15 @@ fn try_compound_relative(
     let mut rest = s.trim().to_string();
 
     let strip_marker = |text: &str, markers: &rustc_hash::FxHashSet<String>| -> Option<String> {
-        for w in markers {
-            if let Some(stripped) = text.strip_suffix(w.as_str()) {
+        let mut sorted: Vec<&str> = markers.iter().map(|s| s.as_str()).collect();
+        sorted.sort_unstable_by(|a, b| b.len().cmp(&a.len()));
+        for w in sorted {
+            if let Some(stripped) = text.strip_suffix(w) {
                 if stripped.is_empty() || stripped.ends_with(' ') || !w.is_ascii() {
                     return Some(stripped.trim().to_string());
                 }
             }
-            if let Some(stripped) = text.strip_prefix(w.as_str()) {
+            if let Some(stripped) = text.strip_prefix(w) {
                 if stripped.is_empty() || stripped.starts_with(' ') || !w.is_ascii() {
                     return Some(stripped.trim().to_string());
                 }
@@ -869,29 +871,117 @@ fn split_attached_num_unit(s: &str) -> Option<(f64, &str)> {
     Some((num, unit))
 }
 
+fn classify_relative_modifier(tok: &str) -> Option<i8> {
+    match tok {
+        "last" | "previous" | "past" | "geçen" | "gecen" | "önceki" | "onceki" | "letzten"
+        | "letzter" | "letzte" | "vergangenen" | "dernier" | "dernière" | "derniere"
+        | "pasado" | "pasada" | "passado" | "passada" | "scorso" | "scorsa" | "vorige"
+        | "afgelopen" | "zeszły" | "zeszła" | "zeszly" | "zeszla" | "poprzedni"
+        | "прошлый" | "прошлая" | "миналата" | "minuly" | "minulý" | "förra" | "forra"
+        | "sidste" | "forrige" | "viime" | "지난" => Some(-1),
+        "next" | "coming" | "following" | "gelecek" | "önümüzdeki" | "onumuzdeki" | "sonraki"
+        | "nächsten" | "nächster" | "nächste" | "nachsten" | "nachster" | "nachste"
+        | "kommenden" | "prochain" | "prochaine" | "próximo" | "próxima" | "proximo"
+        | "proxima" | "siguiente" | "prossimo" | "prossima" | "volgende" | "komende"
+        | "przyszły" | "przyszła" | "przyszly" | "przyszla" | "następny" | "nastepny"
+        | "следующий" | "следующая" | "nästa" | "nasta" | "næste" | "naeste" | "neste"
+        | "ensi" | "다음" => Some(1),
+        "this" | "bu" | "diesen" | "dieser" | "diese" | "ce" | "cette" | "cet" | "este"
+        | "esta" | "questo" | "questa" | "deze" | "dit" | "ten" | "ta" | "этот" | "эта"
+        | "denna" | "denne" | "tämä" | "tama" | "이번" => Some(0),
+        _ => None,
+    }
+}
+
+fn try_cjk_relative_weekday(s: &str, base: NaiveDateTime) -> Option<(NaiveDateTime, Period)> {
+    // Chinese: 上/下/本周[一..日|天] or 上/下星期[一..日|天]
+    // Japanese: 先週/来週/今週[の][月..日][曜[日]]
+    let (dir, rest): (i8, &str) = if let Some(r) = s.strip_prefix("先週の").or_else(|| s.strip_prefix("先週")) {
+        (-1, r)
+    } else if let Some(r) = s.strip_prefix("来週の").or_else(|| s.strip_prefix("来週")) {
+        (1, r)
+    } else if let Some(r) = s.strip_prefix("今週の").or_else(|| s.strip_prefix("今週")) {
+        (0, r)
+    } else if let Some(r) = s.strip_prefix("上星期").or_else(|| s.strip_prefix("上周")) {
+        (-1, r)
+    } else if let Some(r) = s.strip_prefix("下星期").or_else(|| s.strip_prefix("下周")) {
+        (1, r)
+    } else if let Some(r) = s
+        .strip_prefix("本星期")
+        .or_else(|| s.strip_prefix("本周"))
+        .or_else(|| s.strip_prefix("这星期"))
+        .or_else(|| s.strip_prefix("这周"))
+    {
+        (0, r)
+    } else {
+        return None;
+    };
+
+    let target_wd: i64 = match rest.trim() {
+        "一" | "月" | "月曜" | "月曜日" => 0,
+        "二" | "火" | "火曜" | "火曜日" => 1,
+        "三" | "水" | "水曜" | "水曜日" => 2,
+        "四" | "木" | "木曜" | "木曜日" => 3,
+        "五" | "金" | "金曜" | "金曜日" => 4,
+        "六" | "土" | "土曜" | "土曜日" => 5,
+        "日" | "天" | "日曜" | "日曜日" => 6,
+        _ => return None,
+    };
+
+    let current_wd = base.weekday().num_days_from_monday() as i64;
+    let delta_days = compute_weekday_delta(dir, current_wd, target_wd);
+    base.checked_add_signed(Duration::days(delta_days))
+        .map(|dt| (dt.date().and_hms_opt(0, 0, 0).unwrap_or(dt), Period::Day))
+}
+
+#[inline]
+fn compute_weekday_delta(dir: i8, current_wd: i64, target_wd: i64) -> i64 {
+    if dir < 0 {
+        let mut diff = target_wd - current_wd;
+        if diff >= 0 {
+            diff -= 7;
+        }
+        diff
+    } else if dir > 0 {
+        let mut diff = target_wd - current_wd;
+        if diff <= 0 {
+            diff += 7;
+        }
+        diff
+    } else {
+        target_wd - current_wd
+    }
+}
+
 fn try_relative_period_or_weekday(
     s: &str,
     loc: &CompiledLocale,
     base: NaiveDateTime,
     normalize: bool,
 ) -> Option<(NaiveDateTime, Period)> {
+    if let Some(cjk) = try_cjk_relative_weekday(s.trim(), base) {
+        return Some(cjk);
+    }
+
     let fs = if normalize {
         fold_diacritics(s)
     } else {
         s.to_string()
     };
-    let tokens: Vec<&str> = fs.split_whitespace().collect();
+    let mut tokens: Vec<&str> = fs.split_whitespace().collect();
+    if tokens.len() == 3 && matches!(tokens[0], "el" | "la" | "le" | "w" | "в" | "am") {
+        tokens.remove(0);
+    }
     if tokens.len() != 2 {
         return None;
     }
-    let (modifier, target_tok) = (tokens[0], tokens[1]);
-    let dir: i8 = match modifier {
-        "last" | "previous" | "geçen" | "gecen" | "letzten" | "letzter" | "letzte" | "dernier"
-        | "dernière" | "pasado" | "pasada" | "прошлый" | "прошлая" => -1,
-        "next" | "gelecek" | "önümüzdeki" | "onumuzdeki" | "nächsten" | "nächster" | "nächste"
-        | "prochain" | "prochaine" | "próximo" | "proximo" | "следующий" => 1,
-        "this" | "bu" | "diesen" | "diese" | "ce" | "cette" | "este" | "esta" => 0,
-        _ => return None,
+
+    let (dir, target_tok) = if let Some(d) = classify_relative_modifier(tokens[0]) {
+        (d, tokens[1])
+    } else if let Some(d) = classify_relative_modifier(tokens[1]) {
+        (d, tokens[0])
+    } else {
+        return None;
     };
 
     let unit_opt = loc.units.get(target_tok).copied().or_else(|| {
@@ -909,31 +999,25 @@ fn try_relative_period_or_weekday(
         return apply_relative_offset(base, dir, 1.0, unit).map(|dt| (dt, period));
     }
 
-    let target_wd = loc.weekdays.get(target_tok).copied().or_else(|| {
-        if normalize {
-            loc.folded_weekdays.get(target_tok).copied()
-        } else {
-            None
-        }
-    })?;
+    let target_wd = loc
+        .weekdays
+        .get(target_tok)
+        .copied()
+        .or_else(|| {
+            if normalize {
+                loc.folded_weekdays.get(target_tok).copied()
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            target_tok
+                .strip_suffix("-feira")
+                .and_then(|stem| loc.weekdays.get(stem).copied())
+        })?;
 
     let current_wd = base.weekday().num_days_from_monday() as i64;
-    let target = target_wd as i64;
-    let delta_days = if dir < 0 {
-        let mut diff = target - current_wd;
-        if diff >= 0 {
-            diff -= 7;
-        }
-        diff
-    } else if dir > 0 {
-        let mut diff = target - current_wd;
-        if diff <= 0 {
-            diff += 7;
-        }
-        diff
-    } else {
-        target - current_wd
-    };
+    let delta_days = compute_weekday_delta(dir, current_wd, target_wd as i64);
 
     base.checked_add_signed(Duration::days(delta_days))
         .map(|dt| (dt.date().and_hms_opt(0, 0, 0).unwrap_or(dt), Period::Day))

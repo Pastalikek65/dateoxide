@@ -20,7 +20,7 @@ cargo add dateoxide-core     # Pure Rust crate
 - **7.4x lower memory footprint** (`+6.93 MB` vs `+51.56 MB` RSS delta across 205 languages)
 - **17.3x faster cold import** (`5.21 ms` vs `90.22 ms`) via PEP 562 lazy submodules
 - **Zero ReDoS** — linear-time parsing with zero catastrophic backtracking
-- **3,102+ automated tests passing in <4s** — including 1,010 upstream `scrapinghub/dateparser` test vectors, exact `datetime` assertions across 205 languages, `dateparser` compatibility & fuzzing matrices, known `dateparser` bug regressions, and 3,792 official Saudi Umm al-Qura Hijri dates
+- **3,218+ automated tests passing in <4s** — including 1,010 upstream `scrapinghub/dateparser` test vectors, exact `datetime` assertions across 205 languages, 87 extreme multilingual/non-Latin tests, `dateparser` compatibility & fuzzing matrices, known `dateparser` bug regressions, and 3,792 official Saudi Umm al-Qura Hijri dates
 - **Official Saudi Umm al-Qura Hijri Calendar (1343–1500 AH)** embedded directly in pure Rust (3,792/3,792 month-start & month-end dates verified against `hijridate`, with zero runtime dependencies), plus Jalali, Minguo, and French Republican calendars
 - **Complete `dateparser` feature parity**:
   - `parse()`, `DateDataParser` (`get_date_data`, `get_date_tuple`, `parts`, `part_of_day`), `search_dates(..., add_period=..., add_detected_language=...)`
@@ -181,11 +181,12 @@ start, end = dateoxide.parse_date_range("from 2026-11-01 to 2026-11-15")
 
 | Tier | Count | Included Capabilities | Languages |
 | :--- | :---: | :--- | :--- |
-| **Tier 1 (Full NLP)** | **40** | 12 months, 7 weekdays, `relative_exact`, `relative_affix`, `word_numbers`, `time_of_day` | `en`, `tr`, `de`, `fr`, `es`, `pt`, `it`, `nl`, `ru`, `pl`, `uk`, `cs`, `sk`, `sv`, `da`, `nb`/`no`, `fi`, `ro`, `hu`, `el`, `he`, `ar`, `fa`, `ur`, `hi`, `bn`, `id`, `ms`, `vi`, `th`, `zh`, `ja`, `ko`, `az`, `uz`, `kk`, `bg`, `hr`, `sr`, `ca` |
-| **Tier 2 (Full Calendar + Relative)** | **121** | 12 months, 7 weekdays, `relative_exact`, dynamic `relative_affix` (`N units ago/in`) | Tier 1 + 81 additional world languages (African, South/SE Asian, Celtic, Baltic, Caucasian, etc.) |
-| **Tier 3 (CLDR Calendar + Exact Relatives)** | **205** | 12 months, 7 weekdays, `units`, 204 `relative_exact` phrases, Unicode numerals | All 205 Unicode CLDR / `dateparser` locales |
+| **Tier 1 (Full NLP)** | **73** | 12 months, 7 weekdays, `relative_exact`, `relative_affix`, `word_numbers`, `time_of_day` | 40 core (`en`, `tr`, `de`, `fr`, `es`, `pt`, `it`, `nl`, `ru`, `pl`, `uk`, `cs`, `sk`, `sv`, `da`, `nb`/`no`, `fi`, `ro`, `hu`, `el`, `he`, `ar`, `fa`, `ur`, `hi`, `bn`, `id`, `ms`, `vi`, `th`, `zh`, `ja`, `ko`, `az`, `uz`, `kk`, `bg`, `hr`, `sr`, `ca`) + 33 (`sl`, `lt`, `lv`, `et`, `ka`, `hy`, `sq`, `mk`, `bs`, `be`, `is`, `ga`, `cy`, `eu`, `gl`, `af`, `sw`, `ta`, `te`, `ml`, `kn`, `mr`, `gu`, `pa`, `ne`, `fil`, `nn`, `my`, `km`, `si`, `mn`, `ky`, `am`) |
+| **Tier 2 (Full Calendar + Relative)** | **121** | 12 months, 7 weekdays, `relative_exact`, dynamic `relative_affix` (`N units ago/in`) | Tier 1 + 48 additional regional languages |
+| **Tier 3 (CLDR Calendar + Exact Relatives)** | **205** | 12 months, 7 weekdays, `units`, 204 `relative_exact` phrases, all 18 Unicode numeral systems | All 205 Unicode CLDR / `dateparser` locales |
 
-*(Multilingual `time_spans` covers 13 languages: EN, TR, DE, FR, ES, IT, PT, NL, PL, RU, JA, ZH, KO.)*
+- **Extreme Multilingual Benchmark (`benchmarks/multilingual_torture.py`, 87 cases across 30+ languages & 10+ Unicode scripts):** `dateoxide` **87/87** auto-detect (`0.63 ms`) & **87/87** explicit (`0.41 ms`) vs `dateparser 1.5.1` **48/87** (`400.83 ms`).
+- **Multilingual `time_spans`** supports 13 languages: EN, TR, DE, FR, ES, IT, PT, NL, PL, RU, JA, ZH, KO.
 
 ### Real-World Examples (`examples/`)
 
