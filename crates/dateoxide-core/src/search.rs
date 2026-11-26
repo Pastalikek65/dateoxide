@@ -1,13 +1,22 @@
 use crate::get_date_data;
 use crate::locale::{fold_diacritics, normalize_digits_and_lower, LocaleRegistry};
-use crate::settings::{ParsedDateTime, Settings};
+use crate::settings::{ParsedDateTime, Period, Settings};
+use crate::time_spans;
+use crate::timezone::finalize_datetime;
+
+#[derive(Debug, Clone)]
+pub struct SearchMatch {
+    pub text: String,
+    pub date_obj: ParsedDateTime,
+    pub period: Period,
+    pub locale: Option<String>,
+}
 
 /// Linear-time date finder across free-form text (compatible with `dateparser.search.search_dates`).
-/// Returns `Vec<(matched_substring, ParsedDateTime)>`.
 pub fn search_dates(text: &str, settings: &Settings) -> Vec<(String, ParsedDateTime)> {
-    search_dates_with_locale(text, settings)
+    search_dates_full(text, settings)
         .into_iter()
-        .map(|(s, dt, _)| (s, dt))
+        .map(|m| (m.text, m.date_obj))
         .collect()
 }
 
@@ -16,8 +25,46 @@ pub fn search_dates_with_locale(
     text: &str,
     settings: &Settings,
 ) -> Vec<(String, ParsedDateTime, Option<String>)> {
+    search_dates_full(text, settings)
+        .into_iter()
+        .map(|m| (m.text, m.date_obj, m.locale))
+        .collect()
+}
+
+/// Full `search_dates` returning matched text, datetime, period, and detected locale.
+pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
     if text.trim().is_empty() {
         return Vec::new();
+    }
+
+    if settings.return_time_span {
+        if let Some(span) = time_spans::detect_time_span(text) {
+            let base = settings.effective_base();
+            let num = span.number.unwrap_or(1);
+            if let Some((start_dt, end_dt)) =
+                time_spans::generate_time_span(span.span_type, span.direction, num, base, settings)
+            {
+                let period = match span.span_type {
+                    "week" | "weeks" => Period::Week,
+                    "month" | "months" => Period::Month,
+                    _ => Period::Day,
+                };
+                return vec![
+                    SearchMatch {
+                        text: format!("{} (start)", span.matched_text),
+                        date_obj: finalize_datetime(start_dt, None, settings),
+                        period,
+                        locale: Some("en".to_string()),
+                    },
+                    SearchMatch {
+                        text: format!("{} (end)", span.matched_text),
+                        date_obj: finalize_datetime(end_dt, None, settings),
+                        period,
+                        locale: Some("en".to_string()),
+                    },
+                ];
+            }
+        }
     }
 
     let registry = LocaleRegistry::global();
@@ -111,7 +158,12 @@ pub fn search_dates_with_locale(
 
             let dd = get_date_data(raw_sub, settings);
             if let Some(dt) = dd.date_obj {
-                results.push((raw_sub.to_string(), dt, dd.locale));
+                results.push(SearchMatch {
+                    text: raw_sub.to_string(),
+                    date_obj: dt,
+                    period: dd.period,
+                    locale: dd.locale,
+                });
                 i = end_idx + 1;
                 matched = true;
                 break;

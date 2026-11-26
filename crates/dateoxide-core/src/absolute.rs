@@ -1,6 +1,9 @@
 use crate::fast_path::{days_in_month, expand_two_digit_year, parse_time_str, resolve_missing_day};
 use crate::locale::{fold_diacritics, CompiledLocale, LocaleRegistry};
-use crate::settings::{DateOrder, DatePart, Period, PreferDatesFrom, PreferMonthOfYear, Settings};
+use crate::settings::{
+    DateOrder, DatePart, PartOfDay, Period, PreferDatesFrom, PreferMonthOfYear, Settings,
+    StrictDateOrder,
+};
 use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 
 #[derive(Debug, Clone)]
@@ -9,6 +12,8 @@ pub struct AbsoluteMatch {
     pub period: Period,
     pub locale: String,
     pub has_time: bool,
+    pub parts: Vec<&'static str>,
+    pub part_of_day: Option<PartOfDay>,
 }
 
 /// Try parsing a natural-language absolute or partial date across candidate locales.
@@ -18,8 +23,6 @@ pub fn try_parse_absolute(
     registry: &LocaleRegistry,
     settings: &Settings,
 ) -> Option<AbsoluteMatch> {
-    // Handle CJK & Korean structured dates cleanly first:
-    // e.g. "2026年11月26日", "15 1月 2025", "2026년 11월 26일 오후 3시 30분"
     if normalized.contains('年')
         || normalized.contains('月')
         || normalized.contains('日')
@@ -32,7 +35,6 @@ pub fn try_parse_absolute(
         }
     }
 
-    // Handle bare 4-digit year (e.g. "2025") if not strict
     if normalized.len() == 4 && normalized.bytes().all(|b| b.is_ascii_digit()) {
         if !settings.strict_parsing
             && !settings.require_parts.contains(&DatePart::Month)
@@ -53,6 +55,8 @@ pub fn try_parse_absolute(
                             period: Period::Year,
                             locale: "en".to_string(),
                             has_time: false,
+                            parts: vec!["year"],
+                            part_of_day: None,
                         });
                     }
                 }
@@ -116,7 +120,6 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
                     has_time = true;
                 }
                 ':' => {
-                    // Find start of HH:MM[:SS] substring
                     let byte_idx = s
                         .char_indices()
                         .nth(idx)
@@ -147,7 +150,6 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
         }
     }
 
-    // Fill missing year / day from loose space-separated numbers (e.g. "15 1月 2025")
     for (val, len) in loose_nums {
         if year.is_none() && len == 4 && (1000..=2999).contains(&val) {
             year = Some(val as i32);
@@ -169,7 +171,7 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
     }
 
     let base = settings.effective_base();
-    let (y, m, d, period) = complete_partial_date(year, month, day, base, settings)?;
+    let (y, m, d, period, parts) = complete_partial_date(year, month, day, has_time, base, settings)?;
     let nd = NaiveDate::from_ymd_opt(y, m, d)?;
     let nt = NaiveTime::from_hms_opt(hour, minute, second)?;
     let lang = if is_korean {
@@ -185,6 +187,8 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
         period,
         locale: lang.to_string(),
         has_time,
+        parts,
+        part_of_day: None,
     })
 }
 
@@ -214,6 +218,32 @@ fn lookup_weekday(s: &str, loc: &CompiledLocale, normalize: bool) -> Option<u8> 
     None
 }
 
+fn lookup_tod_hour(s: &str, loc: &CompiledLocale, normalize: bool) -> Option<u8> {
+    if let Some(&h) = loc.time_of_day.get(s) {
+        return Some(h);
+    }
+    if normalize {
+        let f = fold_diacritics(s);
+        if let Some(&h) = loc.folded_time_of_day.get(&f).or_else(|| loc.time_of_day.get(&f)) {
+            return Some(h);
+        }
+    }
+    None
+}
+
+fn tod_hour_to_time_and_pod(hour: u8, settings: &Settings) -> (NaiveTime, Option<PartOfDay>) {
+    match hour {
+        3 | 6 => (settings.parts_of_day.time_for(PartOfDay::EarlyMorning), Some(PartOfDay::EarlyMorning)),
+        9 => (settings.parts_of_day.time_for(PartOfDay::Morning), Some(PartOfDay::Morning)),
+        15 => (settings.parts_of_day.time_for(PartOfDay::Afternoon), Some(PartOfDay::Afternoon)),
+        18 => (settings.parts_of_day.time_for(PartOfDay::Evening), Some(PartOfDay::Evening)),
+        20 => (settings.parts_of_day.time_for(PartOfDay::Night), Some(PartOfDay::Night)),
+        12 => (NaiveTime::from_hms_opt(12, 0, 0).unwrap(), None),
+        0 => (NaiveTime::from_hms_opt(0, 0, 0).unwrap(), None),
+        h => (NaiveTime::from_hms_opt(h as u32, 0, 0).unwrap(), None),
+    }
+}
+
 fn try_parse_in_locale(
     normalized: &str,
     loc: &CompiledLocale,
@@ -229,6 +259,7 @@ fn try_parse_in_locale(
     let mut day: Option<u32> = None;
     let mut weekday_seen: Option<u8> = None;
     let mut time: Option<NaiveTime> = None;
+    let mut part_of_day: Option<PartOfDay> = None;
     let mut ampm: Option<bool> = None;
     let mut free_nums: Vec<(u32, usize)> = Vec::new();
     let mut matched_locale_signal = false;
@@ -242,7 +273,6 @@ fn try_parse_in_locale(
             continue;
         }
 
-        // 0. User-configured skip tokens
         if settings
             .skip_tokens
             .iter()
@@ -268,7 +298,7 @@ fn try_parse_in_locale(
             }
         }
 
-        // 2. Time token (e.g., "14:30", "14:30:45", "14h30", "09h15", "5pm", "5:30p.m.")
+        // 2. Time token
         if time.is_none()
             && (clean.contains(':')
                 || (clean.len() >= 3
@@ -310,7 +340,7 @@ fn try_parse_in_locale(
             }
         }
 
-        // 3. Month name: trigram -> bigram -> unigram (checked before AM/PM so "am faoilleach" matches!)
+        // 3. Month name: trigram -> bigram -> unigram
         if month.is_none() {
             if i + 2 < raw_tokens.len() {
                 let trigram = format!(
@@ -365,7 +395,28 @@ fn try_parse_in_locale(
             }
         }
 
-        // 6. Numeric token (including ordinals)
+        // 6. Time-of-day word on absolute date ("12 December 2025 morning")
+        if time.is_none() {
+            if i + 1 < raw_tokens.len() {
+                let bigram = format!("{} {}", clean, raw_tokens[i + 1].trim_matches(','));
+                if let Some(h) = lookup_tod_hour(&bigram, loc, settings.normalize) {
+                    let (t, pod) = tod_hour_to_time_and_pod(h, settings);
+                    time = Some(t);
+                    part_of_day = pod;
+                    i += 2;
+                    continue;
+                }
+            }
+            if let Some(h) = lookup_tod_hour(clean, loc, settings.normalize) {
+                let (t, pod) = tod_hour_to_time_and_pod(h, settings);
+                time = Some(t);
+                part_of_day = pod;
+                i += 1;
+                continue;
+            }
+        }
+
+        // 7. Numeric token (including ordinals)
         if let Some((num, digit_len)) = parse_date_number_or_ordinal(clean) {
             if digit_len == 4 && (1000..=2999).contains(&num) && year.is_none() {
                 year = Some(num as i32);
@@ -376,7 +427,7 @@ fn try_parse_in_locale(
             continue;
         }
 
-        // 7. Skip / connector words
+        // 8. Skip / connector words
         if loc.skip.contains(clean)
             || matches!(
                 clean,
@@ -389,7 +440,6 @@ fn try_parse_in_locale(
             continue;
         }
 
-        // Reject unrecognized non-date words to avoid false positives
         return None;
     }
 
@@ -408,7 +458,14 @@ fn try_parse_in_locale(
         time = NaiveTime::from_hms_nano_opt(h, t.minute(), t.second(), t.nanosecond());
     }
 
-    let order = settings.effective_date_order(loc.date_order);
+    let order = if settings.date_order.is_some() || settings.region.is_some() {
+        settings.effective_date_order(loc.date_order)
+    } else if settings.prefer_locale_date_order {
+        loc.date_order
+    } else {
+        DateOrder::MDY
+    };
+
     match free_nums.as_slice() {
         [] => {}
         [(n, len)] => {
@@ -437,9 +494,15 @@ fn try_parse_in_locale(
                         month = Some(*n1);
                         day = Some(*n2);
                     }
+                    DateOrder::MDY if settings.strict_date_order == StrictDateOrder::All => {
+                        return None;
+                    }
                     _ if (1..=31).contains(n1) && (1..=12).contains(n2) => {
                         day = Some(*n1);
                         month = Some(*n2);
+                    }
+                    _ if settings.strict_date_order == StrictDateOrder::All => {
+                        return None;
                     }
                     _ if (1..=12).contains(n1) && (1..=31).contains(n2) => {
                         month = Some(*n1);
@@ -454,7 +517,6 @@ fn try_parse_in_locale(
         _ => return None,
     }
 
-    // Weekday-only (e.g., "Monday", "Pazartesi", "Friday at 15:00")
     if year.is_none() && month.is_none() && day.is_none() {
         let wd = weekday_seen?;
         if settings.strict_parsing
@@ -486,16 +548,23 @@ fn try_parse_in_locale(
         };
         let target_date = base.date() + chrono::Duration::days(diff);
         let nt = time.unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+        let mut p = vec!["year", "month", "day"];
+        if has_time {
+            p.push("time");
+        }
         return Some(AbsoluteMatch {
             naive: target_date.and_time(nt),
             period: Period::Day,
             locale: loc.code.clone(),
             has_time,
+            parts: p,
+            part_of_day,
         });
     }
 
     let base = settings.effective_base();
-    let (y, m, d, period) = complete_partial_date(year, month, day, base, settings)?;
+    let (y, m, d, period, parts) =
+        complete_partial_date(year, month, day, has_time, base, settings)?;
     let nd = NaiveDate::from_ymd_opt(y, m, d)?;
     let nt = time.unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
 
@@ -504,6 +573,8 @@ fn try_parse_in_locale(
         period,
         locale: loc.code.clone(),
         has_time,
+        parts,
+        part_of_day,
     })
 }
 
@@ -511,9 +582,10 @@ fn complete_partial_date(
     year: Option<i32>,
     month: Option<u32>,
     day: Option<u32>,
+    has_time: bool,
     base: NaiveDateTime,
     settings: &Settings,
-) -> Option<(i32, u32, u32, Period)> {
+) -> Option<(i32, u32, u32, Period, Vec<&'static str>)> {
     if settings.strict_parsing && (year.is_none() || month.is_none() || day.is_none()) {
         return None;
     }
@@ -534,6 +606,20 @@ fn complete_partial_date(
     } else {
         Period::Year
     };
+
+    let mut parts = Vec::with_capacity(4);
+    if year.is_some() {
+        parts.push("year");
+    }
+    if month.is_some() {
+        parts.push("month");
+    }
+    if day.is_some() {
+        parts.push("day");
+    }
+    if has_time {
+        parts.push("time");
+    }
 
     let m = month.unwrap_or_else(|| match settings.prefer_month_of_year {
         PreferMonthOfYear::First => 1,
@@ -561,11 +647,9 @@ fn complete_partial_date(
     }
 
     let final_d = d.min(days_in_month(y, m));
-    Some((y, m, final_d, period))
+    Some((y, m, final_d, period, parts))
 }
 
-/// Split tokens on whitespace, comma, and slash; split on `-` ONLY if the chunk
-/// is not itself a known hyphenated month/weekday in `loc` (e.g. `s-ɔ`, `j-guer`, `1-р`).
 fn split_date_tokens<'a>(s: &'a str, loc: &CompiledLocale, normalize: bool) -> Vec<&'a str> {
     let mut out = Vec::with_capacity(8);
     for chunk in s.split(|c: char| c.is_whitespace() || c == ',' || c == '/') {

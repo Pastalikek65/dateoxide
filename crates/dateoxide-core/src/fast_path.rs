@@ -1,5 +1,5 @@
-use crate::settings::{DateOrder, DatePart, ParserKind, Period, Settings};
-use crate::timezone::{extract_trailing_timezone, TzSpec};
+use crate::settings::{DateOrder, DatePart, ParserKind, Period, Settings, StrictDateOrder};
+use crate::timezone::{extract_trailing_timezone_with_abbrevs, TzSpec};
 use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime};
 
 #[derive(Debug, Clone)]
@@ -8,6 +8,7 @@ pub struct FastPathMatch {
     pub tz: Option<TzSpec>,
     pub period: Period,
     pub has_time: bool,
+    pub parts: Vec<&'static str>,
 }
 
 /// Try explicit user-provided strptime formats (`date_formats`).
@@ -27,6 +28,7 @@ pub fn try_custom_formats(input: &str, settings: &Settings) -> Option<FastPathMa
                 tz: Some(TzSpec::Fixed(*dt.offset())),
                 period: Period::Day,
                 has_time: true,
+                parts: vec!["year", "month", "day", "time"],
             });
         }
         if let Ok(ndt) = NaiveDateTime::parse_from_str(s, fmt) {
@@ -35,6 +37,7 @@ pub fn try_custom_formats(input: &str, settings: &Settings) -> Option<FastPathMa
                 tz: None,
                 period: Period::Day,
                 has_time: true,
+                parts: vec!["year", "month", "day", "time"],
             });
         }
         if let Ok(nd) = NaiveDate::parse_from_str(s, fmt) {
@@ -43,6 +46,7 @@ pub fn try_custom_formats(input: &str, settings: &Settings) -> Option<FastPathMa
                 tz: None,
                 period: Period::Day,
                 has_time: false,
+                parts: vec!["year", "month", "day"],
             });
         }
     }
@@ -68,6 +72,7 @@ pub fn try_fast_path(input: &str, settings: &Settings) -> Option<FastPathMatch> 
                 tz: Some(TzSpec::Fixed(*dt.offset())),
                 period: Period::Day,
                 has_time: true,
+                parts: vec!["year", "month", "day", "time"],
             });
         }
     }
@@ -84,12 +89,13 @@ pub fn try_fast_path(input: &str, settings: &Settings) -> Option<FastPathMatch> 
                 tz: Some(TzSpec::Fixed(*dt.offset())),
                 period: Period::Day,
                 has_time: true,
+                parts: vec!["year", "month", "day", "time"],
             });
         }
     }
 
-    // Peel off optional trailing timezone before numeric checks
-    let (core, tz) = extract_trailing_timezone(s);
+    // Peel off optional trailing timezone (including custom abbreviations) before numeric checks
+    let (core, tz) = extract_trailing_timezone_with_abbrevs(s, &settings.timezone_abbreviations);
     if core.is_empty() {
         return None;
     }
@@ -162,6 +168,7 @@ fn try_compact_iso_datetime(core: &str, tz: Option<TzSpec>) -> Option<FastPathMa
         tz,
         period: Period::Day,
         has_time: true,
+        parts: vec!["year", "month", "day", "time"],
     })
 }
 
@@ -175,6 +182,7 @@ fn try_timestamp_or_compact(
             8 => {
                 if !settings.allows_parser(ParserKind::BaseFormats)
                     && !settings.allows_parser(ParserKind::NoSpacesTime)
+                    && !settings.allows_parser(ParserKind::AbsoluteTime)
                 {
                     return None;
                 }
@@ -188,6 +196,7 @@ fn try_timestamp_or_compact(
                             tz,
                             period: Period::Day,
                             has_time: false,
+                            parts: vec!["year", "month", "day"],
                         });
                     }
                 }
@@ -204,6 +213,7 @@ fn try_timestamp_or_compact(
                     tz: tz.or_else(|| FixedOffset::east_opt(0).map(TzSpec::Fixed)),
                     period: Period::Day,
                     has_time: true,
+                    parts: vec!["year", "month", "day", "time"],
                 })
             }
             13 => {
@@ -217,6 +227,7 @@ fn try_timestamp_or_compact(
                     tz: tz.or_else(|| FixedOffset::east_opt(0).map(TzSpec::Fixed)),
                     period: Period::Day,
                     has_time: true,
+                    parts: vec!["year", "month", "day", "time"],
                 })
             }
             _ => None,
@@ -244,6 +255,7 @@ fn try_timestamp_or_compact(
                 tz: tz.or_else(|| FixedOffset::east_opt(0).map(TzSpec::Fixed)),
                 period: Period::Day,
                 has_time: true,
+                parts: vec!["year", "month", "day", "time"],
             });
         }
         None
@@ -255,7 +267,6 @@ fn try_numeric_datetime(
     tz: Option<TzSpec>,
     settings: &Settings,
 ) -> Option<FastPathMatch> {
-    // Check pure standalone time first (e.g. "14:30", "5:30p.m.", "5:30 pm", "09h15", "5pm")
     if !core.contains(['-', '/']) {
         let lower = core.to_ascii_lowercase();
         let looks_like_time = core.contains(':')
@@ -283,12 +294,12 @@ fn try_numeric_datetime(
                     tz,
                     period: Period::Day,
                     has_time: true,
+                    parts: vec!["time"],
                 });
             }
         }
     }
 
-    // Split date and optional time at 'T', 't', or first whitespace
     let (date_part, time_part) = if let Some(idx) = core.find(['T', 't', ' ']) {
         let (d, rest) = core.split_at(idx);
         let t = rest[1..].trim();
@@ -297,7 +308,6 @@ fn try_numeric_datetime(
         (core, None)
     };
 
-    // Parse delimited numeric date: YYYY-MM-DD, DD.MM.YYYY, MM/DD/YYYY, YYYY-MM
     let sep = if date_part.contains('-') {
         '-'
     } else if date_part.contains('/') {
@@ -341,11 +351,16 @@ fn try_numeric_datetime(
         let base = settings.effective_base();
         let day = resolve_missing_day(y, m, base.day(), settings.prefer_day_of_month);
         let nd = NaiveDate::from_ymd_opt(y, m, day)?;
+        let mut p = vec!["year", "month"];
+        if has_time {
+            p.push("time");
+        }
         return Some(FastPathMatch {
             naive: nd.and_time(time),
             tz,
             period: Period::Month,
             has_time,
+            parts: p,
         });
     }
 
@@ -364,12 +379,17 @@ fn try_numeric_datetime(
     };
     let order = settings.effective_date_order(fallback_order);
 
-    let nd = resolve_ymd_triplet(parts, lens, order)?;
+    let nd = resolve_ymd_triplet(parts, lens, order, settings.strict_date_order)?;
+    let mut p = vec!["year", "month", "day"];
+    if has_time {
+        p.push("time");
+    }
     Some(FastPathMatch {
         naive: nd.and_time(time),
         tz,
         period: Period::Day,
         has_time,
+        parts: p,
     })
 }
 
@@ -383,16 +403,27 @@ pub fn expand_two_digit_year(y: u32) -> i32 {
     }
 }
 
-fn resolve_ymd_triplet(parts: [u32; 3], lens: [usize; 3], order: DateOrder) -> Option<NaiveDate> {
+fn resolve_ymd_triplet(
+    parts: [u32; 3],
+    lens: [usize; 3],
+    order: DateOrder,
+    strict: StrictDateOrder,
+) -> Option<NaiveDate> {
     if lens[0] == 4 {
         let y = parts[0] as i32;
         if order == DateOrder::YDM {
             if let Some(d) = NaiveDate::from_ymd_opt(y, parts[2], parts[1]) {
                 return Some(d);
             }
+            if strict == StrictDateOrder::All {
+                return None;
+            }
         }
         if let Some(d) = NaiveDate::from_ymd_opt(y, parts[1], parts[2]) {
             return Some(d);
+        }
+        if strict == StrictDateOrder::All {
+            return None;
         }
         return NaiveDate::from_ymd_opt(y, parts[2], parts[1]);
     }
@@ -400,10 +431,24 @@ fn resolve_ymd_triplet(parts: [u32; 3], lens: [usize; 3], order: DateOrder) -> O
     if lens[2] == 4 {
         let y = parts[2] as i32;
         return match order {
-            DateOrder::MDY => NaiveDate::from_ymd_opt(y, parts[0], parts[1])
-                .or_else(|| NaiveDate::from_ymd_opt(y, parts[1], parts[0])),
-            _ => NaiveDate::from_ymd_opt(y, parts[1], parts[0])
-                .or_else(|| NaiveDate::from_ymd_opt(y, parts[0], parts[1])),
+            DateOrder::MDY => {
+                if let Some(d) = NaiveDate::from_ymd_opt(y, parts[0], parts[1]) {
+                    Some(d)
+                } else if strict == StrictDateOrder::All {
+                    None
+                } else {
+                    NaiveDate::from_ymd_opt(y, parts[1], parts[0])
+                }
+            }
+            _ => {
+                if let Some(d) = NaiveDate::from_ymd_opt(y, parts[1], parts[0]) {
+                    Some(d)
+                } else if strict == StrictDateOrder::All {
+                    None
+                } else {
+                    NaiveDate::from_ymd_opt(y, parts[0], parts[1])
+                }
+            }
         };
     }
 
@@ -416,7 +461,13 @@ fn resolve_ymd_triplet(parts: [u32; 3], lens: [usize; 3], order: DateOrder) -> O
         DateOrder::DYM => (expand_two_digit_year(parts[1]), parts[2], parts[0]),
     };
 
-    NaiveDate::from_ymd_opt(y, m, d).or_else(|| NaiveDate::from_ymd_opt(y, d, m))
+    if let Some(nd) = NaiveDate::from_ymd_opt(y, m, d) {
+        return Some(nd);
+    }
+    if strict != StrictDateOrder::None {
+        return None;
+    }
+    NaiveDate::from_ymd_opt(y, d, m)
 }
 
 /// Parse time strings like "15:30", "15:30:45", "15:30:45.123456", "5:30 pm", "5:30p.m.", "5pm", "14h30", "09h15".

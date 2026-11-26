@@ -1,12 +1,31 @@
 use crate::settings::{ParsedDateTime, Settings};
 use chrono::{FixedOffset, NaiveDateTime, TimeZone};
 use chrono_tz::Tz;
+use rustc_hash::FxHashMap;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TzSpec {
     Fixed(FixedOffset),
     Iana(Tz),
+}
+
+/// Resolve a timezone name, abbreviation, or numeric offset checking custom overrides first.
+pub fn parse_tz_spec_with_abbrevs(
+    s: &str,
+    custom: &FxHashMap<String, String>,
+) -> Option<TzSpec> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if !custom.is_empty() {
+        let upper = trimmed.to_ascii_uppercase();
+        if let Some(mapped) = custom.get(&upper).or_else(|| custom.get(trimmed)) {
+            return parse_tz_spec(mapped);
+        }
+    }
+    parse_tz_spec(trimmed)
 }
 
 /// Resolve a timezone name, abbreviation, or numeric offset (e.g. "UTC", "Europe/Istanbul", "+03:00", "EST").
@@ -122,8 +141,17 @@ pub fn parse_numeric_offset(s: &str) -> Option<FixedOffset> {
     FixedOffset::east_opt(sign * (h * 3600 + m * 60))
 }
 
-/// Peel off a trailing timezone token from a date string (e.g. `"2026-11-26 15:00 EST"` -> `("2026-11-26 15:00", Some(EST))`).
 pub fn extract_trailing_timezone(input: &str) -> (&str, Option<TzSpec>) {
+    static EMPTY: std::sync::OnceLock<FxHashMap<String, String>> = std::sync::OnceLock::new();
+    let empty = EMPTY.get_or_init(FxHashMap::default);
+    extract_trailing_timezone_with_abbrevs(input, empty)
+}
+
+/// Peel off a trailing timezone token from a date string, honoring custom abbreviations.
+pub fn extract_trailing_timezone_with_abbrevs<'a>(
+    input: &'a str,
+    custom: &FxHashMap<String, String>,
+) -> (&'a str, Option<TzSpec>) {
     let s = input.trim();
     if s.is_empty() {
         return (s, None);
@@ -133,7 +161,7 @@ pub fn extract_trailing_timezone(input: &str) -> (&str, Option<TzSpec>) {
     if s.ends_with(')') {
         if let Some(open) = s.rfind('(') {
             let inside = &s[open + 1..s.len() - 1];
-            if let Some(tz) = parse_tz_spec(inside) {
+            if let Some(tz) = parse_tz_spec_with_abbrevs(inside, custom) {
                 let prefix = s[..open].trim_end();
                 if !prefix.is_empty() {
                     return (prefix, Some(tz));
@@ -156,7 +184,6 @@ pub fn extract_trailing_timezone(input: &str) -> (&str, Option<TzSpec>) {
             let cand = &s[pos..];
             if cand.len() >= 3 && cand.len() <= 6 {
                 let before = s.as_bytes()[pos - 1];
-                // Make sure this isn't a date separator like "2026-11-26"
                 if (before.is_ascii_digit() && s[..pos].contains(':')) || before.is_ascii_whitespace()
                 {
                     if let Some(off) = parse_numeric_offset(cand) {
@@ -170,18 +197,20 @@ pub fn extract_trailing_timezone(input: &str) -> (&str, Option<TzSpec>) {
         }
     }
 
-    // Handle whitespace-separated trailing token: "EST", "UTC+3", "Europe/Istanbul"
+    // Handle whitespace-separated trailing token: "EST", "UTC+3", "Europe/Istanbul", or custom abbrev
     if let Some(sp) = s.rfind(|c: char| c.is_whitespace()) {
         let last = &s[sp + 1..];
-        // Avoid misinterpreting 1-letter tokens or lowercase words like "est" (French/Latin) unless uppercase or contains '/' or '+'/'-'
-        let looks_like_tz = last.contains('/')
+        let upper = last.to_ascii_uppercase();
+        let is_custom = !custom.is_empty() && (custom.contains_key(&upper) || custom.contains_key(last));
+        let looks_like_tz = is_custom
+            || last.contains('/')
             || last.contains('+')
             || last.contains('-')
             || last.eq_ignore_ascii_case("utc")
             || last.eq_ignore_ascii_case("gmt")
             || (last.len() >= 3 && last.len() <= 5 && last.chars().all(|c| c.is_ascii_uppercase()));
         if looks_like_tz {
-            if let Some(tz) = parse_tz_spec(last) {
+            if let Some(tz) = parse_tz_spec_with_abbrevs(last, custom) {
                 let prefix = s[..sp].trim_end();
                 if !prefix.is_empty() {
                     return (prefix, Some(tz));
@@ -193,6 +222,18 @@ pub fn extract_trailing_timezone(input: &str) -> (&str, Option<TzSpec>) {
     (s, None)
 }
 
+/// Equivalent of `dateparser.timezone_parser.pop_tz_offset_from_string`.
+pub fn pop_tz_offset_from_string(
+    input: &str,
+    custom: Option<&FxHashMap<String, String>>,
+) -> (String, Option<TzSpec>) {
+    let (cleaned, tz) = match custom {
+        Some(map) => extract_trailing_timezone_with_abbrevs(input, map),
+        None => extract_trailing_timezone(input),
+    };
+    (cleaned.to_string(), tz)
+}
+
 /// Apply parsed timezone + Settings (`TIMEZONE`, `TO_TIMEZONE`, `RETURN_AS_TIMEZONE_AWARE`)
 /// to produce the final `ParsedDateTime`.
 pub fn finalize_datetime(
@@ -200,26 +241,23 @@ pub fn finalize_datetime(
     extracted_tz: Option<TzSpec>,
     settings: &Settings,
 ) -> ParsedDateTime {
-    // Determine source timezone
     let source_tz = extracted_tz.or_else(|| {
         settings
             .timezone
             .as_deref()
-            .and_then(parse_tz_spec)
+            .and_then(|t| parse_tz_spec_with_abbrevs(t, &settings.timezone_abbreviations))
     });
 
-    // Determine target timezone conversion
     let target_tz = settings
         .to_timezone
         .as_deref()
-        .and_then(parse_tz_spec);
+        .and_then(|t| parse_tz_spec_with_abbrevs(t, &settings.timezone_abbreviations));
 
     let want_aware = match settings.return_as_timezone_aware {
         Some(flag) => flag,
         None => extracted_tz.is_some(),
     };
 
-    // Convert to UTC if we need timezone conversion
     if let Some(tgt) = target_tz {
         let utc_dt = match source_tz {
             Some(TzSpec::Fixed(off)) => off

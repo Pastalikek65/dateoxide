@@ -1,5 +1,6 @@
-use chrono::{DateTime, FixedOffset, NaiveDateTime};
+use chrono::{DateTime, FixedOffset, NaiveDateTime, NaiveTime};
 use chrono_tz::Tz;
+use rustc_hash::FxHashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DateOrder {
@@ -20,6 +21,25 @@ impl DateOrder {
             "YDM" => Some(Self::YDM),
             "MYD" => Some(Self::MYD),
             "DYM" => Some(Self::DYM),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StrictDateOrder {
+    #[default]
+    None,
+    Year,
+    All,
+}
+
+impl StrictDateOrder {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "year" => Some(Self::Year),
+            "all" => Some(Self::All),
             _ => None,
         }
     }
@@ -104,6 +124,7 @@ impl DatePart {
 pub enum Period {
     #[default]
     Day,
+    Week,
     Month,
     Year,
     Time,
@@ -113,9 +134,93 @@ impl Period {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Day => "day",
+            Self::Week => "week",
             Self::Month => "month",
             Self::Year => "year",
             Self::Time => "time",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartOfDay {
+    EarlyMorning,
+    Morning,
+    Afternoon,
+    Evening,
+    Night,
+}
+
+impl PartOfDay {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::EarlyMorning => "early_morning",
+            Self::Morning => "morning",
+            Self::Afternoon => "afternoon",
+            Self::Evening => "evening",
+            Self::Night => "night",
+        }
+    }
+
+    pub fn from_hour(hour: u8) -> Option<Self> {
+        match hour {
+            0..=6 => Some(Self::EarlyMorning),
+            7..=11 => Some(Self::Morning),
+            12..=16 => Some(Self::Afternoon),
+            17..=19 => Some(Self::Evening),
+            20..=23 => Some(Self::Night),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartsOfDay {
+    pub early_morning: NaiveTime,
+    pub morning: NaiveTime,
+    pub afternoon: NaiveTime,
+    pub evening: NaiveTime,
+    pub night: NaiveTime,
+}
+
+impl Default for PartsOfDay {
+    fn default() -> Self {
+        Self {
+            early_morning: NaiveTime::from_hms_opt(3, 0, 0).unwrap(),
+            morning: NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            afternoon: NaiveTime::from_hms_opt(15, 0, 0).unwrap(),
+            evening: NaiveTime::from_hms_opt(18, 0, 0).unwrap(),
+            night: NaiveTime::from_hms_opt(20, 0, 0).unwrap(),
+        }
+    }
+}
+
+impl PartsOfDay {
+    #[inline]
+    pub fn time_for(&self, p: PartOfDay) -> NaiveTime {
+        match p {
+            PartOfDay::EarlyMorning => self.early_morning,
+            PartOfDay::Morning => self.morning,
+            PartOfDay::Afternoon => self.afternoon,
+            PartOfDay::Evening => self.evening,
+            PartOfDay::Night => self.night,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StartOfWeek {
+    #[default]
+    Monday,
+    Sunday,
+}
+
+impl StartOfWeek {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "monday" => Some(Self::Monday),
+            "sunday" => Some(Self::Sunday),
+            _ => None,
         }
     }
 }
@@ -170,11 +275,27 @@ pub struct DateData {
     pub date_obj: Option<ParsedDateTime>,
     pub period: Period,
     pub locale: Option<String>,
+    pub parts: Vec<&'static str>,
+    pub part_of_day: Option<PartOfDay>,
+}
+
+impl DateData {
+    pub fn empty() -> Self {
+        Self {
+            date_obj: None,
+            period: Period::Day,
+            locale: None,
+            parts: Vec::new(),
+            part_of_day: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub date_order: Option<DateOrder>,
+    pub strict_date_order: StrictDateOrder,
+    pub prefer_locale_date_order: bool,
     pub prefer_dates_from: PreferDatesFrom,
     pub prefer_day_of_month: PreferDayOfMonth,
     pub prefer_month_of_year: PreferMonthOfYear,
@@ -183,21 +304,31 @@ pub struct Settings {
     pub timezone: Option<String>,
     pub to_timezone: Option<String>,
     pub return_as_timezone_aware: Option<bool>,
+    pub timezone_abbreviations: FxHashMap<String, String>,
     pub languages: Option<Vec<String>>,
     pub default_languages: Vec<String>,
+    pub use_given_language_order: bool,
     pub date_formats: Option<Vec<String>>,
     pub require_parts: Vec<DatePart>,
     pub normalize: bool,
     pub return_time_as_period: bool,
+    pub return_time_span: bool,
+    pub default_start_of_week: StartOfWeek,
+    pub default_days_in_month: u32,
+    pub ignore_surrounding_text: bool,
     pub skip_tokens: Vec<String>,
     pub parsers: Option<Vec<ParserKind>>,
     pub region: Option<String>,
+    pub parts_of_day: PartsOfDay,
+    pub cache_size_limit: usize,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             date_order: None,
+            strict_date_order: StrictDateOrder::None,
+            prefer_locale_date_order: true,
             prefer_dates_from: PreferDatesFrom::default(),
             prefer_day_of_month: PreferDayOfMonth::default(),
             prefer_month_of_year: PreferMonthOfYear::default(),
@@ -206,15 +337,23 @@ impl Default for Settings {
             timezone: None,
             to_timezone: None,
             return_as_timezone_aware: None,
+            timezone_abbreviations: FxHashMap::default(),
             languages: None,
             default_languages: Vec::new(),
+            use_given_language_order: false,
             date_formats: None,
             require_parts: Vec::new(),
             normalize: true,
             return_time_as_period: false,
+            return_time_span: false,
+            default_start_of_week: StartOfWeek::Monday,
+            default_days_in_month: 30,
+            ignore_surrounding_text: false,
             skip_tokens: Vec::new(),
             parsers: None,
             region: None,
+            parts_of_day: PartsOfDay::default(),
+            cache_size_limit: 1000,
         }
     }
 }

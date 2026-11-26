@@ -2,7 +2,7 @@ use crate::fast_path::{days_in_month, parse_time_str};
 use crate::locale::{
     fold_diacritics, CompiledLocale, LocaleRegistry, RelativeAffix, RelativeSpec, TimeUnit,
 };
-use crate::settings::{Period, PreferDatesFrom, Settings};
+use crate::settings::{PartOfDay, Period, PreferDatesFrom, Settings};
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime};
 
 #[derive(Debug, Clone)]
@@ -11,6 +11,8 @@ pub struct RelativeMatch {
     pub period: Period,
     pub locale: String,
     pub has_time: bool,
+    pub parts: Vec<&'static str>,
+    pub part_of_day: Option<PartOfDay>,
 }
 
 /// Calendar-accurate offset addition (matches dateutil.relativedelta semantics for months/years).
@@ -67,7 +69,33 @@ fn period_for_unit(unit: TimeUnit) -> Period {
     match unit {
         TimeUnit::Year | TimeUnit::Decade | TimeUnit::Century => Period::Year,
         TimeUnit::Month => Period::Month,
+        TimeUnit::Week => Period::Week,
         _ => Period::Day,
+    }
+}
+
+fn parts_for_relative(has_time: bool, unit: Option<TimeUnit>) -> Vec<&'static str> {
+    let time_unit = matches!(
+        unit,
+        Some(TimeUnit::Hour | TimeUnit::Minute | TimeUnit::Second)
+    );
+    if has_time || time_unit {
+        vec!["year", "month", "day", "time"]
+    } else {
+        vec!["year", "month", "day"]
+    }
+}
+
+fn time_for_hour_anchor(hour: u8, settings: &Settings) -> (NaiveTime, Option<PartOfDay>) {
+    match hour {
+        3 | 6 => (settings.parts_of_day.time_for(PartOfDay::EarlyMorning), Some(PartOfDay::EarlyMorning)),
+        9 => (settings.parts_of_day.time_for(PartOfDay::Morning), Some(PartOfDay::Morning)),
+        15 => (settings.parts_of_day.time_for(PartOfDay::Afternoon), Some(PartOfDay::Afternoon)),
+        18 => (settings.parts_of_day.time_for(PartOfDay::Evening), Some(PartOfDay::Evening)),
+        20 => (settings.parts_of_day.time_for(PartOfDay::Night), Some(PartOfDay::Night)),
+        12 => (NaiveTime::from_hms_opt(12, 0, 0).unwrap(), None),
+        0 => (NaiveTime::from_hms_opt(0, 0, 0).unwrap(), None),
+        h => (NaiveTime::from_hms_opt(h as u32, 0, 0).unwrap(), None),
     }
 }
 
@@ -126,7 +154,7 @@ pub fn try_parse_relative(
     };
 
     // 0. Special compound day + time-of-day idioms ("tonight", "last night", "this evening", "dün gece", "bu akşam", etc.)
-    if let Some(m) = try_compound_tod_idiom(normalized, &folded_full, candidate_ids, registry, base, settings.normalize) {
+    if let Some(m) = try_compound_tod_idiom(normalized, &folded_full, candidate_ids, registry, base, settings) {
         return Some(m);
     }
 
@@ -153,6 +181,8 @@ pub fn try_parse_relative(
                 period: period_for_unit(chosen.unit),
                 locale: registry.locales[chosen_lid].code.clone(),
                 has_time: false,
+                parts: parts_for_relative(false, Some(chosen.unit)),
+                part_of_day: None,
             });
         }
     }
@@ -180,12 +210,14 @@ pub fn try_parse_relative(
                     period: period_for_unit(chosen.unit),
                     locale: registry.locales[chosen_lid].code.clone(),
                     has_time: false,
+                    parts: parts_for_relative(false, Some(chosen.unit)),
+                    part_of_day: None,
                 });
             }
         }
     }
 
-    // 2. Peel off optional explicit time component ("yesterday at 5pm", "hier à 14h30", "dün saat 15:30", "dun saat 14:30")
+    // 2. Peel off optional explicit time component
     let (phrase_no_time, extracted_time) = extract_trailing_or_leading_time(normalized);
 
     for &lid in candidate_ids {
@@ -201,18 +233,22 @@ pub fn try_parse_relative(
                     period: Period::Day,
                     locale: loc.code.clone(),
                     has_time: true,
+                    parts: vec!["year", "month", "day", "time"],
+                    part_of_day: None,
                 });
             }
         }
 
-        // 2b. <relative_exact> [connector] <time_of_day> ("yesterday at noon", "tomorrow at midnight", "today morning", "dün akşam")
+        // 2b. <relative_exact> [connector] <time_of_day> ("yesterday at noon", "yesterday morning", "dün akşam")
         if extracted_time.is_none() {
-            if let Some((dt, has_t)) = try_relative_plus_tod(normalized, loc, base, settings) {
+            if let Some((dt, pod)) = try_relative_plus_tod(normalized, loc, base, settings) {
                 return Some(RelativeMatch {
                     naive: dt,
                     period: Period::Day,
                     locale: loc.code.clone(),
-                    has_time: has_t,
+                    has_time: true,
+                    parts: vec!["year", "month", "day", "time"],
+                    part_of_day: pod,
                 });
             }
         }
@@ -229,37 +265,76 @@ pub fn try_parse_relative(
             if let Some(t) = extracted_time {
                 dt = dt.date().and_time(t);
             }
+            let has_t = extracted_time.is_some();
             return Some(RelativeMatch {
                 naive: dt,
-                period: period_for_unit(unit),
+                period: if has_t { Period::Day } else { period_for_unit(unit) },
                 locale: loc.code.clone(),
-                has_time: extracted_time.is_some(),
+                has_time: has_t,
+                parts: parts_for_relative(has_t, Some(unit)),
+                part_of_day: None,
             });
         }
 
         // 2d. Compound & word-number relative expressions ("2 ay 3 gün önce", "5 dk önce", "1 year, 2 months, 3 days ago")
-        if let Some((mut dt, period)) = try_compound_relative(target_str, loc, base, settings.normalize) {
+        if let Some((mut dt, period, has_time_unit)) =
+            try_compound_relative(target_str, loc, base, settings.normalize)
+        {
             if let Some(t) = extracted_time {
                 dt = dt.date().and_time(t);
             }
+            let has_t = extracted_time.is_some();
             return Some(RelativeMatch {
                 naive: dt,
-                period,
+                period: if has_t { Period::Day } else { period },
                 locale: loc.code.clone(),
-                has_time: extracted_time.is_some(),
+                has_time: has_t,
+                parts: if has_t || has_time_unit {
+                    vec!["year", "month", "day", "time"]
+                } else {
+                    vec!["year", "month", "day"]
+                },
+                part_of_day: None,
             });
         }
 
-        // 2e. Relative period/weekday expressions: "last Monday", "geçen hafta", "gecen hafta", "gelecek ay"
-        if let Some(mut dt) = try_relative_period_or_weekday(target_str, loc, base, settings.normalize) {
+        // 2e. Bare relative duration ("2 days", "3 hours", "1 week", "2 gün") without explicit ago/in
+        if let Some((mut dt, period, has_time_unit)) =
+            try_bare_duration_relative(target_str, loc, base, settings)
+        {
             if let Some(t) = extracted_time {
                 dt = dt.date().and_time(t);
             }
+            let has_t = extracted_time.is_some();
             return Some(RelativeMatch {
                 naive: dt,
-                period: Period::Day,
+                period: if has_t { Period::Day } else { period },
                 locale: loc.code.clone(),
-                has_time: extracted_time.is_some(),
+                has_time: has_t,
+                parts: if has_t || has_time_unit {
+                    vec!["year", "month", "day", "time"]
+                } else {
+                    vec!["year", "month", "day"]
+                },
+                part_of_day: None,
+            });
+        }
+
+        // 2f. Relative period/weekday expressions: "last Monday", "geçen hafta", "gelecek ay"
+        if let Some((mut dt, period)) =
+            try_relative_period_or_weekday(target_str, loc, base, settings.normalize)
+        {
+            if let Some(t) = extracted_time {
+                dt = dt.date().and_time(t);
+            }
+            let has_t = extracted_time.is_some();
+            return Some(RelativeMatch {
+                naive: dt,
+                period: if has_t { Period::Day } else { period },
+                locale: loc.code.clone(),
+                has_time: has_t,
+                parts: parts_for_relative(has_t, None),
+                part_of_day: None,
             });
         }
     }
@@ -273,10 +348,10 @@ fn try_compound_tod_idiom(
     candidate_ids: &[usize],
     registry: &LocaleRegistry,
     base: NaiveDateTime,
-    normalize: bool,
+    settings: &Settings,
 ) -> Option<RelativeMatch> {
-    let check = if normalize { folded } else { normalized };
-    let (day_offset, hour, lang_code): (i64, u32, &str) = match check {
+    let check = if settings.normalize { folded } else { normalized };
+    let (day_offset, hour, lang_code): (i64, u8, &str) = match check {
         "tonight" | "this night" => (0, 20, "en"),
         "last night" => (-1, 20, "en"),
         "this morning" | "today morning" => (0, 9, "en"),
@@ -319,12 +394,14 @@ fn try_compound_tod_idiom(
     }
 
     let target_date = (base + Duration::days(day_offset)).date();
-    let nt = NaiveTime::from_hms_opt(hour, 0, 0)?;
+    let (nt, pod) = time_for_hour_anchor(hour, settings);
     Some(RelativeMatch {
         naive: target_date.and_time(nt),
         period: Period::Day,
         locale: lang_code.to_string(),
         has_time: true,
+        parts: vec!["year", "month", "day", "time"],
+        part_of_day: pod,
     })
 }
 
@@ -365,11 +442,11 @@ fn try_relative_plus_tod(
     loc: &CompiledLocale,
     base: NaiveDateTime,
     settings: &Settings,
-) -> Option<(NaiveDateTime, bool)> {
+) -> Option<(NaiveDateTime, Option<PartOfDay>)> {
     let (prefix_raw, hour) = split_tod_hour(normalized, loc, settings.normalize)?;
-    let nt = NaiveTime::from_hms_opt(hour as u32, 0, 0)?;
+    let (nt, pod) = time_for_hour_anchor(hour, settings);
     if prefix_raw.is_empty() {
-        return Some((base.date().and_time(nt), true));
+        return Some((base.date().and_time(nt), pod));
     }
 
     let cleaned = strip_connector_words(prefix_raw, loc);
@@ -380,7 +457,7 @@ fn try_relative_plus_tod(
         settings.prefer_dates_from,
     ) {
         let dt = apply_relative_offset(base, spec.sign, spec.amount as f64, spec.unit)?;
-        return Some((dt.date().and_time(nt), true));
+        return Some((dt.date().and_time(nt), pod));
     }
 
     None
@@ -498,14 +575,12 @@ fn replace_word_numbers_once(s: &str, loc: &CompiledLocale, normalize: bool) -> 
     }
 }
 
-/// Parses compound relative expressions like "1 year, 2 months, 3 days ago",
-/// "2 ay 3 gün önce", "5 dk önce", "3d ago", "3 gun once", "a week ago", "two days ago".
 fn try_compound_relative(
     s: &str,
     loc: &CompiledLocale,
     base: NaiveDateTime,
     normalize: bool,
-) -> Option<(NaiveDateTime, Period)> {
+) -> Option<(NaiveDateTime, Period, bool)> {
     let mut sign: Option<i8> = None;
     let mut rest = s.trim().to_string();
 
@@ -560,6 +635,31 @@ fn try_compound_relative(
         return None;
     }
 
+    apply_token_duration_pairs(&rest, loc, base, sign, normalize, true)
+}
+
+fn try_bare_duration_relative(
+    s: &str,
+    loc: &CompiledLocale,
+    base: NaiveDateTime,
+    settings: &Settings,
+) -> Option<(NaiveDateTime, Period, bool)> {
+    let sign = if settings.prefer_dates_from == PreferDatesFrom::Future {
+        1
+    } else {
+        -1
+    };
+    apply_token_duration_pairs(s, loc, base, sign, settings.normalize, false)
+}
+
+fn apply_token_duration_pairs(
+    rest: &str,
+    loc: &CompiledLocale,
+    base: NaiveDateTime,
+    sign: i8,
+    normalize: bool,
+    allow_single_char_attached_units: bool,
+) -> Option<(NaiveDateTime, Period, bool)> {
     let lookup_unit = |tok: &str| -> Option<TimeUnit> {
         if let Some(&u) = loc.units.get(tok) {
             return Some(u);
@@ -591,8 +691,7 @@ fn try_compound_relative(
             continue;
         }
 
-        // Attached number+unit like "3d", "2h", "15m", "30s", "2w"
-        if pending_num.is_none() {
+        if pending_num.is_none() && allow_single_char_attached_units {
             if let Some((num, unit_str)) = split_attached_num_unit(clean) {
                 if let Some(u) = lookup_unit(unit_str) {
                     pairs.push((num, u));
@@ -612,6 +711,12 @@ fn try_compound_relative(
             }
             pending_num = Some(wn as f64);
         } else if let Some(u) = lookup_unit(clean) {
+            if !allow_single_char_attached_units && pending_num.is_none() {
+                return None;
+            }
+            if !allow_single_char_attached_units && clean.chars().count() < 2 {
+                return None;
+            }
             let amt = pending_num.take().unwrap_or(1.0);
             pairs.push((amt, u));
         } else {
@@ -625,17 +730,26 @@ fn try_compound_relative(
 
     let mut dt = base;
     let mut finest_period = Period::Year;
+    let mut has_time_unit = false;
     for (amt, unit) in pairs {
+        if matches!(unit, TimeUnit::Hour | TimeUnit::Minute | TimeUnit::Second) {
+            has_time_unit = true;
+        }
         dt = apply_relative_offset(dt, sign, amt, unit)?;
         let p = period_for_unit(unit);
-        if matches!(p, Period::Day)
-            || (matches!(p, Period::Month) && matches!(finest_period, Period::Year))
-        {
+        let rank = |per: Period| match per {
+            Period::Year => 0,
+            Period::Month => 1,
+            Period::Week => 2,
+            Period::Day => 3,
+            Period::Time => 4,
+        };
+        if rank(p) > rank(finest_period) {
             finest_period = p;
         }
     }
 
-    Some((dt, finest_period))
+    Some((dt, finest_period, has_time_unit))
 }
 
 fn split_attached_num_unit(s: &str) -> Option<(f64, &str)> {
@@ -656,7 +770,7 @@ fn try_relative_period_or_weekday(
     loc: &CompiledLocale,
     base: NaiveDateTime,
     normalize: bool,
-) -> Option<NaiveDateTime> {
+) -> Option<(NaiveDateTime, Period)> {
     let fs = if normalize {
         fold_diacritics(s)
     } else {
@@ -676,7 +790,6 @@ fn try_relative_period_or_weekday(
         _ => return None,
     };
 
-    // 1. Check relative unit ("last week", "geçen hafta", "gecen hafta", "gelecek ay")
     let unit_opt = loc.units.get(target_tok).copied().or_else(|| {
         if normalize {
             loc.folded_units.get(target_tok).copied()
@@ -685,13 +798,13 @@ fn try_relative_period_or_weekday(
         }
     });
     if let Some(unit) = unit_opt {
+        let period = period_for_unit(unit);
         if dir == 0 {
-            return Some(base);
+            return Some((base, period));
         }
-        return apply_relative_offset(base, dir, 1.0, unit);
+        return apply_relative_offset(base, dir, 1.0, unit).map(|dt| (dt, period));
     }
 
-    // 2. Check relative weekday ("last Monday", "geçen pazartesi", "next Friday")
     let target_wd = loc.weekdays.get(target_tok).copied().or_else(|| {
         if normalize {
             loc.folded_weekdays.get(target_tok).copied()
@@ -719,6 +832,7 @@ fn try_relative_period_or_weekday(
     };
 
     base.checked_add_signed(Duration::days(delta_days))
+        .map(|dt| (dt, Period::Day))
 }
 
 /// Extract a trailing time from strings like "yesterday at 5pm", "hier à 14h30", "dün saat 15:30".
@@ -728,7 +842,6 @@ pub fn extract_trailing_or_leading_time(s: &str) -> (&str, Option<NaiveTime>) {
         return (s, None);
     }
 
-    // Check last 2 tokens for "5 pm" / "5:30 pm"
     if tokens.len() >= 3 {
         let last2 = format!("{} {}", tokens[tokens.len() - 2], tokens[tokens.len() - 1]);
         if let Some(t) = parse_time_str(&last2) {
@@ -739,9 +852,14 @@ pub fn extract_trailing_or_leading_time(s: &str) -> (&str, Option<NaiveTime>) {
         }
     }
 
-    // Check last 1 token for "14:30", "14h30", "5pm", "5:30p.m."
     let last = tokens[tokens.len() - 1];
-    if last.contains(':') || last.contains('h') || last.ends_with("am") || last.ends_with("pm") || last.ends_with("a.m.") || last.ends_with("p.m.") {
+    if last.contains(':')
+        || last.contains('h')
+        || last.ends_with("am")
+        || last.ends_with("pm")
+        || last.ends_with("a.m.")
+        || last.ends_with("p.m.")
+    {
         if let Some(t) = parse_time_str(last) {
             let cut = s.len() - last.len();
             return (s[..cut].trim_end(), Some(t));

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time, tzinfo
 from typing import Any, Callable, Literal, Mapping, Sequence, overload
+
+from .conf import PartOfDay, PartsOfDay, SettingValidationError, Settings, apply_settings
 
 __version__: str
 
@@ -9,6 +11,17 @@ class DateData:
     date_obj: datetime | None
     period: str
     locale: str | None
+    parts: tuple[str, ...]
+    part_of_day: PartOfDay | None
+    def __init__(
+        self,
+        *,
+        date_obj: datetime | None = None,
+        period: str | None = None,
+        locale: str | None = None,
+        parts: Sequence[str] = (),
+        part_of_day: PartOfDay | None = None,
+    ) -> None: ...
     def __getitem__(self, key: str) -> Any: ...
     def get(self, key: str, default: Any = None) -> Any: ...
 
@@ -20,14 +33,19 @@ class DateDataParser:
         region: str | None = None,
         try_previous_locales: bool = False,
         use_given_order: bool = False,
-        settings: Mapping[str, Any] | None = None,
-        detect_languages_function: Callable[..., Any] | None = None,
+        settings: Settings | Mapping[str, Any] | None = None,
+        detect_languages_function: Callable[..., Sequence[str]] | None = None,
     ) -> None: ...
     def get_date_data(
         self,
         date_string: str,
         date_formats: Sequence[str] | None = None,
     ) -> DateData: ...
+    def get_date_tuple(
+        self,
+        date_string: str,
+        date_formats: Sequence[str] | None = None,
+    ) -> tuple[datetime | None, str, str | None]: ...
     def parse(
         self,
         date_string: str,
@@ -41,8 +59,8 @@ def parse(
     languages: Sequence[str] | None = None,
     locales: Sequence[str] | None = None,
     region: str | None = None,
-    settings: Mapping[str, Any] | None = None,
-    detect_languages_function: Callable[..., Any] | None = None,
+    settings: Settings | Mapping[str, Any] | None = None,
+    detect_languages_function: Callable[..., Sequence[str]] | None = None,
 ) -> datetime | None: ...
 
 def parse_batch(
@@ -51,30 +69,66 @@ def parse_batch(
     languages: Sequence[str] | None = None,
     locales: Sequence[str] | None = None,
     region: str | None = None,
-    settings: Mapping[str, Any] | None = None,
+    settings: Settings | Mapping[str, Any] | None = None,
 ) -> list[datetime | None]: ...
 
 @overload
 def search_dates(
     text: str,
     languages: Sequence[str] | None = None,
-    settings: Mapping[str, Any] | None = None,
+    settings: Settings | Mapping[str, Any] | None = None,
     add_detected_language: Literal[False] = False,
+    detect_languages_function: Callable[..., Sequence[str]] | None = None,
+    strategy: str = "split",
+    date_formats: Sequence[str] | None = None,
+    add_period: Literal[False] = False,
 ) -> list[tuple[str, datetime]] | None: ...
 
 @overload
 def search_dates(
     text: str,
     languages: Sequence[str] | None = None,
-    settings: Mapping[str, Any] | None = None,
+    settings: Settings | Mapping[str, Any] | None = None,
     add_detected_language: Literal[True] = ...,
+    detect_languages_function: Callable[..., Sequence[str]] | None = None,
+    strategy: str = "split",
+    date_formats: Sequence[str] | None = None,
+    add_period: Literal[False] = False,
 ) -> list[tuple[str, datetime, str | None]] | None: ...
+
+@overload
+def search_dates(
+    text: str,
+    languages: Sequence[str] | None = None,
+    settings: Settings | Mapping[str, Any] | None = None,
+    add_detected_language: Literal[False] = False,
+    detect_languages_function: Callable[..., Sequence[str]] | None = None,
+    strategy: str = "split",
+    date_formats: Sequence[str] | None = None,
+    add_period: Literal[True] = ...,
+) -> list[tuple[str, datetime, str]] | None: ...
+
+@overload
+def search_dates(
+    text: str,
+    languages: Sequence[str] | None = None,
+    settings: Settings | Mapping[str, Any] | None = None,
+    add_detected_language: Literal[True] = ...,
+    detect_languages_function: Callable[..., Sequence[str]] | None = None,
+    strategy: str = "split",
+    date_formats: Sequence[str] | None = None,
+    add_period: Literal[True] = ...,
+) -> list[tuple[str, datetime, str, str | None]] | None: ...
 
 def search_dates(
     text: str,
     languages: Sequence[str] | None = None,
-    settings: Mapping[str, Any] | None = None,
+    settings: Settings | Mapping[str, Any] | None = None,
     add_detected_language: bool = False,
-) -> list[tuple[str, datetime]] | list[tuple[str, datetime, str | None]] | None: ...
+    detect_languages_function: Callable[..., Sequence[str]] | None = None,
+    strategy: str = "split",
+    date_formats: Sequence[str] | None = None,
+    add_period: bool = False,
+) -> list[Any] | None: ...
 
 def supported_languages() -> list[str]: ...
