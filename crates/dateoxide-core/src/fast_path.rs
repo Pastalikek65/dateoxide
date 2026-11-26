@@ -1,6 +1,8 @@
-use crate::settings::{DateOrder, DatePart, ParserKind, Period, Settings, StrictDateOrder};
+use crate::settings::{
+    DateOrder, DatePart, ParserKind, Period, PreferDatesFrom, Settings, StrictDateOrder,
+};
 use crate::timezone::{extract_trailing_timezone_with_abbrevs, TzSpec};
-use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 
 #[derive(Debug, Clone)]
 pub struct FastPathMatch {
@@ -105,6 +107,9 @@ pub fn try_fast_path(input: &str, settings: &Settings) -> Option<FastPathMatch> 
         if let Some(m) = try_compact_iso_datetime(core, tz) {
             return Some(m);
         }
+        if let Some(m) = try_iso_week_date(core, tz, settings) {
+            return Some(m);
+        }
     }
 
     // 4. Pure ASCII digits (Unix timestamp or compact YYYYMMDD)
@@ -133,6 +138,9 @@ fn try_compact_iso_datetime(core: &str, tz: Option<TzSpec>) -> Option<FastPathMa
         return None;
     }
     let y: i32 = core[0..4].parse().ok()?;
+    if !(1..=9999).contains(&y) {
+        return None;
+    }
     let m: u32 = core[4..6].parse().ok()?;
     let d: u32 = core[6..8].parse().ok()?;
     let nd = NaiveDate::from_ymd_opt(y, m, d)?;
@@ -172,6 +180,109 @@ fn try_compact_iso_datetime(core: &str, tz: Option<TzSpec>) -> Option<FastPathMa
     })
 }
 
+fn resolve_time_only_date(time: NaiveTime, settings: &Settings) -> NaiveDate {
+    let base = settings.effective_base();
+    let mut date = base.date();
+    match settings.prefer_dates_from {
+        PreferDatesFrom::Future if time < base.time() => {
+            if let Some(next) = date.succ_opt() {
+                date = next;
+            }
+        }
+        PreferDatesFrom::Past if time > base.time() => {
+            if let Some(prev) = date.pred_opt() {
+                date = prev;
+            }
+        }
+        _ => {}
+    }
+    date
+}
+
+fn try_iso_week_date(
+    core: &str,
+    tz: Option<TzSpec>,
+    settings: &Settings,
+) -> Option<FastPathMatch> {
+    let (date_part, time_part) = if let Some(idx) = core.find(['T', 't', ' ']) {
+        let (d, rest) = core.split_at(idx);
+        let t = rest[1..].trim();
+        (d, if t.is_empty() { None } else { Some(t) })
+    } else {
+        (core, None)
+    };
+
+    let bytes = date_part.as_bytes();
+    if bytes.len() < 7 || !bytes[0..4].iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let (year, week, weekday_opt) = if bytes.len() >= 8 && bytes[4] == b'-' && (bytes[5] == b'W' || bytes[5] == b'w') {
+        // YYYY-Www or YYYY-Www-D
+        let y: i32 = date_part[0..4].parse().ok()?;
+        if date_part.len() == 8 && bytes[6..8].iter().all(|b| b.is_ascii_digit()) {
+            let w: u32 = date_part[6..8].parse().ok()?;
+            (y, w, None)
+        } else if date_part.len() == 10
+            && bytes[8] == b'-'
+            && bytes[6..8].iter().all(|b| b.is_ascii_digit())
+            && bytes[9].is_ascii_digit()
+        {
+            let w: u32 = date_part[6..8].parse().ok()?;
+            let d: u32 = date_part[9..10].parse().ok()?;
+            (y, w, Some(d))
+        } else {
+            return None;
+        }
+    } else if (bytes[4] == b'W' || bytes[4] == b'w') && (date_part.len() == 7 || date_part.len() == 8) {
+        // YYYYWww or YYYYWwwD
+        let y: i32 = date_part[0..4].parse().ok()?;
+        if !bytes[5..].iter().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let w: u32 = date_part[5..7].parse().ok()?;
+        let d_opt = if date_part.len() == 8 {
+            Some(date_part[7..8].parse::<u32>().ok()?)
+        } else {
+            None
+        };
+        (y, w, d_opt)
+    } else {
+        return None;
+    };
+
+    if weekday_opt.is_none() && (settings.strict_parsing || settings.require_parts.contains(&DatePart::Day)) {
+        return None;
+    }
+
+    let wd = match weekday_opt.unwrap_or(1) {
+        1 => Weekday::Mon,
+        2 => Weekday::Tue,
+        3 => Weekday::Wed,
+        4 => Weekday::Thu,
+        5 => Weekday::Fri,
+        6 => Weekday::Sat,
+        7 => Weekday::Sun,
+        _ => return None,
+    };
+    let nd = NaiveDate::from_isoywd_opt(year, week, wd)?;
+    let has_time = time_part.is_some();
+    let time = match time_part {
+        Some(tp) => parse_time_str(tp)?,
+        None => NaiveTime::from_hms_opt(0, 0, 0)?,
+    };
+    let mut parts = vec!["year", "month", "day"];
+    if has_time {
+        parts.push("time");
+    }
+    Some(FastPathMatch {
+        naive: nd.and_time(time),
+        tz,
+        period: if weekday_opt.is_some() { Period::Day } else { Period::Week },
+        has_time,
+        parts,
+    })
+}
+
 fn try_timestamp_or_compact(
     core: &str,
     tz: Option<TzSpec>,
@@ -179,6 +290,30 @@ fn try_timestamp_or_compact(
 ) -> Option<FastPathMatch> {
     if !core.contains('.') {
         match core.len() {
+            4 | 6 if settings.parsers.is_some()
+                && settings.allows_parser(ParserKind::NoSpacesTime)
+                && !settings.allows_parser(ParserKind::AbsoluteTime) =>
+            {
+                if settings.strict_parsing
+                    || settings.require_parts.contains(&DatePart::Year)
+                    || settings.require_parts.contains(&DatePart::Month)
+                    || settings.require_parts.contains(&DatePart::Day)
+                {
+                    return None;
+                }
+                let hh: u32 = core[0..2].parse().ok()?;
+                let mm: u32 = core[2..4].parse().ok()?;
+                let ss: u32 = if core.len() == 6 { core[4..6].parse().ok()? } else { 0 };
+                let time = NaiveTime::from_hms_opt(hh, mm, ss)?;
+                let date = resolve_time_only_date(time, settings);
+                return Some(FastPathMatch {
+                    naive: date.and_time(time),
+                    tz,
+                    period: Period::Day,
+                    has_time: true,
+                    parts: vec!["time"],
+                });
+            }
             8 => {
                 if !settings.allows_parser(ParserKind::BaseFormats)
                     && !settings.allows_parser(ParserKind::NoSpacesTime)
@@ -186,19 +321,65 @@ fn try_timestamp_or_compact(
                 {
                     return None;
                 }
-                let y: i32 = core[0..4].parse().ok()?;
-                let m: u32 = core[4..6].parse().ok()?;
-                let d: u32 = core[6..8].parse().ok()?;
-                if (1900..=2199).contains(&y) {
-                    if let Some(nd) = NaiveDate::from_ymd_opt(y, m, d) {
-                        return Some(FastPathMatch {
-                            naive: nd.and_hms_opt(0, 0, 0)?,
-                            tz,
-                            period: Period::Day,
-                            has_time: false,
-                            parts: vec!["year", "month", "day"],
-                        });
+                let order = settings.effective_date_order(DateOrder::YMD);
+                let try_ymd = || -> Option<NaiveDate> {
+                    let y: i32 = core[0..4].parse().ok()?;
+    if !(1..=9999).contains(&y) {
+        return None;
+    }
+                    let m: u32 = core[4..6].parse().ok()?;
+                    let d: u32 = core[6..8].parse().ok()?;
+                    if (1900..=2199).contains(&y) {
+                        NaiveDate::from_ymd_opt(y, m, d)
+                    } else {
+                        None
                     }
+                };
+                let try_dmy = || -> Option<NaiveDate> {
+                    let d: u32 = core[0..2].parse().ok()?;
+                    let m: u32 = core[2..4].parse().ok()?;
+                    let y: i32 = core[4..8].parse().ok()?;
+                    if (1900..=2199).contains(&y) {
+                        NaiveDate::from_ymd_opt(y, m, d)
+                    } else {
+                        None
+                    }
+                };
+                let try_mdy = || -> Option<NaiveDate> {
+                    let m: u32 = core[0..2].parse().ok()?;
+                    let d: u32 = core[2..4].parse().ok()?;
+                    let y: i32 = core[4..8].parse().ok()?;
+                    if (1900..=2199).contains(&y) {
+                        NaiveDate::from_ymd_opt(y, m, d)
+                    } else {
+                        None
+                    }
+                };
+                let nd = match order {
+                    DateOrder::DMY => try_dmy().or_else(|| {
+                        if settings.strict_date_order == StrictDateOrder::All { None } else { try_ymd().or_else(try_mdy) }
+                    }),
+                    DateOrder::MDY => try_mdy().or_else(|| {
+                        if settings.strict_date_order == StrictDateOrder::All { None } else { try_ymd().or_else(try_dmy) }
+                    }),
+                    _ => try_ymd().or_else(|| {
+                        if settings.strict_date_order == StrictDateOrder::All {
+                            None
+                        } else if settings.allows_parser(ParserKind::NoSpacesTime) || settings.date_order.is_some() {
+                            try_dmy().or_else(try_mdy)
+                        } else {
+                            None
+                        }
+                    }),
+                };
+                if let Some(nd) = nd {
+                    return Some(FastPathMatch {
+                        naive: nd.and_hms_opt(0, 0, 0)?,
+                        tz,
+                        period: Period::Day,
+                        has_time: false,
+                        parts: vec!["year", "month", "day"],
+                    });
                 }
                 None
             }
@@ -288,9 +469,9 @@ fn try_numeric_datetime(
                 {
                     return None;
                 }
-                let base = settings.effective_base();
+                let date = resolve_time_only_date(time, settings);
                 return Some(FastPathMatch {
-                    naive: base.date().and_time(time),
+                    naive: date.and_time(time),
                     tz,
                     period: Period::Day,
                     has_time: true,
@@ -362,6 +543,9 @@ fn try_numeric_datetime(
         } else {
             return None;
         };
+        if !(1..=9999).contains(&y) {
+            return None;
+        }
         let base = settings.effective_base();
         let day = resolve_missing_day(y, m, base.day(), settings.prefer_day_of_month);
         let nd = NaiveDate::from_ymd_opt(y, m, day)?;
@@ -421,6 +605,9 @@ fn resolve_ymd_triplet(
 ) -> Option<NaiveDate> {
     if lens[0] == 4 {
         let y = parts[0] as i32;
+        if !(1..=9999).contains(&y) {
+            return None;
+        }
         if order == DateOrder::YDM {
             if let Some(d) = NaiveDate::from_ymd_opt(y, parts[2], parts[1]) {
                 return Some(d);
@@ -440,6 +627,9 @@ fn resolve_ymd_triplet(
 
     if lens[2] == 4 {
         let y = parts[2] as i32;
+        if !(1..=9999).contains(&y) {
+            return None;
+        }
         return match order {
             DateOrder::MDY => {
                 if let Some(d) = NaiveDate::from_ymd_opt(y, parts[0], parts[1]) {

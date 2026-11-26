@@ -152,12 +152,29 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
             if raw_sub.bytes().all(|b| b.is_ascii_digit()) && raw_sub.len() < 4 {
                 continue;
             }
+            if is_version_like_dotted(raw_sub) {
+                continue;
+            }
             if end_idx == i && !is_valid_single_token_date(raw_sub, registry, settings.normalize) {
                 continue;
             }
 
             let dd = get_date_data(raw_sub, settings);
             if let Some(dt) = dd.date_obj {
+                let has_digits = raw_sub
+                    .chars()
+                    .any(|c| c.is_ascii_digit() || ('\u{0660}'..='\u{0669}').contains(&c));
+                if settings.languages.is_none()
+                    && !has_digits
+                    && should_skip_ambiguous_phrase(
+                        raw_sub,
+                        end_idx == i,
+                        dd.locale.as_deref(),
+                        dd.period,
+                    )
+                {
+                    continue;
+                }
                 results.push(SearchMatch {
                     text: raw_sub.to_string(),
                     date_obj: dt,
@@ -285,6 +302,63 @@ fn is_valid_single_token_date(tok: &str, registry: &LocaleRegistry, normalize: b
     if normalize {
         let folded = fold_diacritics(&lower);
         if registry.folded_exact_phrase_index.contains_key(&folded) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_version_like_dotted(s: &str) -> bool {
+    if !s.contains('.') || s.contains([' ', '-', '/', ':']) {
+        return false;
+    }
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() == 3
+        && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    {
+        // Reject semantic versions like "3.12.1" or "0.1.0" where the last segment is 1 digit
+        // and no segment is a 4-digit year.
+        let has_4digit = parts.iter().any(|p| p.len() == 4);
+        if !has_4digit && parts[2].len() == 1 {
+            return true;
+        }
+    }
+    false
+}
+
+fn should_skip_ambiguous_phrase(
+    tok: &str,
+    is_single_token: bool,
+    locale: Option<&str>,
+    period: Period,
+) -> bool {
+    if !tok.is_ascii() {
+        return false;
+    }
+    if is_single_token {
+        let lower = tok.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "let" | "set" | "get" | "put" | "can" | "has" | "was" | "are" | "her" | "his"
+                | "she" | "out" | "man" | "see" | "did" | "say" | "use" | "way" | "new" | "old"
+                | "for" | "not" | "but" | "you" | "all" | "one" | "two" | "who" | "how" | "why"
+                | "its" | "him" | "our" | "run" | "sit" | "try" | "ask" | "own" | "big" | "end"
+                | "far" | "off" | "yet" | "per" | "via" | "ok"
+        ) {
+            return true;
+        }
+    }
+    if let Some(loc) = locale {
+        let is_major = matches!(
+            loc,
+            "en" | "tr" | "de" | "fr" | "es" | "it" | "pt" | "nl" | "ru" | "ar" | "fa" | "zh"
+                | "ja" | "ko" | "pl" | "uk" | "sv" | "no" | "da" | "fi" | "cs" | "ro" | "hu"
+                | "el" | "he" | "hi" | "id" | "vi" | "th"
+        );
+        if !is_major && (is_single_token || tok.len() <= 12) {
+            return true;
+        }
+        if is_single_token && loc != "en" && period != Period::Day && period != Period::Time && tok.len() <= 3 {
             return true;
         }
     }
