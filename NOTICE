@@ -10,3 +10,8 @@ dateoxide compiles multilingual calendar and relative-date lexical data derived 
    Copyright (c) Scrapinghub. All rights reserved.
    Licensed under the BSD 3-Clause License:
    https://github.com/scrapinghub/dateparser/blob/master/LICENSE
+
+3. dralshehri/hijridate (Umm al-Qura month-start table, 1343 AH - 1500 AH)
+   Copyright (c) Mohammed Alshehri.
+   Licensed under the MIT License:
+   https://github.com/dralshehri/hijridate/blob/main/LICENSE

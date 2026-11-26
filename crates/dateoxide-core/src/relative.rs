@@ -22,37 +22,73 @@ pub fn apply_relative_offset(
     amount: f64,
     unit: TimeUnit,
 ) -> Option<NaiveDateTime> {
+    if !amount.is_finite() || amount < 0.0 || amount > 10_000_000.0 {
+        return None;
+    }
     let signed = if sign < 0 { -amount } else { amount };
-    match unit {
+    let dt = match unit {
         TimeUnit::Second => {
             let ms = (signed * 1000.0).round() as i64;
-            base.checked_add_signed(Duration::milliseconds(ms))
+            base.checked_add_signed(Duration::milliseconds(ms))?
         }
         TimeUnit::Minute => {
             let ms = (signed * 60_000.0).round() as i64;
-            base.checked_add_signed(Duration::milliseconds(ms))
+            base.checked_add_signed(Duration::milliseconds(ms))?
         }
         TimeUnit::Hour => {
             let ms = (signed * 3_600_000.0).round() as i64;
-            base.checked_add_signed(Duration::milliseconds(ms))
+            base.checked_add_signed(Duration::milliseconds(ms))?
         }
         TimeUnit::Day => {
+            if amount > 3_650_000.0 {
+                return None;
+            }
             let ms = (signed * 86_400_000.0).round() as i64;
-            base.checked_add_signed(Duration::milliseconds(ms))
+            base.checked_add_signed(Duration::milliseconds(ms))?
         }
         TimeUnit::Week => {
+            if amount > 520_000.0 {
+                return None;
+            }
             let ms = (signed * 7.0 * 86_400_000.0).round() as i64;
-            base.checked_add_signed(Duration::milliseconds(ms))
+            base.checked_add_signed(Duration::milliseconds(ms))?
         }
         TimeUnit::Fortnight => {
+            if amount > 260_000.0 {
+                return None;
+            }
             let ms = (signed * 14.0 * 86_400_000.0).round() as i64;
-            base.checked_add_signed(Duration::milliseconds(ms))
+            base.checked_add_signed(Duration::milliseconds(ms))?
         }
-        TimeUnit::Month => add_months(base, signed.round() as i32),
-        TimeUnit::Year => add_months(base, (signed * 12.0).round() as i32),
-        TimeUnit::Decade => add_months(base, (signed * 120.0).round() as i32),
-        TimeUnit::Century => add_months(base, (signed * 1200.0).round() as i32),
+        TimeUnit::Month => {
+            if amount > 120_000.0 {
+                return None;
+            }
+            add_months(base, signed.round() as i32)?
+        }
+        TimeUnit::Year => {
+            if amount > 9_999.0 {
+                return None;
+            }
+            add_months(base, (signed * 12.0).round() as i32)?
+        }
+        TimeUnit::Decade => {
+            if amount > 1_000.0 {
+                return None;
+            }
+            add_months(base, (signed * 120.0).round() as i32)?
+        }
+        TimeUnit::Century => {
+            if amount > 100.0 {
+                return None;
+            }
+            add_months(base, (signed * 1200.0).round() as i32)?
+        }
+    };
+    if !(1..=9999).contains(&dt.year()) {
+        return None;
     }
+    Some(dt)
 }
 
 fn add_months(base: NaiveDateTime, delta_months: i32) -> Option<NaiveDateTime> {
@@ -153,7 +189,22 @@ pub fn try_parse_relative(
         normalized.to_string()
     };
 
-    // 0. Special compound day + time-of-day idioms ("tonight", "last night", "this evening", "dün gece", "bu akşam", etc.)
+    // 0. Special compound day + time-of-day idioms & half-hour phrases
+    if matches!(
+        if settings.normalize { folded_full.as_str() } else { normalized },
+        "half an hour ago" | "half hour ago" | "yarım saat önce" | "yarim saat once"
+    ) {
+        if let Some(dt) = apply_relative_offset(base, -1, 30.0, TimeUnit::Minute) {
+            return Some(RelativeMatch {
+                naive: dt,
+                period: Period::Day,
+                locale: if normalized.contains("saat") { "tr" } else { "en" }.to_string(),
+                has_time: false,
+                parts: vec!["year", "month", "day", "time"],
+                part_of_day: None,
+            });
+        }
+    }
     if let Some(m) = try_compound_tod_idiom(normalized, &folded_full, candidate_ids, registry, base, settings) {
         return Some(m);
     }
@@ -732,6 +783,10 @@ fn apply_token_duration_pairs(
     let mut finest_period = Period::Year;
     let mut has_time_unit = false;
     for (amt, unit) in pairs {
+        // Avoid misinterpreting calendar years like "2000 год" / "1000 год" as "2000 years ago"
+        if !allow_single_char_attached_units && unit == TimeUnit::Year && amt >= 1000.0 {
+            return None;
+        }
         if matches!(unit, TimeUnit::Hour | TimeUnit::Minute | TimeUnit::Second) {
             has_time_unit = true;
         }

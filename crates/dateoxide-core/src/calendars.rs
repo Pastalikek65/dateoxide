@@ -85,8 +85,33 @@ pub fn jalali_to_gregorian(jy: i32, jm: u32, jd: u32) -> Option<NaiveDate> {
     NaiveDate::from_ymd_opt(gy, gm, gd)
 }
 
-/// Convert a Civil Tabular Islamic (Hijri) date to Gregorian `NaiveDate`.
+/// Convert an Islamic Hijri date to Gregorian `NaiveDate`.
+/// Uses the official Saudi Umm al-Qura calendar table for years 1343..=1500 AH
+/// (1924-08-01 to 2077-11-15 CE), falling back to Civil Tabular Hijri outside that range.
 pub fn hijri_to_gregorian(hy: i32, hm: u32, hd: u32) -> Option<NaiveDate> {
+    use crate::umm_al_qura::{UMM_AL_QURA_JDN, UMM_AL_QURA_MAX_YEAR, UMM_AL_QURA_MIN_YEAR};
+
+    if !(1..=12).contains(&hm) || hd == 0 {
+        return None;
+    }
+
+    if (UMM_AL_QURA_MIN_YEAR..=UMM_AL_QURA_MAX_YEAR).contains(&hy) {
+        let idx = ((hy - UMM_AL_QURA_MIN_YEAR) * 12 + (hm as i32 - 1)) as usize;
+        if idx + 1 < UMM_AL_QURA_JDN.len() {
+            let start_jdn = 2_400_000 + UMM_AL_QURA_JDN[idx];
+            let month_len = (UMM_AL_QURA_JDN[idx + 1] - UMM_AL_QURA_JDN[idx]) as u32;
+            if hd > month_len {
+                return None;
+            }
+            return julian_day_to_gregorian(start_jdn + hd as i32 - 1);
+        }
+    }
+
+    hijri_to_gregorian_tabular(hy, hm, hd)
+}
+
+/// Civil Tabular Islamic (Hijri) calendar fallback for historical/far-future years.
+pub fn hijri_to_gregorian_tabular(hy: i32, hm: u32, hd: u32) -> Option<NaiveDate> {
     if !(1..=12).contains(&hm) || !(1..=30).contains(&hd) {
         return None;
     }

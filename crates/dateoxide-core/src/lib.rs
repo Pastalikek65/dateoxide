@@ -7,6 +7,7 @@ pub mod search;
 pub mod settings;
 pub mod time_spans;
 pub mod timezone;
+pub mod umm_al_qura;
 
 use locale::{normalize_digits_and_lower, LocaleRegistry};
 use rayon::prelude::*;
@@ -152,19 +153,38 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
     // 3. Lazy-load the compact 205-language registry and detect top candidates in O(tokens)
     let registry = LocaleRegistry::global();
     let mut tokens: Vec<&str> = Vec::with_capacity(8);
-    for chunk in normalized.split(|c: char| c.is_whitespace() || c == ',' || c == '/') {
-        let clean = chunk.trim_matches(|c: char| c == '.' || c == '(' || c == ')');
+    for chunk in normalized.split(|c: char| {
+        c.is_whitespace() || c == ',' || c == '/' || c == '[' || c == ']' || c == '–' || c == '—'
+    }) {
+        let clean = chunk.trim_matches(|c: char| matches!(c, '.' | '(' | ')' | '[' | ']'));
         if clean.is_empty() {
             continue;
         }
-        if clean.contains('-') && !registry.token_to_langs.contains_key(clean) {
-            for sub in clean.split('-') {
-                if !sub.is_empty() {
-                    tokens.push(sub);
-                }
-            }
-        } else {
+        if registry.token_to_langs.contains_key(clean) {
             tokens.push(clean);
+            continue;
+        }
+        for sub in clean.split(['-', '.']) {
+            if sub.is_empty() {
+                continue;
+            }
+            if sub.chars().any(|c| c.is_ascii_digit()) && sub.chars().any(|c| c.is_alphabetic()) {
+                let mut start = 0usize;
+                let mut prev_d = sub.chars().next().unwrap().is_ascii_digit();
+                for (idx, ch) in sub.char_indices().skip(1) {
+                    let cur_d = ch.is_ascii_digit();
+                    if cur_d != prev_d {
+                        tokens.push(&sub[start..idx]);
+                        start = idx;
+                        prev_d = cur_d;
+                    }
+                }
+                if start < sub.len() {
+                    tokens.push(&sub[start..]);
+                }
+            } else {
+                tokens.push(sub);
+            }
         }
     }
 

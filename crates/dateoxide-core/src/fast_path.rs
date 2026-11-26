@@ -300,12 +300,21 @@ fn try_numeric_datetime(
         }
     }
 
-    let (date_part, time_part) = if let Some(idx) = core.find(['T', 't', ' ']) {
-        let (d, rest) = core.split_at(idx);
+    // Strip spaces around dots in numeric dates like "26. 10.21 14.12" or "30 . 09 . 22 12.12"
+    let owned_compact_dots;
+    let effective_core: &str = if core.contains(" .") || core.contains(". ") {
+        owned_compact_dots = collapse_dot_spaces(core);
+        &owned_compact_dots
+    } else {
+        core
+    };
+
+    let (date_part, time_part) = if let Some(idx) = effective_core.find(['T', 't', ' ']) {
+        let (d, rest) = effective_core.split_at(idx);
         let t = rest[1..].trim();
         (d, if t.is_empty() { None } else { Some(t) })
     } else {
-        (core, None)
+        (effective_core, None)
     };
 
     let sep = if date_part.contains('-') {
@@ -321,13 +330,18 @@ fn try_numeric_datetime(
     let mut parts = [0u32; 3];
     let mut lens = [0usize; 3];
     let mut count = 0usize;
-    for seg in date_part.split(sep) {
-        if seg.is_empty() || seg.len() > 4 || count >= 3 || !seg.bytes().all(|b| b.is_ascii_digit())
+    let date_clean = date_part.trim_end_matches('.');
+    for seg in date_clean.split(sep) {
+        let seg_t = seg.trim();
+        if seg_t.is_empty()
+            || seg_t.len() > 4
+            || count >= 3
+            || !seg_t.bytes().all(|b| b.is_ascii_digit())
         {
             return None;
         }
-        parts[count] = seg.parse().ok()?;
-        lens[count] = seg.len();
+        parts[count] = seg_t.parse().ok()?;
+        lens[count] = seg_t.len();
         count += 1;
     }
 
@@ -370,12 +384,8 @@ fn try_numeric_datetime(
 
     let fallback_order = if lens[0] == 4 {
         DateOrder::YMD
-    } else if sep == '.' {
-        DateOrder::DMY
-    } else if sep == '/' {
-        DateOrder::MDY
     } else {
-        DateOrder::DMY
+        DateOrder::MDY
     };
     let order = settings.effective_date_order(fallback_order);
 
@@ -470,35 +480,82 @@ fn resolve_ymd_triplet(
     NaiveDate::from_ymd_opt(y, d, m)
 }
 
-/// Parse time strings like "15:30", "15:30:45", "15:30:45.123456", "5:30 pm", "5:30p.m.", "5pm", "14h30", "09h15".
+fn collapse_dot_spaces(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    for i in 0..chars.len() {
+        let c = chars[i];
+        if c == ' ' {
+            let prev_dot = i > 0 && chars[i - 1] == '.';
+            let next_dot = i + 1 < chars.len() && chars[i + 1] == '.';
+            if prev_dot || next_dot {
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Parse time strings like "15:30", "15:30:45,123", "5:30p.m.", "PM 2:26", "下午 02:26:26", "14.12".
 pub fn parse_time_str(input: &str) -> Option<NaiveTime> {
-    let mut s = input.trim();
+    let mut s = input.trim().trim_end_matches('.');
     if s.is_empty() {
         return None;
     }
 
     let mut is_pm = false;
     let mut is_am = false;
-    let lower = s.to_ascii_lowercase();
-    for suffix in ["p.m.", "p.m", "pm"] {
-        if let Some(rest) = lower.strip_suffix(suffix) {
-            if !rest.is_empty() {
-                s = s[..rest.len()].trim_end();
+
+    // Leading AM/PM/CJK/Korean markers ("PM 2:26", "下午 02:26:26", "오후 2:26")
+    for prefix in ["下午", "오후", "p.m.", "p.m", "pm", "PM"] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            if rest.starts_with(char::is_whitespace) || rest.starts_with(|c: char| c.is_ascii_digit()) {
+                s = rest.trim_start();
                 is_pm = true;
                 break;
             }
         }
     }
     if !is_pm {
-        for suffix in ["a.m.", "a.m", "am"] {
-            if let Some(rest) = lower.strip_suffix(suffix) {
-                if !rest.is_empty() {
-                    s = s[..rest.len()].trim_end();
+        for prefix in ["上午", "오전", "a.m.", "a.m", "am", "AM"] {
+            if let Some(rest) = s.strip_prefix(prefix) {
+                if rest.starts_with(char::is_whitespace) || rest.starts_with(|c: char| c.is_ascii_digit()) {
+                    s = rest.trim_start();
                     is_am = true;
                     break;
                 }
             }
         }
+    }
+
+    let lower = s.to_ascii_lowercase();
+    if !is_am && !is_pm {
+        for suffix in ["p.m.", "p.m", "pm", "ip.", "ip"] {
+            if let Some(rest) = lower.strip_suffix(suffix) {
+                if !rest.is_empty() {
+                    s = s[..rest.len()].trim_end();
+                    is_pm = true;
+                    break;
+                }
+            }
+        }
+        if !is_pm {
+            for suffix in ["a.m.", "a.m", "am", "ap.", "ap"] {
+                if let Some(rest) = lower.strip_suffix(suffix) {
+                    if !rest.is_empty() {
+                        s = s[..rest.len()].trim_end();
+                        is_am = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Trailing "Uhr" (German)
+    if let Some(rest) = s.strip_suffix("Uhr").or_else(|| s.strip_suffix("uhr")) {
+        s = rest.trim_end();
     }
 
     // French / European "14h30" or "09h15" or "14h"
@@ -528,8 +585,16 @@ pub fn parse_time_str(input: &str) -> Option<NaiveTime> {
         return NaiveTime::from_hms_opt(h, 0, 0);
     }
 
-    // Standard HH:MM[:SS[.ffffff]]
-    let mut colon_parts = s.split(':');
+    // Allow dot-separated HH.MM when no ':' is present (e.g. "13.12", "18.37", "5.45 ip.")
+    let sep = if s.contains(':') {
+        ':'
+    } else if s.contains('.') && s.matches('.').count() == 1 {
+        '.'
+    } else {
+        return None;
+    };
+
+    let mut colon_parts = s.split(sep);
     let h_str = colon_parts.next()?;
     let m_str = colon_parts.next()?;
     let s_part = colon_parts.next();

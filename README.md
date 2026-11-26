@@ -4,17 +4,17 @@
 
 `dateoxide` replaces runtime Python regex compilation and 205 dynamically imported locale modules with a compiled zero-backtracking Rust engine (`dateoxide-core`) exposed to Python via **PyO3 + maturin**.
 
-- **128x – 8,587x faster** single-threaded parsing (`1,172x – 51,298x` with GIL-free parallel `parse_batch`)
-- **7.5x lower memory footprint** (`+6.84 MB` vs `+51.39 MB` RSS delta across 205 languages)
-- **16.8x faster cold import** (`5.59 ms` vs `94.17 ms`) via PEP 562 lazy submodules
-- **Zero ReDoS** — no backtracking regular expressions on hot paths
-- **205/205 languages verified** out of the box (Turkish, English, German, French, Spanish, Italian, Portuguese, Russian, Ukrainian, Polish, Czech, Dutch, Swedish, Greek, Hebrew, Arabic, Persian, Hindi, Korean, Japanese, Chinese, Indonesian, Vietnamese, Thai, and 181 more)
+- **108x – 7,210x faster** single-threaded parsing (`977x – 36,034x` with GIL-free parallel `parse_batch`)
+- **7.4x lower memory footprint** (`+6.93 MB` vs `+51.56 MB` RSS delta across 205 languages)
+- **17.3x faster cold import** (`5.21 ms` vs `90.22 ms`) via PEP 562 lazy submodules
+- **Zero ReDoS** — linear-time parsing with zero catastrophic backtracking
+- **2,723+ automated tests passing in 2.25s** — including 1,010 upstream `scrapinghub/dateparser` test vectors, a full 205-language matrix, known `dateparser` bug regressions, and 3,792 official Saudi Umm al-Qura Hijri dates
+- **Official Saudi Umm al-Qura Hijri Calendar (1343–1500 AH)** embedded directly in pure Rust (3,792/3,792 month-start & month-end dates verified against `hijridate`, with zero runtime dependencies), plus Jalali, Minguo, and French Republican calendars
 - **Complete `dateparser` feature parity**:
   - `parse()`, `DateDataParser` (`get_date_data`, `get_date_tuple`, `parts`, `part_of_day`), `search_dates(..., add_period=..., add_detected_language=...)`
   - `Settings`, `SettingValidationError`, `PartOfDay`, `PartsOfDay`, `apply_settings`, `conf`
   - `FreshnessDateDataParser` (`freshness_date_parser`) & `timezone_parser.pop_tz_offset_from_string`
   - `utils.time_spans` (`detect_time_span`, `generate_time_span`, `RETURN_TIME_SPAN`, `DEFAULT_START_OF_WEEK`, `DEFAULT_DAYS_IN_MONTH`)
-  - Native pure-Rust non-Gregorian calendars: `JalaliCalendar`, `HijriCalendar`, `MinguoCalendar`, `FrenchRepublicanCalendar`
   - `IGNORE_SURROUNDING_TEXT`, `STRICT_DATE_ORDER`, `NORMALIZE`, `PARSERS`, `SKIP_TOKENS`, `RETURN_TIME_AS_PERIOD`, `TIMEZONE_ABBREVIATIONS`, `region`, and `detect_languages_function`
 
 ---
@@ -27,22 +27,35 @@ Measured with [`benchmarks/bench_vs_dateparser.py`](benchmarks/bench_vs_datepars
 
 | Metric | `dateparser` (Python) | `dateoxide` (Rust) | Improvement |
 | :--- | ---: | ---: | ---: |
-| **Cold import time** | 94.17 ms | **5.59 ms** | **16.8x faster** |
-| **RSS after import** | +8.13 MB | **+0.73 MB** | **11.1x smaller** |
-| **RSS delta after parsing** | +51.39 MB | **+6.84 MB** | **7.5x less RAM** |
+| **Cold import time** | 90.22 ms | **5.21 ms** | **17.3x faster** |
+| **RSS after import** | +8.06 MB | **+0.76 MB** | **10.6x smaller** |
+| **RSS delta after parsing** | +51.56 MB | **+6.93 MB** | **7.4x less RAM** |
 
 ### Parsing Throughput (Operations / Second)
 
 | Workload | `dateparser.parse` | `dateoxide.parse` | `dateoxide.DateDataParser` | `dateoxide.parse_batch` *(Rayon)* |
 | :--- | ---: | ---: | ---: | ---: |
-| **ISO / RFC / Numeric** | 430 /s | **679,436 /s** *(1,578x)* | **3,696,175 /s** *(8,587x)* | **5,260,113 /s** *(12,220x)* |
-| **Multilingual Natural Language (Auto)** | 1,190 /s | **151,958 /s** *(128x)* | **187,011 /s** *(157x)* | **1,394,831 /s** *(1,172x)* |
-| **Invalid / Non-Date Text (Worst Case)** | 59 /s | **261,941 /s** *(4,445x)* | **396,308 /s** *(6,726x)* | **3,022,828 /s** *(51,298x)* |
+| **ISO / RFC / Numeric** | 440 /s | **672,789 /s** *(1,531x)* | **3,168,819 /s** *(7,210x)* | **5,364,615 /s** *(12,206x)* |
+| **Multilingual Natural Language (Auto)** | 1,239 /s | **133,916 /s** *(108x)* | **160,849 /s** *(130x)* | **1,211,446 /s** *(977x)* |
+| **Invalid / Non-Date Text (Worst Case)** | 60 /s | **196,333 /s** *(3,279x)* | **262,130 /s** *(4,378x)* | **2,157,386 /s** *(36,034x)* |
 
 Reproduce locally:
 ```bash
 python benchmarks/bench_vs_dateparser.py
 ```
+
+---
+
+## Upstream `dateparser` Bugs Fixed / Avoided
+
+Tested directly in [`tests/test_dateparser_bugs.py`](tests/test_dateparser_bugs.py):
+
+- **Compact ISO-8601 basic (`20261126T153000Z`):** `dateparser 1.5.1` misparses this as year `1608-01-02`; `dateoxide` returns `2026-11-26 15:30:00+00:00`.
+- **Quadratic ReDoS & punctuation runs (`GHSA-rx9v-94ff-9cc2`, `#426`):** `5,000` repeated dots/dashes/Arabic commas return `None` in microseconds.
+- **Long-running memory & latency stability (`#457`, `#1140`):** Stateless Rust core with zero unbounded `previous_locales` growth.
+- **Timestamp fragmentation in `search_dates` (`#968`):** `"Server rebooted at 2026-11-26 15:30:00 UTC successfully."` stays grouped as a single combined match.
+- **Extreme overflow protection:** Inputs like `"+999999999999999 days ago"` or `"5000 years ago"` cleanly return `None` instead of overflowing or raising out-of-range errors.
+- **Turkish `İ`/`I`/`ı` casing & leap/month-end clamping:** `"15 OCAK 2026"`, `"3 GÜN ÖNCE"`, `"DÜN SAAT 14:30"` work out of the box without false-positive city names like `"İSTANBUL"`.
 
 ---
 
@@ -97,9 +110,9 @@ from dateoxide.calendars import (
     FrenchRepublicanCalendar,
 )
 
-JalaliCalendar("۵ آذر ۱۴۰۴").get_date()              # 2025-11-26
-HijriCalendar("1 Ramadan 1446").get_date()          # 2025-03-01
-MinguoCalendar("115年11月26日").get_date()          # 2026-11-26
+JalaliCalendar("۵ آذر ۱۴۰۴").get_date()                 # 2025-11-26
+HijriCalendar("1 Ramadan 1446").get_date()             # 2025-03-01 (Official Umm al-Qura)
+MinguoCalendar("115年11月26日").get_date()             # 2026-11-26
 FrenchRepublicanCalendar("14 Germinal an III").get_date()  # 1795-04-03
 ```
 
@@ -144,6 +157,7 @@ let dt = parse("3 gün önce").unwrap();
 let found = search_dates("Meeting on 12 December 2025", &Settings::default());
 let batch = parse_batch(&["2026-11-26", "vor 2 Wochen", "3日前"], &Settings::default());
 let jalali = calendars::parse_jalali("۵ آذر ۱۴۰۴", &Settings::default());
+let hijri = calendars::parse_hijri("1446/09/01", &Settings::default());
 ```
 
 ---
@@ -154,12 +168,12 @@ let jalali = calendars::parse_jalali("۵ آذر ۱۴۰۴", &Settings::default())
 2. **Compile-Time Binary Locale Database (`build.rs` + `postcard`):** All 205 languages (including script-tagged locales like `az-Cyrl`, `sr-Latn`, `uz-Cyrl`) are compiled at build time into a compact embedded binary (`include_bytes!`) lazily loaded via `OnceLock` on first natural-language parse — eliminating Python's 205-module import tax.
 3. **Zero-Regex Structured Relative Patterns (`relative.rs`):** 99.97% of `dateparser`'s 3,621 `relative-type-regex` entries are pure `<prefix><NUMBER><suffix>` shapes. `dateoxide` pre-compiles them into flat prefix/suffix matchers with guaranteed linear time and zero ReDoS risk, plus multi-sense relative disambiguation (`PREFER_DATES_FROM`), bare durations, and configurable `PartsOfDay`.
 4. **O(tokens) Inverted Language Index + Diacritic Folding (`locale/mod.rs`):** Instead of iterating through 205 languages on unknown input, `dateoxide` scores exact and diacritic-folded tokens in `FxHashMap` lookups (plus Unicode script detection for Korean, Japanese, Chinese, Cyrillic, Arabic, Greek, Hebrew, Thai, Devanagari), rejecting non-date strings in microseconds.
-5. **Native Rust Calendars & Time Spans (`calendars.rs`, `time_spans.rs`):** Zero-dependency Solar Hijri (Jalali), Islamic Hijri, Minguo, and French Republican calendar arithmetic plus compiled linear-time span detection.
+5. **Native Rust Calendars & Time Spans (`calendars.rs`, `umm_al_qura.rs`, `time_spans.rs`):** Official Saudi Umm al-Qura Hijri lookup table (1343–1500 AH), Solar Hijri (Jalali), Minguo, and French Republican calendar arithmetic plus compiled linear-time span detection.
 6. **GIL-Free Rayon Parallelism (`parse_batch`):** Releases Python's GIL via `py.allow_threads` and fans out across all CPU cores with Rayon.
 
 ---
 
-## Development
+## Development & Publishing
 
 ```bash
 # Build & install release Python extension locally
@@ -168,11 +182,16 @@ maturin develop --release
 # Run Rust core tests
 cargo test -p dateoxide-core --release
 
-# Run full Python parity & 205-language test suite
+# Run full 2,700+ test suite
 pytest -v
 
 # Run head-to-head benchmark vs dateparser
 python benchmarks/bench_vs_dateparser.py
+```
+
+Automated PyPI (OIDC Trusted Publishing) and crates.io multi-platform wheel builds trigger on release tags:
+```bash
+git tag v0.1.0 && git push --tags
 ```
 
 ---
@@ -181,4 +200,4 @@ python benchmarks/bench_vs_dateparser.py
 
 Dual-licensed under **MIT** or **Apache-2.0**.
 
-Multilingual calendar and relative-date lexical data is derived from Unicode CLDR and [`scrapinghub/dateparser`](https://github.com/scrapinghub/dateparser) (BSD 3-Clause License). See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE) for full details.
+Multilingual calendar and relative-date lexical data is derived from Unicode CLDR and [`scrapinghub/dateparser`](https://github.com/scrapinghub/dateparser) (BSD 3-Clause License). Official Saudi Umm al-Qura month-start data (1343–1500 AH) is derived from [`dralshehri/hijridate`](https://github.com/dralshehri/hijridate) (MIT License). See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE) for full details.

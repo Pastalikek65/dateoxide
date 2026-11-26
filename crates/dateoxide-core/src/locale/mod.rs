@@ -173,6 +173,11 @@ impl LocaleRegistry {
             for (d_idx, names) in raw.weekdays.into_iter().enumerate() {
                 let wd_num = d_idx as u8;
                 for name in names {
+                    for part in name.split_whitespace() {
+                        if part.chars().count() >= 2 {
+                            register_token(part, lang_id, true);
+                        }
+                    }
                     register_token(&name, lang_id, true);
                     let f = fold_diacritics(&name);
                     if f != name {
