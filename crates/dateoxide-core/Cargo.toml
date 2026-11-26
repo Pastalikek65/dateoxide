@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage = "https://github.com/Pastalikek65/dateoxide"
+documentation = "https://docs.rs/dateoxide-core"
+readme = "../../README.md"
 description = "High-performance, low-memory multilingual natural-language date parser core in Rust."
+keywords = ["date", "datetime", "parser", "multilingual", "nlp"]
+categories = ["date-and-time", "internationalization", "parsing", "text-processing"]
 
 [dependencies]
 aho-corasick = "1.1"

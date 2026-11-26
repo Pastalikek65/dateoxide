@@ -1,3 +1,42 @@
+//! High-performance, low-memory, zero-ReDoS multilingual natural-language date parser in pure Rust.
+//!
+//! `dateoxide-core` powers the Python package [`dateoxide`](https://pypi.org/project/dateoxide/)
+//! across 205 languages, non-Gregorian calendars (official Saudi Umm al-Qura Hijri,
+//! Jalali, Minguo, French Republican), time spans, and parallel batch parsing.
+//!
+//! # Quick Start
+//!
+//! ```
+//! use dateoxide_core::{calendars, parse, parse_batch, parse_with_settings, search::search_dates, settings::Settings};
+//! use chrono::{Datelike, NaiveDate, NaiveDateTime};
+//!
+//! // Fast ISO-8601, RFC-2822/3339, and ISO week date parsing
+//! let dt = parse("2026-11-26").unwrap();
+//! assert_eq!(dt.naive_local().date(), NaiveDate::from_ymd_opt(2026, 11, 26).unwrap());
+//!
+//! let iso_week = parse("2026-W48-4").unwrap();
+//! assert_eq!(iso_week.naive_local().date(), NaiveDate::from_ymd_opt(2026, 11, 26).unwrap());
+//!
+//! // Multilingual natural-language & relative parsing with fixed RELATIVE_BASE
+//! let mut settings = Settings::default();
+//! settings.relative_base = Some(
+//!     NaiveDateTime::parse_from_str("2026-11-26 15:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+//! );
+//! let tr = parse_with_settings("3 gün önce", &settings).unwrap();
+//! assert_eq!(tr.naive_local().day(), 23);
+//!
+//! // Free-form text extraction and parallel batch parsing
+//! let found = search_dates("Meeting on 12 December 2025", &settings);
+//! assert_eq!(found.len(), 1);
+//!
+//! let batch = parse_batch(&["2026-11-26", "vor 2 Wochen", "not a date"], &settings);
+//! assert!(batch[0].is_some() && batch[1].is_some() && batch[2].is_none());
+//!
+//! // Non-Gregorian calendar conversion (official Umm al-Qura Hijri)
+//! let hijri = calendars::parse_hijri("1446/09/01", &settings);
+//! assert_eq!(hijri.date_obj.unwrap().naive_local().date(), NaiveDate::from_ymd_opt(2025, 3, 1).unwrap());
+//! ```
+
 pub mod absolute;
 pub mod calendars;
 pub mod fast_path;

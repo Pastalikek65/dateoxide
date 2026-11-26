@@ -1,6 +1,18 @@
 # dateoxide
 
+[![CI](https://github.com/Pastalikek65/dateoxide/actions/workflows/ci.yml/badge.svg)](https://github.com/Pastalikek65/dateoxide/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/dateoxide.svg)](https://pypi.org/project/dateoxide/)
+[![crates.io](https://img.shields.io/crates/v/dateoxide-core.svg)](https://crates.io/crates/dateoxide-core)
+[![docs.rs](https://docs.rs/dateoxide-core/badge.svg)](https://docs.rs/dateoxide-core)
+[![Python versions](https://img.shields.io/pypi/pyversions/dateoxide.svg)](https://pypi.org/project/dateoxide/)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+
 **Blazing-fast, low-memory, multilingual natural-language date parser written in Rust — a full-featured drop-in replacement for Python's [`dateparser`](https://github.com/scrapinghub/dateparser).**
+
+```bash
+pip install dateoxide        # Python (pre-built cp39-abi3 wheels: Linux, macOS, Windows)
+cargo add dateoxide-core     # Pure Rust crate
+```
 
 `dateoxide` replaces runtime Python regex compilation and 205 dynamically imported locale modules with a compiled zero-backtracking Rust engine (`dateoxide-core`) exposed to Python via **PyO3 + maturin**.
 
@@ -8,7 +20,7 @@
 - **7.4x lower memory footprint** (`+6.93 MB` vs `+51.56 MB` RSS delta across 205 languages)
 - **17.3x faster cold import** (`5.21 ms` vs `90.22 ms`) via PEP 562 lazy submodules
 - **Zero ReDoS** — linear-time parsing with zero catastrophic backtracking
-- **2,723+ automated tests passing in 2.25s** — including 1,010 upstream `scrapinghub/dateparser` test vectors, a full 205-language matrix, known `dateparser` bug regressions, and 3,792 official Saudi Umm al-Qura Hijri dates
+- **3,102+ automated tests passing in <4s** — including 1,010 upstream `scrapinghub/dateparser` test vectors, exact `datetime` assertions across 205 languages, `dateparser` compatibility & fuzzing matrices, known `dateparser` bug regressions, and 3,792 official Saudi Umm al-Qura Hijri dates
 - **Official Saudi Umm al-Qura Hijri Calendar (1343–1500 AH)** embedded directly in pure Rust (3,792/3,792 month-start & month-end dates verified against `hijridate`, with zero runtime dependencies), plus Jalali, Minguo, and French Republican calendars
 - **Complete `dateparser` feature parity**:
   - `parse()`, `DateDataParser` (`get_date_data`, `get_date_tuple`, `parts`, `part_of_day`), `search_dates(..., add_period=..., add_detected_language=...)`
@@ -39,10 +51,28 @@ Measured with [`benchmarks/bench_vs_dateparser.py`](benchmarks/bench_vs_datepars
 | **Multilingual Natural Language (Auto)** | 1,239 /s | **133,916 /s** *(108x)* | **160,849 /s** *(130x)* | **1,211,446 /s** *(977x)* |
 | **Invalid / Non-Date Text (Worst Case)** | 60 /s | **196,333 /s** *(3,279x)* | **262,130 /s** *(4,378x)* | **2,157,386 /s** *(36,034x)* |
 
-Reproduce locally:
+Reproduce locally (or run the accuracy-checked torture suite):
 ```bash
 python benchmarks/bench_vs_dateparser.py
+python benchmarks/torture_benchmark.py --json
 ```
+
+### Independent Torture Benchmark (Accuracy, ReDoS & Known Differences)
+
+Measured with [`benchmarks/torture_benchmark.py`](benchmarks/torture_benchmark.py) across 79 adversarial cases (multilingual casing/scripts, month-end clamping, leap/ISO-week traps, RFC/CLF/DST, false-positive traps), dirty `search_dates`, and 6 ReDoS stress bombs (`dateoxide 0.1.0` vs `dateparser 1.5.1` on Windows 11, 32-core, Python 3.12.10):
+
+| Metric | `dateparser 1.5.1` | `dateoxide` |
+| :--- | ---: | ---: |
+| **Torture accuracy (79 hard cases)** | 66 / 79 (`1,675.90 ms`) | **74 / 79 (`0.77 ms`)** |
+| **Dirty `search_dates` (6 docs)** | 4 / 6 (`678.77 ms`) | **5 / 6 (`0.47 ms`)** |
+| **6 ReDoS stress bombs (3k–5k chars)** | `8,298.90 ms` | **`2.51 ms`** |
+| **Full 79-case isolated throughput & RSS** | `134.0 /s` (`+64.79 MB`) | **`38,938.5 /s` (`+10.21 MB`)** *(290.6x)* |
+
+**Transparently noted misses & differences (`5 / 79` on `dateoxide`):**
+- `"the day after tomorrow"` returns `None` (`"day after tomorrow"` works; leading `"the"` isn't stripped yet; `dateparser` parses it).
+- `"quarter past 3"` and `"two and a half hours ago"` return `None` in **both** `dateoxide` and `dateparser`.
+- `"last Friday"` preserves `RELATIVE_BASE` time (`15:00`) in `dateoxide`, whereas `dateparser` resets time to `00:00`.
+- `"2026-13-01"` swaps to `2026-01-13` under default `STRICT_DATE_ORDER="none"` in **both** libraries (set `STRICT_DATE_ORDER="all"` to reject).
 
 ---
 
