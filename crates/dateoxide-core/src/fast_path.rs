@@ -1,4 +1,4 @@
-use crate::settings::{DateOrder, DatePart, Period, Settings};
+use crate::settings::{DateOrder, DatePart, ParserKind, Period, Settings};
 use crate::timezone::{extract_trailing_timezone, TzSpec};
 use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime};
 
@@ -7,10 +7,14 @@ pub struct FastPathMatch {
     pub naive: NaiveDateTime,
     pub tz: Option<TzSpec>,
     pub period: Period,
+    pub has_time: bool,
 }
 
 /// Try explicit user-provided strptime formats (`date_formats`).
 pub fn try_custom_formats(input: &str, settings: &Settings) -> Option<FastPathMatch> {
+    if !settings.allows_parser(ParserKind::CustomFormats) {
+        return None;
+    }
     let formats = settings.date_formats.as_deref()?;
     if formats.is_empty() {
         return None;
@@ -22,6 +26,7 @@ pub fn try_custom_formats(input: &str, settings: &Settings) -> Option<FastPathMa
                 naive: dt.naive_local(),
                 tz: Some(TzSpec::Fixed(*dt.offset())),
                 period: Period::Day,
+                has_time: true,
             });
         }
         if let Ok(ndt) = NaiveDateTime::parse_from_str(s, fmt) {
@@ -29,6 +34,7 @@ pub fn try_custom_formats(input: &str, settings: &Settings) -> Option<FastPathMa
                 naive: ndt,
                 tz: None,
                 period: Period::Day,
+                has_time: true,
             });
         }
         if let Ok(nd) = NaiveDate::parse_from_str(s, fmt) {
@@ -36,38 +42,48 @@ pub fn try_custom_formats(input: &str, settings: &Settings) -> Option<FastPathMa
                 naive: nd.and_hms_opt(0, 0, 0)?,
                 tz: None,
                 period: Period::Day,
+                has_time: false,
             });
         }
     }
     None
 }
 
-/// Zero-regex, zero-allocation fast path for ISO-8601, RFC-2822/3339,
-/// delimited numeric dates, Unix timestamps, and compact YYYYMMDD dates.
+/// Zero-regex, zero-allocation fast path for ISO-8601 (extended & compact), RFC-2822/3339,
+/// delimited numeric dates, standalone times, Unix timestamps, and compact YYYYMMDD dates.
 pub fn try_fast_path(input: &str, settings: &Settings) -> Option<FastPathMatch> {
     let s = input.trim();
     if s.is_empty() || s.len() > 80 {
         return None;
     }
 
+    let allow_base = settings.allows_parser(ParserKind::BaseFormats)
+        || settings.allows_parser(ParserKind::AbsoluteTime);
+
     // 1. RFC 2822 (e.g., "Thu, 26 Nov 2026 15:30:00 +0300")
-    if s.len() >= 16 && s.contains(',') {
+    if allow_base && s.len() >= 16 && s.contains(',') {
         if let Ok(dt) = DateTime::parse_from_rfc2822(s) {
             return Some(FastPathMatch {
                 naive: dt.naive_local(),
                 tz: Some(TzSpec::Fixed(*dt.offset())),
                 period: Period::Day,
+                has_time: true,
             });
         }
     }
 
     // 2. RFC 3339 (e.g., "2026-11-26T15:30:00Z" or "2026-11-26T15:30:00.123+03:00")
-    if s.len() >= 19 && s.as_bytes().get(4) == Some(&b'-') && s.as_bytes().get(7) == Some(&b'-') {
+    if allow_base
+        && s.len() >= 19
+        && s.as_bytes().get(4) == Some(&b'-')
+        && s.as_bytes().get(7) == Some(&b'-')
+    {
         if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
             return Some(FastPathMatch {
                 naive: dt.naive_local(),
                 tz: Some(TzSpec::Fixed(*dt.offset())),
                 period: Period::Day,
+                has_time: true,
             });
         }
     }
@@ -78,15 +94,22 @@ pub fn try_fast_path(input: &str, settings: &Settings) -> Option<FastPathMatch> 
         return None;
     }
 
-    // 3. Pure ASCII digits (Unix timestamp or compact YYYYMMDD)
+    // 3. Compact ISO-8601 basic format: YYYYMMDDTHHMMSS[.frac] (e.g., "20261126T153000Z")
+    if allow_base {
+        if let Some(m) = try_compact_iso_datetime(core, tz) {
+            return Some(m);
+        }
+    }
+
+    // 4. Pure ASCII digits (Unix timestamp or compact YYYYMMDD)
     if core.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
         if let Some(m) = try_timestamp_or_compact(core, tz, settings) {
             return Some(m);
         }
     }
 
-    // 4. ISO-like & delimited numeric dates with optional time (e.g. "2026-11-26 15:30:00", "26.11.2026", "11/26/2026")
-    if core.as_bytes()[0].is_ascii_digit() {
+    // 5. ISO-like & delimited numeric dates / standalone times
+    if allow_base && core.as_bytes()[0].is_ascii_digit() {
         if let Some(m) = try_numeric_datetime(core, tz, settings) {
             return Some(m);
         }
@@ -95,16 +118,66 @@ pub fn try_fast_path(input: &str, settings: &Settings) -> Option<FastPathMatch> 
     None
 }
 
+fn try_compact_iso_datetime(core: &str, tz: Option<TzSpec>) -> Option<FastPathMatch> {
+    let b = core.as_bytes();
+    if b.len() < 15 || (b[8] != b'T' && b[8] != b't') {
+        return None;
+    }
+    if !b[0..8].iter().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let y: i32 = core[0..4].parse().ok()?;
+    let m: u32 = core[4..6].parse().ok()?;
+    let d: u32 = core[6..8].parse().ok()?;
+    let nd = NaiveDate::from_ymd_opt(y, m, d)?;
+
+    let time_raw = &core[9..];
+    let (hms, nano) = if let Some((main_t, frac)) = time_raw.split_once(['.', ',']) {
+        if main_t.len() != 6 || frac.is_empty() || !frac.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let mut padded = [b'0'; 9];
+        for (i, ch) in frac.bytes().take(9).enumerate() {
+            padded[i] = ch;
+        }
+        let nn: u32 = std::str::from_utf8(&padded).ok()?.parse().ok()?;
+        (main_t, nn)
+    } else {
+        if time_raw.len() != 6 {
+            return None;
+        }
+        (time_raw, 0u32)
+    };
+
+    if !hms.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let hh: u32 = hms[0..2].parse().ok()?;
+    let mm: u32 = hms[2..4].parse().ok()?;
+    let ss: u32 = hms[4..6].parse().ok()?;
+    let nt = NaiveTime::from_hms_nano_opt(hh, mm, ss, nano)?;
+
+    Some(FastPathMatch {
+        naive: nd.and_time(nt),
+        tz,
+        period: Period::Day,
+        has_time: true,
+    })
+}
+
 fn try_timestamp_or_compact(
     core: &str,
     tz: Option<TzSpec>,
     settings: &Settings,
 ) -> Option<FastPathMatch> {
     if !core.contains('.') {
-        // Reject tiny numbers like "42" or "2026" here (year-only handled carefully below)
         match core.len() {
             8 => {
-                // Check YYYYMMDD first if valid calendar date
+                if !settings.allows_parser(ParserKind::BaseFormats)
+                    && !settings.allows_parser(ParserKind::NoSpacesTime)
+                {
+                    return None;
+                }
                 let y: i32 = core[0..4].parse().ok()?;
                 let m: u32 = core[4..6].parse().ok()?;
                 let d: u32 = core[6..8].parse().ok()?;
@@ -114,28 +187,27 @@ fn try_timestamp_or_compact(
                             naive: nd.and_hms_opt(0, 0, 0)?,
                             tz,
                             period: Period::Day,
+                            has_time: false,
                         });
                     }
                 }
                 None
             }
             9..=10 => {
-                // Unix epoch in seconds (1973 .. 2286)
-                if settings.strict_parsing {
+                if settings.strict_parsing || !settings.allows_parser(ParserKind::Timestamp) {
                     return None;
                 }
                 let secs: i64 = core.parse().ok()?;
                 let dt = DateTime::from_timestamp(secs, 0)?;
-                let naive = dt.naive_utc();
                 Some(FastPathMatch {
-                    naive,
+                    naive: dt.naive_utc(),
                     tz: tz.or_else(|| FixedOffset::east_opt(0).map(TzSpec::Fixed)),
                     period: Period::Day,
+                    has_time: true,
                 })
             }
             13 => {
-                // Unix epoch in milliseconds
-                if settings.strict_parsing {
+                if settings.strict_parsing || !settings.allows_parser(ParserKind::Timestamp) {
                     return None;
                 }
                 let ms: i64 = core.parse().ok()?;
@@ -144,12 +216,15 @@ fn try_timestamp_or_compact(
                     naive: dt.naive_utc(),
                     tz: tz.or_else(|| FixedOffset::east_opt(0).map(TzSpec::Fixed)),
                     period: Period::Day,
+                    has_time: true,
                 })
             }
             _ => None,
         }
     } else {
-        // Float Unix timestamp like "1700000000.123"
+        if settings.strict_parsing || !settings.allows_parser(ParserKind::Timestamp) {
+            return None;
+        }
         let (int_part, frac_part) = core.split_once('.')?;
         if (9..=10).contains(&int_part.len())
             && !frac_part.is_empty()
@@ -168,6 +243,7 @@ fn try_timestamp_or_compact(
                 naive: dt.naive_utc(),
                 tz: tz.or_else(|| FixedOffset::east_opt(0).map(TzSpec::Fixed)),
                 period: Period::Day,
+                has_time: true,
             });
         }
         None
@@ -179,6 +255,39 @@ fn try_numeric_datetime(
     tz: Option<TzSpec>,
     settings: &Settings,
 ) -> Option<FastPathMatch> {
+    // Check pure standalone time first (e.g. "14:30", "5:30p.m.", "5:30 pm", "09h15", "5pm")
+    if !core.contains(['-', '/']) {
+        let lower = core.to_ascii_lowercase();
+        let looks_like_time = core.contains(':')
+            || core.contains('h')
+            || core.contains('H')
+            || lower.ends_with("am")
+            || lower.ends_with("pm")
+            || lower.ends_with("a.m.")
+            || lower.ends_with("p.m.")
+            || lower.ends_with("a.m")
+            || lower.ends_with("p.m");
+
+        if looks_like_time {
+            if let Some(time) = parse_time_str(core) {
+                if settings.strict_parsing
+                    || settings.require_parts.contains(&DatePart::Year)
+                    || settings.require_parts.contains(&DatePart::Month)
+                    || settings.require_parts.contains(&DatePart::Day)
+                {
+                    return None;
+                }
+                let base = settings.effective_base();
+                return Some(FastPathMatch {
+                    naive: base.date().and_time(time),
+                    tz,
+                    period: Period::Day,
+                    has_time: true,
+                });
+            }
+        }
+    }
+
     // Split date and optional time at 'T', 't', or first whitespace
     let (date_part, time_part) = if let Some(idx) = core.find(['T', 't', ' ']) {
         let (d, rest) = core.split_at(idx);
@@ -187,41 +296,6 @@ fn try_numeric_datetime(
     } else {
         (core, None)
     };
-
-    // Pure time-only like "14:30" or "5:30 pm" (no date separator)
-    if time_part.is_none() && date_part.contains(':') && !date_part.contains(['-', '/', '.']) {
-        if settings.strict_parsing
-            || settings.require_parts.contains(&DatePart::Year)
-            || settings.require_parts.contains(&DatePart::Month)
-            || settings.require_parts.contains(&DatePart::Day)
-        {
-            return None;
-        }
-        let time = parse_time_str(date_part)?;
-        let base = settings.effective_base();
-        return Some(FastPathMatch {
-            naive: base.date().and_time(time),
-            tz,
-            period: Period::Day,
-        });
-    }
-
-    // Handle "14:30 pm" where space separated time and meridiem
-    if let Some(tp) = time_part {
-        if date_part.contains(':') && !date_part.contains(['-', '/', '.']) {
-            if settings.strict_parsing {
-                return None;
-            }
-            let combined = format!("{} {}", date_part, tp);
-            let time = parse_time_str(&combined)?;
-            let base = settings.effective_base();
-            return Some(FastPathMatch {
-                naive: base.date().and_time(time),
-                tz,
-                period: Period::Day,
-            });
-        }
-    }
 
     // Parse delimited numeric date: YYYY-MM-DD, DD.MM.YYYY, MM/DD/YYYY, YYYY-MM
     let sep = if date_part.contains('-') {
@@ -234,7 +308,6 @@ fn try_numeric_datetime(
         return None;
     };
 
-    // Ensure consistent separator and all parts are ASCII digits
     let mut parts = [0u32; 3];
     let mut lens = [0usize; 3];
     let mut count = 0usize;
@@ -248,13 +321,13 @@ fn try_numeric_datetime(
         count += 1;
     }
 
+    let has_time = time_part.is_some();
     let time = match time_part {
         Some(tp) => parse_time_str(tp)?,
         None => NaiveTime::from_hms_opt(0, 0, 0)?,
     };
 
     if count == 2 {
-        // YYYY-MM or MM/YYYY (partial date)
         if settings.strict_parsing || settings.require_parts.contains(&DatePart::Day) {
             return None;
         }
@@ -272,6 +345,7 @@ fn try_numeric_datetime(
             naive: nd.and_time(time),
             tz,
             period: Period::Month,
+            has_time,
         });
     }
 
@@ -279,23 +353,23 @@ fn try_numeric_datetime(
         return None;
     }
 
-    let order = settings.date_order.unwrap_or_else(|| {
-        if lens[0] == 4 {
-            DateOrder::YMD
-        } else if sep == '.' {
-            DateOrder::DMY
-        } else if sep == '/' {
-            DateOrder::MDY
-        } else {
-            DateOrder::DMY
-        }
-    });
+    let fallback_order = if lens[0] == 4 {
+        DateOrder::YMD
+    } else if sep == '.' {
+        DateOrder::DMY
+    } else if sep == '/' {
+        DateOrder::MDY
+    } else {
+        DateOrder::DMY
+    };
+    let order = settings.effective_date_order(fallback_order);
 
     let nd = resolve_ymd_triplet(parts, lens, order)?;
     Some(FastPathMatch {
         naive: nd.and_time(time),
         tz,
         period: Period::Day,
+        has_time,
     })
 }
 
@@ -310,7 +384,6 @@ pub fn expand_two_digit_year(y: u32) -> i32 {
 }
 
 fn resolve_ymd_triplet(parts: [u32; 3], lens: [usize; 3], order: DateOrder) -> Option<NaiveDate> {
-    // If first component has 4 digits, strongly prefer YMD (or YDM if configured)
     if lens[0] == 4 {
         let y = parts[0] as i32;
         if order == DateOrder::YDM {
@@ -324,7 +397,6 @@ fn resolve_ymd_triplet(parts: [u32; 3], lens: [usize; 3], order: DateOrder) -> O
         return NaiveDate::from_ymd_opt(y, parts[2], parts[1]);
     }
 
-    // If last component has 4 digits, order between first two is DMY vs MDY
     if lens[2] == 4 {
         let y = parts[2] as i32;
         return match order {
@@ -335,7 +407,6 @@ fn resolve_ymd_triplet(parts: [u32; 3], lens: [usize; 3], order: DateOrder) -> O
         };
     }
 
-    // All 2-digit components: follow explicit order with graceful fallback
     let (y, m, d) = match order {
         DateOrder::YMD => (expand_two_digit_year(parts[0]), parts[1], parts[2]),
         DateOrder::YDM => (expand_two_digit_year(parts[0]), parts[2], parts[1]),
@@ -345,20 +416,16 @@ fn resolve_ymd_triplet(parts: [u32; 3], lens: [usize; 3], order: DateOrder) -> O
         DateOrder::DYM => (expand_two_digit_year(parts[1]), parts[2], parts[0]),
     };
 
-    NaiveDate::from_ymd_opt(y, m, d).or_else(|| {
-        // Fallback swap month/day if invalid (e.g. 26/11/25 with MDY default)
-        NaiveDate::from_ymd_opt(y, d, m)
-    })
+    NaiveDate::from_ymd_opt(y, m, d).or_else(|| NaiveDate::from_ymd_opt(y, d, m))
 }
 
-/// Parse time strings like "15:30", "15:30:45", "15:30:45.123456", "5:30 pm", "5pm", "14h30", "14h30m10s".
+/// Parse time strings like "15:30", "15:30:45", "15:30:45.123456", "5:30 pm", "5:30p.m.", "5pm", "14h30", "09h15".
 pub fn parse_time_str(input: &str) -> Option<NaiveTime> {
     let mut s = input.trim();
     if s.is_empty() {
         return None;
     }
 
-    // Strip optional trailing AM / PM / a.m. / p.m.
     let mut is_pm = false;
     let mut is_am = false;
     let lower = s.to_ascii_lowercase();
@@ -383,7 +450,7 @@ pub fn parse_time_str(input: &str) -> Option<NaiveTime> {
         }
     }
 
-    // French / European "14h30" or "14h"
+    // French / European "14h30" or "09h15" or "14h"
     if (s.contains('h') || s.contains('H')) && !s.contains(':') {
         let idx = s.find(['h', 'H'])?;
         let h_str = &s[..idx];

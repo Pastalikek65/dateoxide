@@ -15,13 +15,17 @@ FIXED_BASE = datetime(2026, 11, 26, 15, 0, 0)
     [
         ("2026-11-26", (2026, 11, 26)),
         ("2026-11-26T15:30:00Z", (2026, 11, 26)),
+        ("20261126T153000Z", (2026, 11, 26)),
         ("2026-11-26 09:45:12+03:00", (2026, 11, 26)),
         ("Thu, 26 Nov 2026 15:30:00 +0300", (2026, 11, 26)),
         ("26.11.2026", (2026, 11, 26)),
+        ("26-Nov-2026", (2026, 11, 26)),
+        ("26/Nov/2026:15:30:00 +0300", (2026, 11, 26)),
         ("2026/11/26 08:15", (2026, 11, 26)),
         ("20261126", (2026, 11, 26)),
         ("12 December 2025", (2025, 12, 12)),
         ("December 12, 2025 3:45 PM", (2025, 12, 12)),
+        ("Nov 26, 2026 at 3:30 PM EST", (2026, 11, 26)),
         ("15th of May 2025", (2025, 5, 15)),
         ("Fri Nov 26 15:30:00 2026", (2026, 11, 26)),
     ],
@@ -30,6 +34,27 @@ def test_absolute_dates_match_expected(text: str, expected_date: tuple[int, int,
     dt = dateoxide.parse(text, settings={"RELATIVE_BASE": FIXED_BASE})
     assert dt is not None, f"Failed to parse: {text}"
     assert (dt.year, dt.month, dt.day) == expected_date
+
+
+@pytest.mark.parametrize(
+    "text,expected_hms",
+    [
+        ("5:30p.m.", (17, 30, 0)),
+        ("09h15", (9, 15, 0)),
+        ("yesterday at noon", (12, 0, 0)),
+        ("tomorrow at midnight", (0, 0, 0)),
+        ("tonight", (20, 0, 0)),
+        ("last night", (20, 0, 0)),
+        ("today morning", (9, 0, 0)),
+        ("this evening", (18, 0, 0)),
+        ("dün gece", (20, 0, 0)),
+        ("bu akşam", (18, 0, 0)),
+    ],
+)
+def test_compact_times_and_time_of_day(text: str, expected_hms: tuple[int, int, int]):
+    dt = dateoxide.parse(text, settings={"RELATIVE_BASE": FIXED_BASE})
+    assert dt is not None, f"Failed to parse: {text}"
+    assert (dt.hour, dt.minute, dt.second) == expected_hms
 
 
 @pytest.mark.parametrize(
@@ -48,6 +73,10 @@ def test_absolute_dates_match_expected(text: str, expected_date: tuple[int, int,
         "26. November 2026",
         "26 ноября 2026",
         "2026年11月26日",
+        "2026년 11월 26일",
+        "غدا",
+        "١٢ ديسمبر ٢٠٢٥",
+        "कल",
     ],
 )
 def test_cross_validation_against_dateparser(text: str):
@@ -86,6 +115,56 @@ def test_settings_and_date_order():
         )
         is None
     )
+
+
+def test_advanced_settings_region_normalize_parsers_skip_and_period():
+    # region controls ambiguous numeric dates
+    assert dateoxide.parse("05-11-2026", region="US") == datetime(2026, 5, 11)
+    assert dateoxide.parse("05-11-2026", region="GB") == datetime(2026, 11, 5)
+
+    # NORMALIZE=False requires exact diacritics
+    assert dateoxide.parse("15 Subat 2026", settings={"NORMALIZE": True}) == datetime(2026, 2, 15)
+    assert dateoxide.parse("15 Subat 2026", settings={"NORMALIZE": False}) is None
+
+    # PARSERS filtering
+    assert (
+        dateoxide.parse(
+            "3 days ago",
+            settings={"RELATIVE_BASE": FIXED_BASE, "PARSERS": ["absolute-time", "base-formats"]},
+        )
+        is None
+    )
+    assert (
+        dateoxide.parse(
+            "1700000000",
+            settings={"PARSERS": ["absolute-time"]},
+        )
+        is None
+    )
+
+    # SKIP_TOKENS
+    dt_skip = dateoxide.parse(
+        "Published: 12 December 2025",
+        settings={"SKIP_TOKENS": ["Published:"]},
+    )
+    assert dt_skip == datetime(2025, 12, 12)
+
+    # RETURN_TIME_AS_PERIOD
+    ddp = DateDataParser(settings={"RETURN_TIME_AS_PERIOD": True})
+    assert ddp.get_date_data("2026-11-26 14:30").period == "time"
+    assert ddp.get_date_data("2026-11-26").period == "day"
+
+    # Multi-sense relative word (Hindi कल: tomorrow by default, yesterday with PREFER_DATES_FROM='past')
+    assert dateoxide.parse(
+        "कल",
+        languages=["hi"],
+        settings={"RELATIVE_BASE": FIXED_BASE, "PREFER_DATES_FROM": "past"},
+    ).date() == datetime(2026, 11, 25).date()
+    assert dateoxide.parse(
+        "कल",
+        languages=["hi"],
+        settings={"RELATIVE_BASE": FIXED_BASE, "PREFER_DATES_FROM": "future"},
+    ).date() == datetime(2026, 11, 27).date()
 
 
 def test_timezone_handling():
@@ -135,7 +214,7 @@ def test_invalid_inputs_return_none():
         "   ",
         "not a date at all xyz",
         "lorem ipsum dolor sit amet",
-        "." * 2000,  # ReDoS stress check
+        "." * 2000,
         "a" * 5000,
     ]:
         assert dateoxide.parse(bad) is None

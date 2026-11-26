@@ -106,6 +106,7 @@ pub enum Period {
     Day,
     Month,
     Year,
+    Time,
 }
 
 impl Period {
@@ -114,6 +115,31 @@ impl Period {
             Self::Day => "day",
             Self::Month => "month",
             Self::Year => "year",
+            Self::Time => "time",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParserKind {
+    Timestamp,
+    RelativeTime,
+    CustomFormats,
+    AbsoluteTime,
+    BaseFormats,
+    NoSpacesTime,
+}
+
+impl ParserKind {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "timestamp" => Some(Self::Timestamp),
+            "relative-time" => Some(Self::RelativeTime),
+            "custom-formats" => Some(Self::CustomFormats),
+            "absolute-time" => Some(Self::AbsoluteTime),
+            "base-formats" => Some(Self::BaseFormats),
+            "no-spaces-time" => Some(Self::NoSpacesTime),
+            _ => None,
         }
     }
 }
@@ -146,7 +172,7 @@ pub struct DateData {
     pub locale: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Settings {
     pub date_order: Option<DateOrder>,
     pub prefer_dates_from: PreferDatesFrom,
@@ -161,11 +187,65 @@ pub struct Settings {
     pub default_languages: Vec<String>,
     pub date_formats: Option<Vec<String>>,
     pub require_parts: Vec<DatePart>,
+    pub normalize: bool,
+    pub return_time_as_period: bool,
+    pub skip_tokens: Vec<String>,
+    pub parsers: Option<Vec<ParserKind>>,
+    pub region: Option<String>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            date_order: None,
+            prefer_dates_from: PreferDatesFrom::default(),
+            prefer_day_of_month: PreferDayOfMonth::default(),
+            prefer_month_of_year: PreferMonthOfYear::default(),
+            strict_parsing: false,
+            relative_base: None,
+            timezone: None,
+            to_timezone: None,
+            return_as_timezone_aware: None,
+            languages: None,
+            default_languages: Vec::new(),
+            date_formats: None,
+            require_parts: Vec::new(),
+            normalize: true,
+            return_time_as_period: false,
+            skip_tokens: Vec::new(),
+            parsers: None,
+            region: None,
+        }
+    }
 }
 
 impl Settings {
     pub fn effective_base(&self) -> NaiveDateTime {
         self.relative_base
             .unwrap_or_else(|| chrono::Local::now().naive_local())
+    }
+
+    #[inline]
+    pub fn allows_parser(&self, kind: ParserKind) -> bool {
+        match &self.parsers {
+            None => true,
+            Some(list) => list.contains(&kind),
+        }
+    }
+
+    pub fn effective_date_order(&self, fallback: DateOrder) -> DateOrder {
+        if let Some(order) = self.date_order {
+            return order;
+        }
+        if let Some(ref reg) = self.region {
+            let code = reg.trim().to_ascii_uppercase();
+            return match code.as_str() {
+                "US" | "PH" | "FM" | "AS" | "UM" => DateOrder::MDY,
+                "CN" | "JP" | "KR" | "TW" | "HU" | "LT" | "SE" | "ZA" | "CA" => DateOrder::YMD,
+                r if r.len() == 2 && r.bytes().all(|b| b.is_ascii_alphabetic()) => DateOrder::DMY,
+                _ => fallback,
+            };
+        }
+        fallback
     }
 }

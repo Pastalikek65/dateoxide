@@ -18,7 +18,7 @@ def test_parse_batch_parallel_consistency():
         "not a date",
         "2026年11月26日",
         "12 de diciembre de 2025",
-    ] * 200  # 1,600 items -> triggers Rayon parallel pool
+    ] * 200
 
     settings = {"RELATIVE_BASE": FIXED_BASE}
     batch_res = dateoxide.parse_batch(samples, settings=settings)
@@ -38,7 +38,7 @@ def test_date_data_parser_batch():
     assert res[2] is None
 
 
-def test_search_dates_english_and_turkish():
+def test_search_dates_english_turkish_and_detected_language():
     text_en = "The contract starts on 12 December 2025 and the draft was sent 3 days ago."
     found_en = search_dates(text_en, settings={"RELATIVE_BASE": FIXED_BASE})
     assert found_en is not None
@@ -46,11 +46,27 @@ def test_search_dates_english_and_turkish():
     assert found_en[0][1].date() == datetime(2025, 12, 12).date()
     assert found_en[1][1].date() == datetime(2026, 11, 23).date()
 
+    found_with_lang = search_dates(
+        text_en,
+        settings={"RELATIVE_BASE": FIXED_BASE},
+        add_detected_language=True,
+    )
+    assert found_with_lang is not None
+    assert len(found_with_lang) == 2
+    assert found_with_lang[0][2] == "en"
+    assert found_with_lang[1][2] == "en"
+
     text_tr = "Toplantı 15 Ocak 2026 tarihinde yapılacak, önceki görüşme 3 gün önce bitti."
-    found_tr = search_dates(text_tr, settings={"RELATIVE_BASE": FIXED_BASE})
+    found_tr = search_dates(
+        text_tr,
+        settings={"RELATIVE_BASE": FIXED_BASE},
+        add_detected_language=True,
+    )
     assert found_tr is not None
     assert len(found_tr) == 2
     assert found_tr[0][1].date() == datetime(2026, 1, 15).date()
+    assert found_tr[0][2] == "tr"
     assert found_tr[1][1].date() == datetime(2026, 11, 23).date()
+    assert found_tr[1][2] == "tr"
 
     assert search_dates("Nothing remotely resembling a calendar here.") is None

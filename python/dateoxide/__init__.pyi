@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Literal, Mapping, Sequence, overload
 
 __version__: str
 
@@ -50,14 +50,31 @@ def parse_batch(
     date_formats: Sequence[str] | None = None,
     languages: Sequence[str] | None = None,
     locales: Sequence[str] | None = None,
+    region: str | None = None,
     settings: Mapping[str, Any] | None = None,
 ) -> list[datetime | None]: ...
+
+@overload
+def search_dates(
+    text: str,
+    languages: Sequence[str] | None = None,
+    settings: Mapping[str, Any] | None = None,
+    add_detected_language: Literal[False] = False,
+) -> list[tuple[str, datetime]] | None: ...
+
+@overload
+def search_dates(
+    text: str,
+    languages: Sequence[str] | None = None,
+    settings: Mapping[str, Any] | None = None,
+    add_detected_language: Literal[True] = ...,
+) -> list[tuple[str, datetime, str | None]] | None: ...
 
 def search_dates(
     text: str,
     languages: Sequence[str] | None = None,
     settings: Mapping[str, Any] | None = None,
     add_detected_language: bool = False,
-) -> list[tuple[str, datetime]] | None: ...
+) -> list[tuple[str, datetime]] | list[tuple[str, datetime, str | None]] | None: ...
 
 def supported_languages() -> list[str]: ...

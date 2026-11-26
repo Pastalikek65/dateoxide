@@ -18,4 +18,6 @@ pub struct RawLocale {
     /// (prefix, suffix, sign: -1 past / +1 future, unit_id)
     pub relative_affix: Vec<(String, String, i8, u8)>,
     pub word_numbers: Vec<(String, u32)>,
+    /// (phrase, hour 0..=23) for time-of-day words (morning=9, noon=12, evening=18, night=20, midnight=0)
+    pub time_of_day: Vec<(String, u8)>,
 }

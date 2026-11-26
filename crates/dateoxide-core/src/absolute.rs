@@ -1,13 +1,14 @@
 use crate::fast_path::{days_in_month, expand_two_digit_year, parse_time_str, resolve_missing_day};
-use crate::locale::{CompiledLocale, LocaleRegistry};
+use crate::locale::{fold_diacritics, CompiledLocale, LocaleRegistry};
 use crate::settings::{DateOrder, DatePart, Period, PreferDatesFrom, PreferMonthOfYear, Settings};
-use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 
 #[derive(Debug, Clone)]
 pub struct AbsoluteMatch {
     pub naive: NaiveDateTime,
     pub period: Period,
     pub locale: String,
+    pub has_time: bool,
 }
 
 /// Try parsing a natural-language absolute or partial date across candidate locales.
@@ -17,9 +18,16 @@ pub fn try_parse_absolute(
     registry: &LocaleRegistry,
     settings: &Settings,
 ) -> Option<AbsoluteMatch> {
-    // Handle CJK structured dates cleanly first: e.g. "2026年11月26日 15時30分45秒"
-    if normalized.contains('年') || normalized.contains('月') || normalized.contains('日') {
-        if let Some(m) = try_cjk_date(normalized, settings) {
+    // Handle CJK & Korean structured dates cleanly first:
+    // e.g. "2026年11月26日", "15 1月 2025", "2026년 11월 26일 오후 3시 30분"
+    if normalized.contains('年')
+        || normalized.contains('月')
+        || normalized.contains('日')
+        || normalized.contains('년')
+        || normalized.contains('월')
+        || normalized.contains('일')
+    {
+        if let Some(m) = try_cjk_or_korean_date(normalized, settings) {
             return Some(m);
         }
     }
@@ -44,6 +52,7 @@ pub fn try_parse_absolute(
                             naive: nd.and_hms_opt(0, 0, 0)?,
                             period: Period::Year,
                             locale: "en".to_string(),
+                            has_time: false,
                         });
                     }
                 }
@@ -62,47 +71,88 @@ pub fn try_parse_absolute(
     None
 }
 
-fn try_cjk_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch> {
+fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch> {
     let mut year: Option<i32> = None;
     let mut month: Option<u32> = None;
     let mut day: Option<u32> = None;
     let mut hour: u32 = 0;
     let mut minute: u32 = 0;
     let mut second: u32 = 0;
+    let mut has_time = false;
+    let is_korean = s.contains('년') || s.contains('월') || s.contains('일') || s.contains('시');
+    let is_pm = s.contains("오후") || s.contains("pm") || s.contains("下午");
+    let is_am = s.contains("오전") || s.contains("am") || s.contains("上午");
 
+    let mut loose_nums: Vec<(u32, usize)> = Vec::new();
     let mut cur_num = String::new();
-    for ch in s.chars() {
+    let chars: Vec<char> = s.chars().collect();
+    let mut idx = 0usize;
+
+    while idx < chars.len() {
+        let ch = chars[idx];
         if ch.is_ascii_digit() {
             cur_num.push(ch);
-        } else if !cur_num.is_empty() {
+            idx += 1;
+            continue;
+        }
+        if !cur_num.is_empty() {
             let val: u32 = cur_num.parse().ok()?;
+            let len = cur_num.len();
             cur_num.clear();
             match ch {
-                '年' => year = Some(val as i32),
-                '月' => month = Some(val),
-                '日' | '号' => day = Some(val),
-                '時' | '时' => hour = val,
-                '分' => minute = val,
-                '秒' => second = val,
+                '年' | '년' => year = Some(val as i32),
+                '月' | '월' => month = Some(val),
+                '日' | '号' | '일' => day = Some(val),
+                '時' | '时' | '시' => {
+                    hour = val;
+                    has_time = true;
+                }
+                '分' | '분' => {
+                    minute = val;
+                    has_time = true;
+                }
+                '秒' | '초' => {
+                    second = val;
+                    has_time = true;
+                }
                 ':' => {
-                    // Fallback to HH:MM embedded after CJK date
-                    if let Some(t_idx) = s.find(|c: char| c == ':') {
-                        if t_idx >= 2 {
-                            let start = s[..t_idx]
-                                .rfind(|c: char| !c.is_ascii_digit())
-                                .map(|i| i + 1)
-                                .unwrap_or(0);
-                            if let Some(t) = parse_time_str(&s[start..]) {
-                                hour = t.hour();
-                                minute = t.minute();
-                                second = t.second();
-                                break;
-                            }
-                        }
+                    // Find start of HH:MM[:SS] substring
+                    let byte_idx = s
+                        .char_indices()
+                        .nth(idx)
+                        .map(|(b, _)| b)
+                        .unwrap_or(0);
+                    let start = s[..byte_idx]
+                        .rfind(|c: char| !c.is_ascii_digit())
+                        .map(|p| p + 1)
+                        .unwrap_or(0);
+                    if let Some(t) = parse_time_str(s[start..].trim()) {
+                        hour = t.hour();
+                        minute = t.minute();
+                        second = t.second();
+                        has_time = true;
+                        break;
                     }
                 }
-                _ => {}
+                _ => loose_nums.push((val, len)),
             }
+        }
+        idx += 1;
+    }
+
+    if !cur_num.is_empty() {
+        let len = cur_num.len();
+        if let Ok(val) = cur_num.parse::<u32>() {
+            loose_nums.push((val, len));
+        }
+    }
+
+    // Fill missing year / day from loose space-separated numbers (e.g. "15 1月 2025")
+    for (val, len) in loose_nums {
+        if year.is_none() && len == 4 && (1000..=2999).contains(&val) {
+            year = Some(val as i32);
+        } else if day.is_none() && (1..=31).contains(&val) && len <= 2 {
+            day = Some(val);
         }
     }
 
@@ -110,16 +160,58 @@ fn try_cjk_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch> {
         return None;
     }
 
+    if has_time {
+        if is_pm && hour >= 1 && hour < 12 {
+            hour += 12;
+        } else if is_am && hour == 12 {
+            hour = 0;
+        }
+    }
+
     let base = settings.effective_base();
     let (y, m, d, period) = complete_partial_date(year, month, day, base, settings)?;
     let nd = NaiveDate::from_ymd_opt(y, m, d)?;
     let nt = NaiveTime::from_hms_opt(hour, minute, second)?;
-    let lang = if s.contains('時') { "ja" } else { "zh" };
+    let lang = if is_korean {
+        "ko"
+    } else if s.contains('時') {
+        "ja"
+    } else {
+        "zh"
+    };
+
     Some(AbsoluteMatch {
         naive: nd.and_time(nt),
         period,
         locale: lang.to_string(),
+        has_time,
     })
+}
+
+fn lookup_month(s: &str, loc: &CompiledLocale, normalize: bool) -> Option<u8> {
+    if let Some(&m) = loc.months.get(s) {
+        return Some(m);
+    }
+    if normalize {
+        let f = fold_diacritics(s);
+        if let Some(&m) = loc.folded_months.get(&f) {
+            return Some(m);
+        }
+    }
+    None
+}
+
+fn lookup_weekday(s: &str, loc: &CompiledLocale, normalize: bool) -> Option<u8> {
+    if let Some(&w) = loc.weekdays.get(s) {
+        return Some(w);
+    }
+    if normalize {
+        let f = fold_diacritics(s);
+        if let Some(&w) = loc.folded_weekdays.get(&f) {
+            return Some(w);
+        }
+    }
+    None
 }
 
 fn try_parse_in_locale(
@@ -127,9 +219,8 @@ fn try_parse_in_locale(
     loc: &CompiledLocale,
     settings: &Settings,
 ) -> Option<AbsoluteMatch> {
-    // Tokenize splitting on whitespace and common separators, preserving time tokens like "14:30:00" and "14h30"
-    let raw_tokens = split_date_tokens(normalized);
-    if raw_tokens.is_empty() || raw_tokens.len() > 16 {
+    let raw_tokens = split_date_tokens(normalized, loc, settings.normalize);
+    if raw_tokens.is_empty() || raw_tokens.len() > 18 {
         return None;
     }
 
@@ -138,7 +229,7 @@ fn try_parse_in_locale(
     let mut day: Option<u32> = None;
     let mut weekday_seen: Option<u8> = None;
     let mut time: Option<NaiveTime> = None;
-    let mut ampm: Option<bool> = None; // Some(true) = PM, Some(false) = AM
+    let mut ampm: Option<bool> = None;
     let mut free_nums: Vec<(u32, usize)> = Vec::new();
     let mut matched_locale_signal = false;
 
@@ -151,20 +242,60 @@ fn try_parse_in_locale(
             continue;
         }
 
-        // 1. Check time token (e.g., "14:30", "14:30:45", "14h30", "5pm")
+        // 0. User-configured skip tokens
+        if settings
+            .skip_tokens
+            .iter()
+            .any(|st| st.eq_ignore_ascii_case(clean))
+        {
+            i += 1;
+            continue;
+        }
+
+        // 1. Apache / Nginx combined year:HH:MM:SS token (e.g. "2026:15:30:00")
+        if year.is_none() && time.is_none() && clean.len() >= 12 {
+            if let Some((y_part, t_part)) = clean.split_once(':') {
+                if y_part.len() == 4 && y_part.bytes().all(|b| b.is_ascii_digit()) {
+                    if let (Ok(y_val), Some(t_val)) = (y_part.parse::<i32>(), parse_time_str(t_part)) {
+                        if (1000..=2999).contains(&y_val) {
+                            year = Some(y_val);
+                            time = Some(t_val);
+                            i += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Time token (e.g., "14:30", "14:30:45", "14h30", "09h15", "5pm", "5:30p.m.")
         if time.is_none()
             && (clean.contains(':')
                 || (clean.len() >= 3
                     && clean.as_bytes()[0].is_ascii_digit()
-                    && (clean.contains('h') || clean.ends_with("am") || clean.ends_with("pm"))))
+                    && (clean.contains('h')
+                        || clean.ends_with("am")
+                        || clean.ends_with("pm")
+                        || clean.ends_with("a.m")
+                        || clean.ends_with("p.m")
+                        || tok.ends_with("a.m.")
+                        || tok.ends_with("p.m."))))
         {
-            // Look ahead for separate "am" / "pm" token
+            let time_cand = if tok.ends_with("a.m.") || tok.ends_with("p.m.") {
+                tok.trim_matches(',')
+            } else {
+                clean
+            };
             if i + 1 < raw_tokens.len() {
                 let next_clean = raw_tokens[i + 1].trim_matches('.');
-                if next_clean == "am" || next_clean == "pm" || loc.am.contains(next_clean) || loc.pm.contains(next_clean) {
+                if next_clean == "am"
+                    || next_clean == "pm"
+                    || loc.am.contains(next_clean)
+                    || loc.pm.contains(next_clean)
+                {
                     let is_pm = next_clean == "pm" || loc.pm.contains(next_clean);
                     let suffix = if is_pm { "pm" } else { "am" };
-                    let combined = format!("{} {}", clean, suffix);
+                    let combined = format!("{} {}", time_cand, suffix);
                     if let Some(t) = parse_time_str(&combined) {
                         time = Some(t);
                         i += 2;
@@ -172,14 +303,47 @@ fn try_parse_in_locale(
                     }
                 }
             }
-            if let Some(t) = parse_time_str(clean) {
+            if let Some(t) = parse_time_str(time_cand) {
                 time = Some(t);
                 i += 1;
                 continue;
             }
         }
 
-        // 2. Check AM/PM markers
+        // 3. Month name: trigram -> bigram -> unigram (checked before AM/PM so "am faoilleach" matches!)
+        if month.is_none() {
+            if i + 2 < raw_tokens.len() {
+                let trigram = format!(
+                    "{} {} {}",
+                    clean,
+                    raw_tokens[i + 1].trim_matches(','),
+                    raw_tokens[i + 2].trim_matches(',')
+                );
+                if let Some(m) = lookup_month(&trigram, loc, settings.normalize) {
+                    month = Some(m as u32);
+                    matched_locale_signal = true;
+                    i += 3;
+                    continue;
+                }
+            }
+            if i + 1 < raw_tokens.len() {
+                let bigram = format!("{} {}", clean, raw_tokens[i + 1].trim_matches(','));
+                if let Some(m) = lookup_month(&bigram, loc, settings.normalize) {
+                    month = Some(m as u32);
+                    matched_locale_signal = true;
+                    i += 2;
+                    continue;
+                }
+            }
+            if let Some(m) = lookup_month(clean, loc, settings.normalize) {
+                month = Some(m as u32);
+                matched_locale_signal = true;
+                i += 1;
+                continue;
+            }
+        }
+
+        // 4. AM/PM markers
         if clean == "pm" || clean == "p.m" || loc.pm.contains(clean) {
             ampm = Some(true);
             i += 1;
@@ -191,28 +355,9 @@ fn try_parse_in_locale(
             continue;
         }
 
-        // 3. Check Month name (try 2-word month first, then 1-word)
-        if month.is_none() {
-            if i + 1 < raw_tokens.len() {
-                let bigram = format!("{} {}", clean, raw_tokens[i + 1].trim_matches(','));
-                if let Some(&m) = loc.months.get(&bigram) {
-                    month = Some(m as u32);
-                    matched_locale_signal = true;
-                    i += 2;
-                    continue;
-                }
-            }
-            if let Some(&m) = loc.months.get(clean) {
-                month = Some(m as u32);
-                matched_locale_signal = true;
-                i += 1;
-                continue;
-            }
-        }
-
-        // 4. Check Weekday name
+        // 5. Weekday name
         if weekday_seen.is_none() {
-            if let Some(&wd) = loc.weekdays.get(clean) {
+            if let Some(wd) = lookup_weekday(clean, loc, settings.normalize) {
                 weekday_seen = Some(wd);
                 matched_locale_signal = true;
                 i += 1;
@@ -220,7 +365,7 @@ fn try_parse_in_locale(
             }
         }
 
-        // 5. Check numeric token (including ordinals like "1st", "2nd", "3rd", "21st", "1er", "15.")
+        // 6. Numeric token (including ordinals)
         if let Some((num, digit_len)) = parse_date_number_or_ordinal(clean) {
             if digit_len == 4 && (1000..=2999).contains(&num) && year.is_none() {
                 year = Some(num as i32);
@@ -231,29 +376,28 @@ fn try_parse_in_locale(
             continue;
         }
 
-        // 6. Check skip / connector words ("at", "on", "of", "the", "de", "del", "le", "am", "um", "saat", "günü", "yılında")
+        // 7. Skip / connector words
         if loc.skip.contains(clean)
             || matches!(
                 clean,
                 "at" | "on" | "of" | "the" | "in" | "de" | "del" | "el" | "la" | "le" | "à"
                     | "am" | "um" | "den" | "saat" | "tarih" | "tarihinde" | "в" | "г" | "года"
-                    | "günü" | "yılında" | "yılı"
+                    | "günü" | "gunu" | "yılında" | "yilinda" | "yılı"
             )
         {
             i += 1;
             continue;
         }
 
-        // Reject unrecognized non-date words to avoid false positives like "3 days ago in" -> "3 August"
+        // Reject unrecognized non-date words to avoid false positives
         return None;
     }
 
-    // Must have matched a genuine month, weekday, or year+numeric signal
     if !matched_locale_signal && year.is_none() {
         return None;
     }
 
-    // Apply standalone AM/PM if time was parsed in 12h form
+    let has_time = time.is_some();
     if let (Some(t), Some(is_pm)) = (time, ampm) {
         let mut h = t.hour();
         if is_pm && h >= 1 && h < 12 {
@@ -264,8 +408,7 @@ fn try_parse_in_locale(
         time = NaiveTime::from_hms_nano_opt(h, t.minute(), t.second(), t.nanosecond());
     }
 
-    // Assign remaining free numbers to day / month / year
-    let order = settings.date_order.unwrap_or(loc.date_order);
+    let order = settings.effective_date_order(loc.date_order);
     match free_nums.as_slice() {
         [] => {}
         [(n, len)] => {
@@ -279,7 +422,6 @@ fn try_parse_in_locale(
         }
         [(n1, l1), (n2, l2)] => {
             if month.is_some() && day.is_none() && year.is_none() {
-                // e.g. "Dec 26 25" or "26 Dec 25"
                 if (1..=31).contains(n1) && *l1 <= 2 && *l2 == 2 {
                     day = Some(*n1);
                     year = Some(expand_two_digit_year(*n2));
@@ -290,7 +432,6 @@ fn try_parse_in_locale(
                     return None;
                 }
             } else if month.is_none() && day.is_none() {
-                // e.g. "26/11 2026"
                 match order {
                     DateOrder::MDY if (1..=12).contains(n1) && (1..=31).contains(n2) => {
                         month = Some(*n1);
@@ -349,6 +490,7 @@ fn try_parse_in_locale(
             naive: target_date.and_time(nt),
             period: Period::Day,
             locale: loc.code.clone(),
+            has_time,
         });
     }
 
@@ -361,6 +503,7 @@ fn try_parse_in_locale(
         naive: nd.and_time(nt),
         period,
         locale: loc.code.clone(),
+        has_time,
     })
 }
 
@@ -407,7 +550,6 @@ fn complete_partial_date(
         return None;
     }
 
-    // Apply PREFER_DATES_FROM when year was omitted
     if year.is_none() {
         if let Some(cand) = NaiveDate::from_ymd_opt(y, m, d) {
             match settings.prefer_dates_from {
@@ -422,25 +564,31 @@ fn complete_partial_date(
     Some((y, m, final_d, period))
 }
 
-fn split_date_tokens(s: &str) -> Vec<&str> {
+/// Split tokens on whitespace, comma, and slash; split on `-` ONLY if the chunk
+/// is not itself a known hyphenated month/weekday in `loc` (e.g. `s-ɔ`, `j-guer`, `1-р`).
+fn split_date_tokens<'a>(s: &'a str, loc: &CompiledLocale, normalize: bool) -> Vec<&'a str> {
     let mut out = Vec::with_capacity(8);
-    let bytes = s.as_bytes();
-    let mut start = 0usize;
-    let mut i = 0usize;
-
-    while i < bytes.len() {
-        let b = bytes[i];
-        let is_sep = b == b' ' || b == b'\t' || b == b',' || b == b'/' || b == b'-';
-        if is_sep {
-            if i > start {
-                out.push(&s[start..i]);
-            }
-            start = i + 1;
+    for chunk in s.split(|c: char| c.is_whitespace() || c == ',' || c == '/') {
+        if chunk.is_empty() {
+            continue;
         }
-        i += 1;
-    }
-    if start < bytes.len() {
-        out.push(&s[start..]);
+        if chunk.contains('-') {
+            let clean = chunk.trim_matches('.');
+            if lookup_month(clean, loc, normalize).is_some()
+                || lookup_weekday(clean, loc, normalize).is_some()
+                || loc.months.keys().any(|k| k.split_whitespace().any(|w| w == clean))
+            {
+                out.push(chunk);
+                continue;
+            }
+            for sub in chunk.split('-') {
+                if !sub.is_empty() {
+                    out.push(sub);
+                }
+            }
+        } else {
+            out.push(chunk);
+        }
     }
     out
 }
@@ -449,7 +597,6 @@ fn parse_date_number_or_ordinal(s: &str) -> Option<(u32, usize)> {
     if s.is_empty() || s.len() > 6 {
         return None;
     }
-    // Strip English/French/Spanish/Turkish/German ordinal suffixes: 1st, 2nd, 3rd, 4th, 1er, 2e, 1º, 1ª
     let stripped = s
         .strip_suffix("st")
         .or_else(|| s.strip_suffix("nd"))
@@ -466,5 +613,3 @@ fn parse_date_number_or_ordinal(s: &str) -> Option<(u32, usize)> {
     let val: u32 = stripped.parse().ok()?;
     Some((val, stripped.len()))
 }
-
-use chrono::Timelike;

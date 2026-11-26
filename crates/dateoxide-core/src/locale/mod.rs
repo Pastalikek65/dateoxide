@@ -71,9 +71,19 @@ pub struct CompiledLocale {
     pub ago: FxHashSet<String>,
     pub in_words: FxHashSet<String>,
     pub skip: FxHashSet<String>,
-    pub relative_exact: FxHashMap<String, RelativeSpec>,
+    pub relative_exact: FxHashMap<String, Vec<RelativeSpec>>,
     pub relative_affix: Vec<RelativeAffix>,
     pub word_numbers: FxHashMap<String, u32>,
+    pub time_of_day: FxHashMap<String, u8>,
+    // Diacritic-folded secondary tables (populated only where folded != exact)
+    pub folded_months: FxHashMap<String, u8>,
+    pub folded_weekdays: FxHashMap<String, u8>,
+    pub folded_units: FxHashMap<String, TimeUnit>,
+    pub folded_ago: FxHashSet<String>,
+    pub folded_in_words: FxHashSet<String>,
+    pub folded_relative_exact: FxHashMap<String, Vec<RelativeSpec>>,
+    pub folded_relative_affix: Vec<RelativeAffix>,
+    pub folded_time_of_day: FxHashMap<String, u8>,
 }
 
 pub struct LocaleRegistry {
@@ -81,8 +91,12 @@ pub struct LocaleRegistry {
     pub code_to_id: FxHashMap<String, usize>,
     /// Global inverted index: lowercase token -> priority-ordered list of locale IDs.
     pub token_to_langs: FxHashMap<String, Vec<u16>>,
+    /// Folded inverted index: diacritic-folded token -> priority-ordered list of locale IDs.
+    pub folded_token_to_langs: FxHashMap<String, Vec<u16>>,
     /// Global exact relative phrase index: phrase -> list of (lang_id, RelativeSpec).
     pub exact_phrase_index: FxHashMap<String, Vec<(u16, RelativeSpec)>>,
+    /// Folded exact relative phrase index: folded phrase -> list of (lang_id, RelativeSpec).
+    pub folded_exact_phrase_index: FxHashMap<String, Vec<(u16, RelativeSpec)>>,
     /// Tokens that can start or belong to a date expression (used for fast search_dates).
     pub known_date_tokens: FxHashSet<String>,
 }
@@ -100,7 +114,10 @@ impl LocaleRegistry {
         let mut locales = Vec::with_capacity(raw_locales.len());
         let mut code_to_id = FxHashMap::default();
         let mut token_to_langs: FxHashMap<String, Vec<u16>> = FxHashMap::default();
+        let mut folded_token_to_langs: FxHashMap<String, Vec<u16>> = FxHashMap::default();
         let mut exact_phrase_index: FxHashMap<String, Vec<(u16, RelativeSpec)>> =
+            FxHashMap::default();
+        let mut folded_exact_phrase_index: FxHashMap<String, Vec<(u16, RelativeSpec)>> =
             FxHashMap::default();
         let mut known_date_tokens: FxHashSet<String> = FxHashSet::default();
 
@@ -115,14 +132,25 @@ impl LocaleRegistry {
             if is_search_token {
                 known_date_tokens.insert(tok.to_string());
             }
+            let folded = fold_diacritics(tok);
+            if folded != tok && !folded.is_empty() {
+                let fentry = folded_token_to_langs.entry(folded.clone()).or_default();
+                if fentry.last().copied() != Some(lang_id) && !fentry.contains(&lang_id) {
+                    fentry.push(lang_id);
+                }
+                if is_search_token {
+                    known_date_tokens.insert(folded);
+                }
+            }
         };
 
         for (idx, raw) in raw_locales.into_iter().enumerate() {
             let lang_id = idx as u16;
-            code_to_id.insert(raw.code.clone(), idx);
+            code_to_id.insert(raw.code.to_ascii_lowercase(), idx);
             let date_order = DateOrder::from_str(&raw.date_order).unwrap_or(DateOrder::DMY);
 
             let mut months = FxHashMap::default();
+            let mut folded_months = FxHashMap::default();
             for (m_idx, names) in raw.months.into_iter().enumerate() {
                 let month_num = (m_idx + 1) as u8;
                 for name in names {
@@ -132,15 +160,24 @@ impl LocaleRegistry {
                         }
                     }
                     register_token(&name, lang_id, true);
+                    let f = fold_diacritics(&name);
+                    if f != name {
+                        folded_months.entry(f).or_insert(month_num);
+                    }
                     months.insert(name, month_num);
                 }
             }
 
             let mut weekdays = FxHashMap::default();
+            let mut folded_weekdays = FxHashMap::default();
             for (d_idx, names) in raw.weekdays.into_iter().enumerate() {
                 let wd_num = d_idx as u8;
                 for name in names {
                     register_token(&name, lang_id, true);
+                    let f = fold_diacritics(&name);
+                    if f != name {
+                        folded_weekdays.entry(f).or_insert(wd_num);
+                    }
                     weekdays.insert(name, wd_num);
                 }
             }
@@ -157,28 +194,43 @@ impl LocaleRegistry {
             }
 
             let mut units = FxHashMap::default();
+            let mut folded_units = FxHashMap::default();
             for (tok, u_id) in raw.units {
                 if let Some(u) = TimeUnit::from_u8(u_id) {
                     register_token(&tok, lang_id, true);
+                    let f = fold_diacritics(&tok);
+                    if f != tok {
+                        folded_units.entry(f).or_insert(u);
+                    }
                     units.insert(tok, u);
                 }
             }
 
             let mut ago = FxHashSet::default();
+            let mut folded_ago = FxHashSet::default();
             for s in raw.ago {
                 for part in s.split_whitespace() {
                     register_token(part, lang_id, true);
                 }
                 register_token(&s, lang_id, true);
+                let f = fold_diacritics(&s);
+                if f != s {
+                    folded_ago.insert(f);
+                }
                 ago.insert(s);
             }
 
             let mut in_words = FxHashSet::default();
+            let mut folded_in_words = FxHashSet::default();
             for s in raw.in_words {
                 for part in s.split_whitespace() {
                     register_token(part, lang_id, true);
                 }
                 register_token(&s, lang_id, true);
+                let f = fold_diacritics(&s);
+                if f != s {
+                    folded_in_words.insert(f);
+                }
                 in_words.insert(s);
             }
 
@@ -187,7 +239,9 @@ impl LocaleRegistry {
                 skip.insert(s);
             }
 
-            let mut relative_exact = FxHashMap::default();
+            let mut relative_exact: FxHashMap<String, Vec<RelativeSpec>> = FxHashMap::default();
+            let mut folded_relative_exact: FxHashMap<String, Vec<RelativeSpec>> =
+                FxHashMap::default();
             for (phrase, sign, amount, u_id) in raw.relative_exact {
                 if let Some(unit) = TimeUnit::from_u8(u_id) {
                     let spec = RelativeSpec { sign, amount, unit };
@@ -199,17 +253,36 @@ impl LocaleRegistry {
                         .entry(phrase.clone())
                         .or_default()
                         .push((lang_id, spec));
-                    relative_exact.insert(phrase, spec);
+                    let f = fold_diacritics(&phrase);
+                    if f != phrase {
+                        folded_exact_phrase_index
+                            .entry(f.clone())
+                            .or_default()
+                            .push((lang_id, spec));
+                        folded_relative_exact.entry(f).or_default().push(spec);
+                    }
+                    relative_exact.entry(phrase).or_default().push(spec);
                 }
             }
 
             let mut relative_affix = Vec::with_capacity(raw.relative_affix.len());
+            let mut folded_relative_affix = Vec::new();
             for (prefix, suffix, sign, u_id) in raw.relative_affix {
                 if let Some(unit) = TimeUnit::from_u8(u_id) {
                     for part in prefix.split_whitespace().chain(suffix.split_whitespace()) {
                         if part.chars().count() >= 2 {
                             register_token(part, lang_id, true);
                         }
+                    }
+                    let fp = fold_diacritics(&prefix);
+                    let fs = fold_diacritics(&suffix);
+                    if fp != prefix || fs != suffix {
+                        folded_relative_affix.push(RelativeAffix {
+                            prefix: fp,
+                            suffix: fs,
+                            sign,
+                            unit,
+                        });
                     }
                     relative_affix.push(RelativeAffix {
                         prefix,
@@ -220,15 +293,46 @@ impl LocaleRegistry {
                 }
             }
             // Match longest affixes first for specificity
-            relative_affix.sort_by(|a, b| {
-                let la = a.prefix.len() + a.suffix.len();
-                let lb = b.prefix.len() + b.suffix.len();
-                lb.cmp(&la)
-            });
+            let sort_affix = |v: &mut Vec<RelativeAffix>| {
+                v.sort_by(|a, b| {
+                    let la = a.prefix.len() + a.suffix.len();
+                    let lb = b.prefix.len() + b.suffix.len();
+                    lb.cmp(&la)
+                });
+            };
+            sort_affix(&mut relative_affix);
+            sort_affix(&mut folded_relative_affix);
 
             let mut word_numbers = FxHashMap::default();
             for (w, n) in raw.word_numbers {
+                let f = fold_diacritics(&w);
+                if f != w {
+                    word_numbers.entry(f).or_insert(n);
+                }
                 word_numbers.insert(w, n);
+            }
+
+            let mut time_of_day = FxHashMap::default();
+            let mut folded_time_of_day = FxHashMap::default();
+            for (phrase, hour) in raw.time_of_day {
+                for part in phrase.split_whitespace() {
+                    register_token(part, lang_id, true);
+                }
+                register_token(&phrase, lang_id, true);
+                let f = fold_diacritics(&phrase);
+                if f != phrase {
+                    folded_time_of_day.entry(f).or_insert(hour);
+                }
+                time_of_day.insert(phrase, hour);
+            }
+
+            // Ensure key compound time-of-day trigger words are indexed for search_dates / lang detect
+            if raw.code == "en" {
+                register_token("tonight", lang_id, true);
+            } else if raw.code == "es" {
+                register_token("anoche", lang_id, true);
+            } else if raw.code == "tr" {
+                register_token("saat", lang_id, true);
             }
 
             locales.push(CompiledLocale {
@@ -246,6 +350,15 @@ impl LocaleRegistry {
                 relative_exact,
                 relative_affix,
                 word_numbers,
+                time_of_day,
+                folded_months,
+                folded_weekdays,
+                folded_units,
+                folded_ago,
+                folded_in_words,
+                folded_relative_exact,
+                folded_relative_affix,
+                folded_time_of_day,
             });
         }
 
@@ -253,7 +366,9 @@ impl LocaleRegistry {
             locales,
             code_to_id,
             token_to_langs,
+            folded_token_to_langs,
             exact_phrase_index,
+            folded_exact_phrase_index,
             known_date_tokens,
         }
     }
@@ -263,8 +378,13 @@ impl LocaleRegistry {
         if let Some(&id) = self.code_to_id.get(&lower) {
             return Some(id);
         }
+        // Handle underscore/hyphen variants (e.g. "uz_cyrl" -> "uz-cyrl")
+        let dash = lower.replace('_', "-");
+        if let Some(&id) = self.code_to_id.get(&dash) {
+            return Some(id);
+        }
         // Fallback: "en-US" or "tr_TR" -> "en" or "tr"
-        if let Some(base) = lower.split(['-', '_']).next() {
+        if let Some(base) = dash.split('-').next() {
             if let Some(&id) = self.code_to_id.get(base) {
                 return Some(id);
             }
@@ -279,6 +399,7 @@ impl LocaleRegistry {
         tokens: &[&str],
         explicit_langs: Option<&[String]>,
         default_langs: &[String],
+        normalize: bool,
     ) -> Vec<usize> {
         if let Some(langs) = explicit_langs {
             if !langs.is_empty() {
@@ -302,6 +423,16 @@ impl LocaleRegistry {
             return out;
         }
 
+        if normalize {
+            let f = fold_diacritics(normalized);
+            if let Some(matches) = self.folded_exact_phrase_index.get(&f) {
+                let mut out: Vec<usize> = matches.iter().map(|(id, _)| *id as usize).collect();
+                out.sort_unstable();
+                out.dedup();
+                return out;
+            }
+        }
+
         // Script-based fast narrowing for non-Latin scripts
         let script_hint = detect_script_hint(normalized);
 
@@ -311,16 +442,30 @@ impl LocaleRegistry {
                 continue;
             }
             if let Some(langs) = self.token_to_langs.get(tok) {
-                // Rare/specific tokens carry higher weight than ultra-common 2-letter tokens
                 let weight = if langs.len() <= 3 {
-                    6
+                    8
                 } else if langs.len() <= 12 {
-                    3
+                    4
                 } else {
-                    1
+                    2
                 };
                 for &lid in langs {
                     *scores.entry(lid).or_insert(0) += weight;
+                }
+            }
+            if normalize {
+                let ft = fold_diacritics(tok);
+                if let Some(langs) = self.folded_token_to_langs.get(&ft) {
+                    let weight = if langs.len() <= 3 {
+                        5
+                    } else if langs.len() <= 12 {
+                        3
+                    } else {
+                        1
+                    };
+                    for &lid in langs {
+                        *scores.entry(lid).or_insert(0) += weight;
+                    }
                 }
             }
         }
@@ -330,7 +475,17 @@ impl LocaleRegistry {
             let bigram = format!("{} {}", w[0], w[1]);
             if let Some(langs) = self.token_to_langs.get(&bigram) {
                 for &lid in langs {
-                    *scores.entry(lid).or_insert(0) += 5;
+                    *scores.entry(lid).or_insert(0) += 6;
+                }
+            }
+            if normalize {
+                let fb = fold_diacritics(&bigram);
+                if fb != bigram {
+                    if let Some(langs) = self.folded_token_to_langs.get(&fb) {
+                        for &lid in langs {
+                            *scores.entry(lid).or_insert(0) += 4;
+                        }
+                    }
                 }
             }
         }
@@ -339,7 +494,7 @@ impl LocaleRegistry {
         if let Some(hint_codes) = script_hint {
             for code in hint_codes {
                 if let Some(id) = self.resolve_lang_id(code) {
-                    *scores.entry(id as u16).or_insert(0) += 4;
+                    *scores.entry(id as u16).or_insert(0) += 5;
                 }
             }
         }
@@ -363,6 +518,39 @@ impl LocaleRegistry {
 
         ranked.into_iter().take(8).map(|(id, _)| id as usize).collect()
     }
+}
+
+/// Fold common Latin and Arabic diacritics for accent-tolerant matching (`NORMALIZE=True`).
+pub fn fold_diacritics(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        let mapped = match ch {
+            'á' | 'à' | 'â' | 'ä' | 'ã' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+            'é' | 'è' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+            'í' | 'ì' | 'î' | 'ï' | 'ī' | 'ĭ' | 'į' | 'ı' => 'i',
+            'ó' | 'ò' | 'ô' | 'ö' | 'õ' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+            'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => 'c',
+            'ğ' | 'ĝ' | 'ġ' | 'ģ' => 'g',
+            'ş' | 'ś' | 'ŝ' | 'š' => 's',
+            'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
+            'ý' | 'ÿ' | 'ŷ' => 'y',
+            'ž' | 'ź' | 'ż' => 'z',
+            'ł' | 'ĺ' | 'ļ' | 'ľ' => 'l',
+            'ř' | 'ŕ' | 'ŗ' => 'r',
+            'ď' | 'đ' => 'd',
+            'ť' | 'ţ' => 't',
+            // Arabic alef normalization & harakat/tatweel stripping
+            'أ' | 'إ' | 'آ' | 'ٱ' => 'ا',
+            'ى' => 'ي',
+            '\u{064B}'..='\u{065F}' | '\u{0670}' | '\u{0640}' | '\u{0300}'..='\u{036F}' => {
+                continue;
+            }
+            other => other,
+        };
+        out.push(mapped);
+    }
+    out
 }
 
 fn detect_script_hint(s: &str) -> Option<&'static [&'static str]> {
@@ -437,7 +625,6 @@ pub fn normalize_digits_and_lower(input: &str) -> String {
                 prev_space = true;
             }
         } else if mapped == '\u{0307}' {
-            // Skip stray combining dot above (from lowercasing Turkish İ)
             continue;
         } else {
             for lc in mapped.to_lowercase() {

@@ -1,6 +1,8 @@
 use crate::fast_path::{days_in_month, parse_time_str};
-use crate::locale::{CompiledLocale, LocaleRegistry, RelativeSpec, TimeUnit};
-use crate::settings::{Period, Settings};
+use crate::locale::{
+    fold_diacritics, CompiledLocale, LocaleRegistry, RelativeAffix, RelativeSpec, TimeUnit,
+};
+use crate::settings::{Period, PreferDatesFrom, Settings};
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime};
 
 #[derive(Debug, Clone)]
@@ -8,6 +10,7 @@ pub struct RelativeMatch {
     pub naive: NaiveDateTime,
     pub period: Period,
     pub locale: String,
+    pub has_time: bool,
 }
 
 /// Calendar-accurate offset addition (matches dateutil.relativedelta semantics for months/years).
@@ -68,6 +71,42 @@ fn period_for_unit(unit: TimeUnit) -> Period {
     }
 }
 
+fn select_relative_spec(specs: &[RelativeSpec], pref: PreferDatesFrom) -> RelativeSpec {
+    if specs.len() == 1 {
+        return specs[0];
+    }
+    match pref {
+        PreferDatesFrom::Past => specs
+            .iter()
+            .copied()
+            .find(|s| s.sign < 0)
+            .unwrap_or(specs[0]),
+        PreferDatesFrom::Future | PreferDatesFrom::CurrentPeriod => specs
+            .iter()
+            .copied()
+            .find(|s| s.sign > 0)
+            .unwrap_or(specs[0]),
+    }
+}
+
+fn lookup_exact_in_locale(
+    phrase: &str,
+    loc: &CompiledLocale,
+    normalize: bool,
+    pref: PreferDatesFrom,
+) -> Option<RelativeSpec> {
+    if let Some(specs) = loc.relative_exact.get(phrase) {
+        return Some(select_relative_spec(specs, pref));
+    }
+    if normalize {
+        let f = fold_diacritics(phrase);
+        if let Some(specs) = loc.folded_relative_exact.get(&f) {
+            return Some(select_relative_spec(specs, pref));
+        }
+    }
+    None
+}
+
 /// Try parsing a normalized lowercase string as a relative date across candidate locales.
 pub fn try_parse_relative(
     normalized: &str,
@@ -80,50 +119,112 @@ pub fn try_parse_relative(
     }
 
     let base = settings.effective_base();
+    let folded_full = if settings.normalize {
+        fold_diacritics(normalized)
+    } else {
+        normalized.to_string()
+    };
 
-    // 1. O(1) Global Exact Relative Phrase lookup ("yesterday", "bugün", "yarın", "demain", "今日", "şimdi")
+    // 0. Special compound day + time-of-day idioms ("tonight", "last night", "this evening", "dün gece", "bu akşam", etc.)
+    if let Some(m) = try_compound_tod_idiom(normalized, &folded_full, candidate_ids, registry, base, settings.normalize) {
+        return Some(m);
+    }
+
+    // 1. O(1) Global Exact Relative Phrase lookup ("yesterday", "bugün", "yarın", "demain", "今日", "कल", "غدا")
     if let Some(matches) = registry.exact_phrase_index.get(normalized) {
+        let mut matched_specs: Vec<(usize, RelativeSpec)> = Vec::new();
         for &(lid, spec) in matches {
             let lid_usize = lid as usize;
             if candidate_ids.is_empty() || candidate_ids.contains(&lid_usize) {
-                let dt = apply_relative_offset(base, spec.sign, spec.amount as f64, spec.unit)?;
+                matched_specs.push((lid_usize, spec));
+            }
+        }
+        if !matched_specs.is_empty() {
+            let specs_only: Vec<RelativeSpec> = matched_specs.iter().map(|(_, s)| *s).collect();
+            let chosen = select_relative_spec(&specs_only, settings.prefer_dates_from);
+            let chosen_lid = matched_specs
+                .iter()
+                .find(|(_, s)| *s == chosen)
+                .map(|(l, _)| *l)
+                .unwrap_or(matched_specs[0].0);
+            let dt = apply_relative_offset(base, chosen.sign, chosen.amount as f64, chosen.unit)?;
+            return Some(RelativeMatch {
+                naive: dt,
+                period: period_for_unit(chosen.unit),
+                locale: registry.locales[chosen_lid].code.clone(),
+                has_time: false,
+            });
+        }
+    }
+
+    if settings.normalize {
+        if let Some(matches) = registry.folded_exact_phrase_index.get(&folded_full) {
+            let mut matched_specs: Vec<(usize, RelativeSpec)> = Vec::new();
+            for &(lid, spec) in matches {
+                let lid_usize = lid as usize;
+                if candidate_ids.is_empty() || candidate_ids.contains(&lid_usize) {
+                    matched_specs.push((lid_usize, spec));
+                }
+            }
+            if !matched_specs.is_empty() {
+                let specs_only: Vec<RelativeSpec> = matched_specs.iter().map(|(_, s)| *s).collect();
+                let chosen = select_relative_spec(&specs_only, settings.prefer_dates_from);
+                let chosen_lid = matched_specs
+                    .iter()
+                    .find(|(_, s)| *s == chosen)
+                    .map(|(l, _)| *l)
+                    .unwrap_or(matched_specs[0].0);
+                let dt = apply_relative_offset(base, chosen.sign, chosen.amount as f64, chosen.unit)?;
                 return Some(RelativeMatch {
                     naive: dt,
-                    period: period_for_unit(spec.unit),
-                    locale: registry.locales[lid_usize].code.clone(),
+                    period: period_for_unit(chosen.unit),
+                    locale: registry.locales[chosen_lid].code.clone(),
+                    has_time: false,
                 });
             }
         }
     }
 
-    // 2. Peel off optional time component (e.g., "yesterday at 5pm", "hier à 14h30", "dün saat 15:30")
+    // 2. Peel off optional explicit time component ("yesterday at 5pm", "hier à 14h30", "dün saat 15:30", "dun saat 14:30")
     let (phrase_no_time, extracted_time) = extract_trailing_or_leading_time(normalized);
 
     for &lid in candidate_ids {
         let loc = &registry.locales[lid];
 
-        // 2a. Exact relative phrase + time (e.g., "yesterday at 5pm", "hier à 14h30", "dün saat 15:30")
+        // 2a. Exact relative phrase + explicit time
         if let Some(t) = extracted_time {
             let cleaned = strip_connector_words(phrase_no_time, loc);
-            if let Some(&spec) = loc.relative_exact.get(cleaned) {
+            if let Some(spec) = lookup_exact_in_locale(cleaned, loc, settings.normalize, settings.prefer_dates_from) {
                 let dt = apply_relative_offset(base, spec.sign, spec.amount as f64, spec.unit)?;
                 return Some(RelativeMatch {
                     naive: dt.date().and_time(t),
                     period: Period::Day,
                     locale: loc.code.clone(),
+                    has_time: true,
                 });
             }
         }
 
-        // 2b. Zero-regex structured affix patterns (3,592 CLDR/dateparser patterns across 205 langs!)
-        // Handles "3 gün önce", "vor 2 wochen", "il y a 4 jours", "3日前", "in 5 hours", etc.
+        // 2b. <relative_exact> [connector] <time_of_day> ("yesterday at noon", "tomorrow at midnight", "today morning", "dün akşam")
+        if extracted_time.is_none() {
+            if let Some((dt, has_t)) = try_relative_plus_tod(normalized, loc, base, settings) {
+                return Some(RelativeMatch {
+                    naive: dt,
+                    period: Period::Day,
+                    locale: loc.code.clone(),
+                    has_time: has_t,
+                });
+            }
+        }
+
+        // 2c. Zero-regex structured affix patterns (3,592 CLDR/dateparser patterns across 205 langs!)
         let target_str = if extracted_time.is_some() {
             strip_connector_words(phrase_no_time, loc)
         } else {
             normalized
         };
 
-        if let Some((spec_sign, amount, unit)) = try_affix_match(target_str, loc) {
+        if let Some((spec_sign, amount, unit)) = try_affix_match(target_str, loc, settings.normalize) {
             let mut dt = apply_relative_offset(base, spec_sign, amount, unit)?;
             if let Some(t) = extracted_time {
                 dt = dt.date().and_time(t);
@@ -132,13 +233,12 @@ pub fn try_parse_relative(
                 naive: dt,
                 period: period_for_unit(unit),
                 locale: loc.code.clone(),
+                has_time: extracted_time.is_some(),
             });
         }
 
-        // 2c. Compound & word-number relative expressions
-        // Handles "1 year, 2 months, 3 days ago", "2 hours 30 minutes ago", "a week ago",
-        // "two days ago", "bir saat önce", "in a couple days", "1 hafta 2 gün önce", etc.
-        if let Some((mut dt, period)) = try_compound_relative(target_str, loc, base) {
+        // 2d. Compound & word-number relative expressions ("2 ay 3 gün önce", "5 dk önce", "1 year, 2 months, 3 days ago")
+        if let Some((mut dt, period)) = try_compound_relative(target_str, loc, base, settings.normalize) {
             if let Some(t) = extracted_time {
                 dt = dt.date().and_time(t);
             }
@@ -146,11 +246,12 @@ pub fn try_parse_relative(
                 naive: dt,
                 period,
                 locale: loc.code.clone(),
+                has_time: extracted_time.is_some(),
             });
         }
 
-        // 2d. Relative weekday expressions: "last Monday", "next Friday", "geçen pazartesi"
-        if let Some(mut dt) = try_relative_weekday(target_str, loc, base) {
+        // 2e. Relative period/weekday expressions: "last Monday", "geçen hafta", "gecen hafta", "gelecek ay"
+        if let Some(mut dt) = try_relative_period_or_weekday(target_str, loc, base, settings.normalize) {
             if let Some(t) = extracted_time {
                 dt = dt.date().and_time(t);
             }
@@ -158,6 +259,7 @@ pub fn try_parse_relative(
                 naive: dt,
                 period: Period::Day,
                 locale: loc.code.clone(),
+                has_time: extracted_time.is_some(),
             });
         }
     }
@@ -165,20 +267,144 @@ pub fn try_parse_relative(
     None
 }
 
-/// Zero-regex prefix + number + suffix matcher covering 99.97% of dateparser's relative-type-regex!
-fn try_affix_match(s: &str, loc: &CompiledLocale) -> Option<(i8, f64, TimeUnit)> {
-    // Also support word-number substitution at the start (e.g., "bir gün önce" -> "1 gün önce", "zwei wochen")
-    let replaced_opt = replace_word_numbers_once(s, loc);
-    let candidates: [&str; 2] = match replaced_opt.as_deref() {
-        Some(r) => [s, r],
-        None => [s, ""],
+fn try_compound_tod_idiom(
+    normalized: &str,
+    folded: &str,
+    candidate_ids: &[usize],
+    registry: &LocaleRegistry,
+    base: NaiveDateTime,
+    normalize: bool,
+) -> Option<RelativeMatch> {
+    let check = if normalize { folded } else { normalized };
+    let (day_offset, hour, lang_code): (i64, u32, &str) = match check {
+        "tonight" | "this night" => (0, 20, "en"),
+        "last night" => (-1, 20, "en"),
+        "this morning" | "today morning" => (0, 9, "en"),
+        "this afternoon" | "today afternoon" => (0, 15, "en"),
+        "this evening" | "today evening" => (0, 18, "en"),
+        "yesterday morning" => (-1, 9, "en"),
+        "yesterday afternoon" => (-1, 15, "en"),
+        "yesterday evening" => (-1, 18, "en"),
+        "tomorrow morning" => (1, 9, "en"),
+        "tomorrow evening" => (1, 18, "en"),
+        "tomorrow night" => (1, 20, "en"),
+        "dün gece" | "dun gece" => (-1, 20, "tr"),
+        "dün akşam" | "dun aksam" => (-1, 18, "tr"),
+        "dün sabah" | "dun sabah" => (-1, 9, "tr"),
+        "bu akşam" | "bu aksam" => (0, 18, "tr"),
+        "bu sabah" => (0, 9, "tr"),
+        "bu gece" => (0, 20, "tr"),
+        "yarın sabah" | "yarin sabah" => (1, 9, "tr"),
+        "yarın akşam" | "yarin aksam" => (1, 18, "tr"),
+        "heute abend" => (0, 18, "de"),
+        "heute morgen" => (0, 9, "de"),
+        "gestern abend" => (-1, 18, "de"),
+        "heute nacht" => (0, 20, "de"),
+        "ce soir" => (0, 18, "fr"),
+        "ce matin" => (0, 9, "fr"),
+        "hier soir" => (-1, 18, "fr"),
+        "anoche" => (-1, 20, "es"),
+        "esta noche" => (0, 20, "es"),
+        "esta tarde" => (0, 15, "es"),
+        _ => return None,
     };
 
-    for cand in candidates {
-        if cand.is_empty() {
-            continue;
+    if !candidate_ids.is_empty() {
+        let lang_allowed = candidate_ids
+            .iter()
+            .any(|&id| registry.locales[id].code == lang_code);
+        if !lang_allowed {
+            return None;
         }
-        for affix in &loc.relative_affix {
+    }
+
+    let target_date = (base + Duration::days(day_offset)).date();
+    let nt = NaiveTime::from_hms_opt(hour, 0, 0)?;
+    Some(RelativeMatch {
+        naive: target_date.and_time(nt),
+        period: Period::Day,
+        locale: lang_code.to_string(),
+        has_time: true,
+    })
+}
+
+fn split_tod_hour<'a>(
+    s: &'a str,
+    loc: &CompiledLocale,
+    normalize: bool,
+) -> Option<(&'a str, u8)> {
+    for (phrase, &hour) in &loc.time_of_day {
+        if let Some(rest) = s.strip_suffix(phrase.as_str()) {
+            if rest.is_empty() || rest.ends_with(' ') {
+                return Some((rest.trim_end(), hour));
+            }
+        }
+    }
+    if normalize {
+        let fs = fold_diacritics(s);
+        for (phrase, &hour) in &loc.folded_time_of_day {
+            if let Some(rest) = fs.strip_suffix(phrase.as_str()) {
+                if rest.is_empty() || rest.ends_with(' ') {
+                    return Some((s[..rest.len().min(s.len())].trim_end(), hour));
+                }
+            }
+        }
+        for (phrase, &hour) in &loc.time_of_day {
+            if let Some(rest) = fs.strip_suffix(phrase.as_str()) {
+                if rest.is_empty() || rest.ends_with(' ') {
+                    return Some((s[..rest.len().min(s.len())].trim_end(), hour));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn try_relative_plus_tod(
+    normalized: &str,
+    loc: &CompiledLocale,
+    base: NaiveDateTime,
+    settings: &Settings,
+) -> Option<(NaiveDateTime, bool)> {
+    let (prefix_raw, hour) = split_tod_hour(normalized, loc, settings.normalize)?;
+    let nt = NaiveTime::from_hms_opt(hour as u32, 0, 0)?;
+    if prefix_raw.is_empty() {
+        return Some((base.date().and_time(nt), true));
+    }
+
+    let cleaned = strip_connector_words(prefix_raw, loc);
+    if let Some(spec) = lookup_exact_in_locale(
+        cleaned,
+        loc,
+        settings.normalize,
+        settings.prefer_dates_from,
+    ) {
+        let dt = apply_relative_offset(base, spec.sign, spec.amount as f64, spec.unit)?;
+        return Some((dt.date().and_time(nt), true));
+    }
+
+    None
+}
+
+/// Zero-regex prefix + number + suffix matcher covering 99.97% of dateparser's relative-type-regex!
+fn try_affix_match(s: &str, loc: &CompiledLocale, normalize: bool) -> Option<(i8, f64, TimeUnit)> {
+    let mut candidates: Vec<String> = Vec::with_capacity(3);
+    candidates.push(s.to_string());
+    if let Some(r) = replace_word_numbers_once(s, loc, normalize) {
+        candidates.push(r);
+    }
+    if normalize {
+        let fs = fold_diacritics(s);
+        if fs != s {
+            if let Some(r) = replace_word_numbers_once(&fs, loc, true) {
+                candidates.push(r);
+            }
+            candidates.push(fs);
+        }
+    }
+
+    let match_against = |cand: &str, affixes: &[RelativeAffix]| -> Option<(i8, f64, TimeUnit)> {
+        for affix in affixes {
             let after_prefix = if affix.prefix.is_empty() {
                 cand
             } else if let Some(rest) = cand.strip_prefix(&affix.prefix) {
@@ -198,6 +424,20 @@ fn try_affix_match(s: &str, loc: &CompiledLocale) -> Option<(i8, f64, TimeUnit)>
             let num_str = middle.trim();
             if let Some(val) = parse_positive_number(num_str) {
                 return Some((affix.sign, val, affix.unit));
+            }
+        }
+        None
+    };
+
+    for cand in &candidates {
+        if let Some(hit) = match_against(cand, &loc.relative_affix) {
+            return Some(hit);
+        }
+    }
+    if normalize && !loc.folded_relative_affix.is_empty() {
+        for cand in &candidates {
+            if let Some(hit) = match_against(cand, &loc.folded_relative_affix) {
+                return Some(hit);
             }
         }
     }
@@ -229,7 +469,7 @@ fn parse_positive_number(s: &str) -> Option<f64> {
     }
 }
 
-fn replace_word_numbers_once(s: &str, loc: &CompiledLocale) -> Option<String> {
+fn replace_word_numbers_once(s: &str, loc: &CompiledLocale, normalize: bool) -> Option<String> {
     if loc.word_numbers.is_empty() {
         return None;
     }
@@ -239,6 +479,14 @@ fn replace_word_numbers_once(s: &str, loc: &CompiledLocale) -> Option<String> {
         if let Some(&n) = loc.word_numbers.get(tok) {
             parts.push(n.to_string());
             changed = true;
+        } else if normalize {
+            let ft = fold_diacritics(tok);
+            if let Some(&n) = loc.word_numbers.get(&ft) {
+                parts.push(n.to_string());
+                changed = true;
+            } else {
+                parts.push(tok.to_string());
+            }
         } else {
             parts.push(tok.to_string());
         }
@@ -251,49 +499,58 @@ fn replace_word_numbers_once(s: &str, loc: &CompiledLocale) -> Option<String> {
 }
 
 /// Parses compound relative expressions like "1 year, 2 months, 3 days ago",
-/// "in 2 hours and 30 minutes", "1 hafta 2 gün önce", "a week ago", "two days ago".
+/// "2 ay 3 gün önce", "5 dk önce", "3d ago", "3 gun once", "a week ago", "two days ago".
 fn try_compound_relative(
     s: &str,
     loc: &CompiledLocale,
     base: NaiveDateTime,
+    normalize: bool,
 ) -> Option<(NaiveDateTime, Period)> {
-    // Check for multi-word "ago" or "in" markers (e.g., "il y a", "hace", "vor", "önce", "sonra", "ago", "in")
     let mut sign: Option<i8> = None;
-    let mut rest = s.trim();
+    let mut rest = s.trim().to_string();
 
-    // Check multi-word prefixes/suffixes first
-    for w in &loc.ago {
-        if let Some(stripped) = rest.strip_suffix(w.as_str()) {
-            if stripped.is_empty() || stripped.ends_with(' ') || !w.is_ascii() {
-                sign = Some(-1);
-                rest = stripped.trim();
-                break;
+    let strip_marker = |text: &str, markers: &rustc_hash::FxHashSet<String>| -> Option<String> {
+        for w in markers {
+            if let Some(stripped) = text.strip_suffix(w.as_str()) {
+                if stripped.is_empty() || stripped.ends_with(' ') || !w.is_ascii() {
+                    return Some(stripped.trim().to_string());
+                }
+            }
+            if let Some(stripped) = text.strip_prefix(w.as_str()) {
+                if stripped.is_empty() || stripped.starts_with(' ') || !w.is_ascii() {
+                    return Some(stripped.trim().to_string());
+                }
             }
         }
-        if let Some(stripped) = rest.strip_prefix(w.as_str()) {
-            if stripped.is_empty() || stripped.starts_with(' ') || !w.is_ascii() {
-                sign = Some(-1);
-                rest = stripped.trim();
-                break;
-            }
+        None
+    };
+
+    if let Some(r) = strip_marker(&rest, &loc.ago) {
+        sign = Some(-1);
+        rest = r;
+    } else if normalize {
+        let f_rest = fold_diacritics(&rest);
+        if let Some(r) = strip_marker(&f_rest, &loc.folded_ago) {
+            sign = Some(-1);
+            rest = r;
+        } else if let Some(r) = strip_marker(&f_rest, &loc.ago) {
+            sign = Some(-1);
+            rest = r;
         }
     }
 
     if sign.is_none() {
-        for w in &loc.in_words {
-            if let Some(stripped) = rest.strip_prefix(w.as_str()) {
-                if stripped.is_empty() || stripped.starts_with(' ') || !w.is_ascii() {
-                    sign = Some(1);
-                    rest = stripped.trim();
-                    break;
-                }
-            }
-            if let Some(stripped) = rest.strip_suffix(w.as_str()) {
-                if stripped.is_empty() || stripped.ends_with(' ') || !w.is_ascii() {
-                    sign = Some(1);
-                    rest = stripped.trim();
-                    break;
-                }
+        if let Some(r) = strip_marker(&rest, &loc.in_words) {
+            sign = Some(1);
+            rest = r;
+        } else if normalize {
+            let f_rest = fold_diacritics(&rest);
+            if let Some(r) = strip_marker(&f_rest, &loc.folded_in_words) {
+                sign = Some(1);
+                rest = r;
+            } else if let Some(r) = strip_marker(&f_rest, &loc.in_words) {
+                sign = Some(1);
+                rest = r;
             }
         }
     }
@@ -303,7 +560,19 @@ fn try_compound_relative(
         return None;
     }
 
-    // Tokenize remaining (number, unit) pairs
+    let lookup_unit = |tok: &str| -> Option<TimeUnit> {
+        if let Some(&u) = loc.units.get(tok) {
+            return Some(u);
+        }
+        if normalize {
+            let ft = fold_diacritics(tok);
+            if let Some(&u) = loc.units.get(&ft).or_else(|| loc.folded_units.get(&ft)) {
+                return Some(u);
+            }
+        }
+        None
+    };
+
     let tokens: Vec<&str> = rest
         .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
         .filter(|t| !t.is_empty())
@@ -317,16 +586,15 @@ fn try_compound_relative(
         if clean.is_empty() {
             continue;
         }
-        // Skip connectors like "and", "ve", "und", "et", "y"
         if matches!(clean, "and" | "ve" | "und" | "et" | "y" | "e" | "of") || loc.skip.contains(clean)
         {
             continue;
         }
 
-        // Attached number+unit like "5m", "2h", "3d", "10s"
+        // Attached number+unit like "3d", "2h", "15m", "30s", "2w"
         if pending_num.is_none() {
             if let Some((num, unit_str)) = split_attached_num_unit(clean) {
-                if let Some(&u) = loc.units.get(unit_str) {
+                if let Some(u) = lookup_unit(unit_str) {
                     pairs.push((num, u));
                     continue;
                 }
@@ -343,11 +611,10 @@ fn try_compound_relative(
                 return None;
             }
             pending_num = Some(wn as f64);
-        } else if let Some(&u) = loc.units.get(clean) {
+        } else if let Some(u) = lookup_unit(clean) {
             let amt = pending_num.take().unwrap_or(1.0);
             pairs.push((amt, u));
         } else {
-            // Unrecognized non-skip word -> not a clean relative expression
             return None;
         }
     }
@@ -361,7 +628,9 @@ fn try_compound_relative(
     for (amt, unit) in pairs {
         dt = apply_relative_offset(dt, sign, amt, unit)?;
         let p = period_for_unit(unit);
-        if matches!(p, Period::Day) || (matches!(p, Period::Month) && matches!(finest_period, Period::Year)) {
+        if matches!(p, Period::Day)
+            || (matches!(p, Period::Month) && matches!(finest_period, Period::Year))
+        {
             finest_period = p;
         }
     }
@@ -382,22 +651,54 @@ fn split_attached_num_unit(s: &str) -> Option<(f64, &str)> {
     Some((num, unit))
 }
 
-fn try_relative_weekday(s: &str, loc: &CompiledLocale, base: NaiveDateTime) -> Option<NaiveDateTime> {
-    let tokens: Vec<&str> = s.split_whitespace().collect();
+fn try_relative_period_or_weekday(
+    s: &str,
+    loc: &CompiledLocale,
+    base: NaiveDateTime,
+    normalize: bool,
+) -> Option<NaiveDateTime> {
+    let fs = if normalize {
+        fold_diacritics(s)
+    } else {
+        s.to_string()
+    };
+    let tokens: Vec<&str> = fs.split_whitespace().collect();
     if tokens.len() != 2 {
         return None;
     }
-    let (modifier, wd_tok) = (tokens[0], tokens[1]);
-    let target_wd = *loc.weekdays.get(wd_tok)?;
-    let dir: i64 = match modifier {
-        "last" | "previous" | "geçen" | "letzten" | "letzter" | "dernier" | "pasado" | "прошлый" => {
-            -1
-        }
-        "next" | "gelecek" | "önümüzdeki" | "nächsten" | "nächster" | "prochain" | "próximo"
-        | "следующий" => 1,
-        "this" | "bu" | "diesen" | "ce" | "este" => 0,
+    let (modifier, target_tok) = (tokens[0], tokens[1]);
+    let dir: i8 = match modifier {
+        "last" | "previous" | "geçen" | "gecen" | "letzten" | "letzter" | "letzte" | "dernier"
+        | "dernière" | "pasado" | "pasada" | "прошлый" | "прошлая" => -1,
+        "next" | "gelecek" | "önümüzdeki" | "onumuzdeki" | "nächsten" | "nächster" | "nächste"
+        | "prochain" | "prochaine" | "próximo" | "proximo" | "следующий" => 1,
+        "this" | "bu" | "diesen" | "diese" | "ce" | "cette" | "este" | "esta" => 0,
         _ => return None,
     };
+
+    // 1. Check relative unit ("last week", "geçen hafta", "gecen hafta", "gelecek ay")
+    let unit_opt = loc.units.get(target_tok).copied().or_else(|| {
+        if normalize {
+            loc.folded_units.get(target_tok).copied()
+        } else {
+            None
+        }
+    });
+    if let Some(unit) = unit_opt {
+        if dir == 0 {
+            return Some(base);
+        }
+        return apply_relative_offset(base, dir, 1.0, unit);
+    }
+
+    // 2. Check relative weekday ("last Monday", "geçen pazartesi", "next Friday")
+    let target_wd = loc.weekdays.get(target_tok).copied().or_else(|| {
+        if normalize {
+            loc.folded_weekdays.get(target_tok).copied()
+        } else {
+            None
+        }
+    })?;
 
     let current_wd = base.weekday().num_days_from_monday() as i64;
     let target = target_wd as i64;
@@ -420,7 +721,7 @@ fn try_relative_weekday(s: &str, loc: &CompiledLocale, base: NaiveDateTime) -> O
     base.checked_add_signed(Duration::days(delta_days))
 }
 
-/// Extract a trailing or leading time from strings like "yesterday at 5pm", "hier à 14h30", "dün saat 15:30".
+/// Extract a trailing time from strings like "yesterday at 5pm", "hier à 14h30", "dün saat 15:30".
 pub fn extract_trailing_or_leading_time(s: &str) -> (&str, Option<NaiveTime>) {
     let tokens: Vec<&str> = s.split_whitespace().collect();
     if tokens.len() < 2 {
@@ -438,9 +739,9 @@ pub fn extract_trailing_or_leading_time(s: &str) -> (&str, Option<NaiveTime>) {
         }
     }
 
-    // Check last 1 token for "14:30", "14h30", "5pm"
+    // Check last 1 token for "14:30", "14h30", "5pm", "5:30p.m."
     let last = tokens[tokens.len() - 1];
-    if last.contains(':') || last.contains('h') || last.ends_with("am") || last.ends_with("pm") {
+    if last.contains(':') || last.contains('h') || last.ends_with("am") || last.ends_with("pm") || last.ends_with("a.m.") || last.ends_with("p.m.") {
         if let Some(t) = parse_time_str(last) {
             let cut = s.len() - last.len();
             return (s[..cut].trim_end(), Some(t));
@@ -456,7 +757,7 @@ fn strip_connector_words<'a>(s: &'a str, loc: &CompiledLocale) -> &'a str {
         let mut trimmed = false;
         if let Some(sp) = cur.rfind(' ') {
             let tail = &cur[sp + 1..];
-            if matches!(tail, "at" | "on" | "à" | "a" | "um" | "am" | "saat" | "las" | "a las" | "в")
+            if matches!(tail, "at" | "on" | "à" | "a" | "um" | "am" | "saat" | "las" | "в")
                 || loc.skip.contains(tail)
             {
                 cur = cur[..sp].trim_end();

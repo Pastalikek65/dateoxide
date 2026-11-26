@@ -37,6 +37,28 @@ UNIT_MAP = {
     "fortnight": 9,
 }
 
+# Standard dateparser time-of-day hour anchors
+TOD_KEYS: list[tuple[str, int]] = [
+    ("early_morning", 6),
+    ("morning", 9),
+    ("afternoon", 15),
+    ("evening", 18),
+    ("night", 20),
+]
+
+EXTRA_TOD: dict[str, list[tuple[str, int]]] = {
+    "en": [("noon", 12), ("midday", 12), ("midnight", 0), ("morning", 9), ("afternoon", 15), ("evening", 18), ("night", 20)],
+    "tr": [("sabah", 9), ("öğle", 12), ("öğlen", 12), ("öğleden sonra", 15), ("akşam", 18), ("gece", 20), ("gece yarısı", 0)],
+    "de": [("morgen", 9), ("morgens", 9), ("mittag", 12), ("mittags", 12), ("nachmittag", 15), ("abend", 18), ("abends", 18), ("nacht", 20), ("mitternacht", 0)],
+    "fr": [("matin", 9), ("midi", 12), ("après-midi", 15), ("soir", 18), ("nuit", 20), ("minuit", 0)],
+    "es": [("mañana", 9), ("mediodía", 12), ("tarde", 15), ("noche", 20), ("medianoche", 0)],
+    "pt": [("manhã", 9), ("meio-dia", 12), ("tarde", 15), ("noite", 20), ("meia-noite", 0)],
+    "it": [("mattina", 9), ("mezzogiorno", 12), ("pomeriggio", 15), ("sera", 18), ("notte", 20), ("mezzanotte", 0)],
+    "nl": [("ochtend", 9), ("middag", 15), ("avond", 18), ("nacht", 20), ("middernacht", 0)],
+    "ru": [("утром", 9), ("утро", 9), ("полдень", 12), ("днём", 15), ("вечером", 18), ("вечер", 18), ("ночью", 20), ("полночь", 0)],
+    "pl": [("rano", 9), ("południe", 12), ("popołudnie", 15), ("wieczorem", 18), ("noc", 20), ("północ", 0)],
+}
+
 # Match structured numeric capture patterns in relative-type-regex
 PAT_NUM = re.compile(r"^(.*?)\(\\d\+\+(?:\[\.,\]\?\\d\*\+)?\)(.*)$")
 PAT_NUM_SIMPLE = re.compile(r"^(.*?)\(\\d\+\)(.*)$")
@@ -91,8 +113,12 @@ EXTRA_WORD_NUMBERS: dict[str, dict[str, int]] = {
     },
 }
 
-# Priority ordering: highest-traffic global languages come first so ambiguous
-# single-token matches resolve predictably and match dateparser conventions.
+# Extra shorthand units often used in real-world data (3d ago, 5 dk önce, etc.)
+EXTRA_UNITS: dict[str, list[tuple[str, int]]] = {
+    "en": [("y", 0), ("yr", 0), ("yrs", 0), ("mo", 1), ("mos", 1), ("mon", 1), ("mons", 1), ("w", 2), ("wk", 2), ("wks", 2), ("d", 3), ("h", 4), ("hr", 4), ("hrs", 4), ("m", 5), ("min", 5), ("mins", 5), ("s", 6), ("sec", 6), ("secs", 6)],
+    "tr": [("yıl", 0), ("sene", 0), ("ay", 1), ("hafta", 2), ("hf", 2), ("gün", 3), ("saat", 4), ("sa", 4), ("dakika", 5), ("dk", 5), ("saniye", 6), ("sn", 6)],
+}
+
 PRIORITY_LANGS = [
     "en", "es", "fr", "de", "pt", "it", "tr", "nl", "ru", "pl",
     "ja", "zh", "ko", "ar", "hi", "id", "vi", "th", "sv", "da",
@@ -108,7 +134,6 @@ def clean_regex_literal(s: str) -> str:
     """Turn simple regex literal fragments from dateparser into plain lowercase strings."""
     s = s.replace("\\.", ".").replace("\\-", "-").replace("\\s+", " ").replace("\\s*", " ")
     s = s.replace("\\(", "(").replace("\\)", ")").replace("\\+", "+")
-    # Remove simple non-capturing boundary/regex escapes if any remain
     s = re.sub(r"\\b", "", s)
     return s.lower()
 
@@ -123,7 +148,6 @@ def dedup_list(items: list[str]) -> list[str]:
         if n not in seen:
             seen.add(n)
             out.append(n)
-        # Also add dot-stripped form for abbreviations like "jan." -> "jan"
         if n.endswith(".") and len(n) > 2:
             stripped = n[:-1].strip()
             if stripped and stripped not in seen:
@@ -150,14 +174,19 @@ def extract_locale(code: str, info: dict[str, Any]) -> dict[str, Any]:
             if key not in seen_units:
                 seen_units.add(key)
                 units.append([tok, unit_id])
+    for tok, unit_id in EXTRA_UNITS.get(code, []):
+        key = (norm(tok), unit_id)
+        if key not in seen_units:
+            seen_units.add(key)
+            units.append([key[0], unit_id])
 
     ago = dedup_list(info.get("ago", []))
     in_words = dedup_list(info.get("in", []))
     skip = dedup_list(list(info.get("skip", [])) + list(info.get("pertain", [])))
 
-    # Relative exact phrases: [phrase, sign (-1 past / +1 future), amount, unit_id]
+    # Relative exact phrases: preserve multi-sense entries (e.g. Hindi कल = yesterday AND tomorrow)
     relative_exact: list[list[Any]] = []
-    seen_rel_exact: set[str] = set()
+    seen_rel_exact: set[tuple[str, int, int, int]] = set()
     for target, phrases in info.get("relative-type", {}).items():
         m = PAT_TARGET_EXACT.match(target.strip().lower())
         if not m:
@@ -168,8 +197,9 @@ def extract_locale(code: str, info: dict[str, Any]) -> dict[str, Any]:
         amount = int(m.group("num"))
         sign = 1 if m.group("in") else -1
         for phrase in dedup_list(phrases):
-            if phrase not in seen_rel_exact:
-                seen_rel_exact.add(phrase)
+            key = (phrase, sign, amount, unit_id)
+            if key not in seen_rel_exact:
+                seen_rel_exact.add(key)
                 relative_exact.append([phrase, sign, amount, unit_id])
 
     # Relative affix patterns: [prefix, suffix, sign, unit_id]
@@ -189,7 +219,6 @@ def extract_locale(code: str, info: dict[str, Any]) -> dict[str, Any]:
                 continue
             prefix = clean_regex_literal(m_p.group(1)).lstrip()
             suffix = clean_regex_literal(m_p.group(2)).rstrip()
-            # Skip patterns that still contain complex regex metacharacters
             if any(ch in prefix + suffix for ch in "[](){}|?*^$\\"):
                 continue
             key = (prefix, suffix, sign, unit_id)
@@ -197,7 +226,7 @@ def extract_locale(code: str, info: dict[str, Any]) -> dict[str, Any]:
                 seen_affix.add(key)
                 relative_affix.append([prefix, suffix, sign, unit_id])
 
-    # Word numbers from simplifications + curated extras
+    # Word numbers
     word_numbers: dict[str, int] = dict(EXTRA_WORD_NUMBERS.get(code, {}))
     for simp_dict in info.get("simplifications", []):
         for k, v in simp_dict.items():
@@ -206,6 +235,14 @@ def extract_locale(code: str, info: dict[str, Any]) -> dict[str, Any]:
                 k_clean = norm(str(k))
                 if k_clean and not any(ch in k_clean for ch in "[](){}|?*^$\\+"):
                     word_numbers.setdefault(k_clean, int(v_str))
+
+    # Time-of-day phrases
+    time_of_day: dict[str, int] = {}
+    for key_name, hour in TOD_KEYS:
+        for phrase in dedup_list(info.get(key_name, [])):
+            time_of_day.setdefault(phrase, hour)
+    for phrase, hour in EXTRA_TOD.get(code, []):
+        time_of_day.setdefault(norm(phrase), hour)
 
     return {
         "code": code,
@@ -221,6 +258,7 @@ def extract_locale(code: str, info: dict[str, Any]) -> dict[str, Any]:
         "relative_exact": relative_exact,
         "relative_affix": relative_affix,
         "word_numbers": sorted([[k, v] for k, v in word_numbers.items()]),
+        "time_of_day": sorted([[k, v] for k, v in time_of_day.items()]),
     }
 
 
@@ -250,9 +288,10 @@ def main() -> None:
     size_kb = out_path.stat().st_size / 1024
     total_affixes = sum(len(l["relative_affix"]) for l in locales)
     total_exact = sum(len(l["relative_exact"]) for l in locales)
+    total_tod = sum(len(l["time_of_day"]) for l in locales)
     print(
         f"Wrote {len(locales)} locales to {out_path} ({size_kb:.1f} KB), "
-        f"relative_exact={total_exact}, relative_affix={total_affixes}"
+        f"relative_exact={total_exact}, relative_affix={total_affixes}, time_of_day={total_tod}"
     )
 
 

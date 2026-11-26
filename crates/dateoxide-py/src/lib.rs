@@ -1,7 +1,7 @@
 use chrono::NaiveDateTime;
 use dateoxide_core::settings::{
-    DateOrder, DatePart, ParsedDateTime, PreferDatesFrom, PreferDayOfMonth, PreferMonthOfYear,
-    Settings,
+    DateOrder, DatePart, ParsedDateTime, ParserKind, PreferDatesFrom, PreferDayOfMonth,
+    PreferMonthOfYear, Settings,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -19,12 +19,13 @@ fn extract_settings(
     date_formats: Option<Vec<String>>,
     languages: Option<Vec<String>>,
     locales: Option<Vec<String>>,
+    region: Option<String>,
     settings_dict: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<Settings> {
     let mut cfg = Settings::default();
     cfg.date_formats = date_formats;
+    cfg.region = region;
 
-    // Combine explicit languages and locales (e.g. "en-US" -> "en" handled in registry)
     let mut combined_langs: Vec<String> = Vec::new();
     if let Some(ls) = languages {
         combined_langs.extend(ls);
@@ -111,6 +112,34 @@ fn extract_settings(
                 }
             }
         }
+        if let Some(v) = dict.get_item("NORMALIZE")? {
+            if !v.is_none() {
+                cfg.normalize = v.extract()?;
+            }
+        }
+        if let Some(v) = dict.get_item("RETURN_TIME_AS_PERIOD")? {
+            if !v.is_none() {
+                cfg.return_time_as_period = v.extract()?;
+            }
+        }
+        if let Some(v) = dict.get_item("SKIP_TOKENS")? {
+            if !v.is_none() {
+                cfg.skip_tokens = v.extract()?;
+            }
+        }
+        if let Some(v) = dict.get_item("PARSERS")? {
+            if !v.is_none() {
+                let p_strs: Vec<String> = v.extract()?;
+                let mut parsed_kinds = Vec::with_capacity(p_strs.len());
+                for ps in p_strs {
+                    let kind = ParserKind::from_str(&ps).ok_or_else(|| {
+                        PyValueError::new_err(format!("Invalid PARSERS item: '{}'", ps))
+                    })?;
+                    parsed_kinds.push(kind);
+                }
+                cfg.parsers = Some(parsed_kinds);
+            }
+        }
     }
 
     Ok(cfg)
@@ -185,7 +214,7 @@ impl PyDateDataParser {
         settings: Option<&Bound<'_, PyDict>>,
         detect_languages_function: Option<PyObject>,
     ) -> PyResult<Self> {
-        let cfg = extract_settings(None, languages, locales, settings)?;
+        let cfg = extract_settings(None, languages, locales, region, settings)?;
         Ok(Self { settings: cfg })
     }
 
@@ -262,7 +291,7 @@ fn parse(
     settings: Option<&Bound<'_, PyDict>>,
     detect_languages_function: Option<PyObject>,
 ) -> PyResult<Option<PyObject>> {
-    let cfg = extract_settings(date_formats, languages, locales, settings)?;
+    let cfg = extract_settings(date_formats, languages, locales, region, settings)?;
     let parsed = dateoxide_core::parse_with_settings(date_string, &cfg);
     match parsed {
         Some(dt) => Ok(Some(parsed_to_py(py, dt)?)),
@@ -272,16 +301,17 @@ fn parse(
 
 /// High-throughput, GIL-free parallel batch parser powered by Rayon.
 #[pyfunction]
-#[pyo3(signature = (date_strings, date_formats=None, languages=None, locales=None, settings=None))]
+#[pyo3(signature = (date_strings, date_formats=None, languages=None, locales=None, region=None, settings=None))]
 fn parse_batch(
     py: Python<'_>,
     date_strings: Vec<String>,
     date_formats: Option<Vec<String>>,
     languages: Option<Vec<String>>,
     locales: Option<Vec<String>>,
+    region: Option<String>,
     settings: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<Py<PyList>> {
-    let cfg = extract_settings(date_formats, languages, locales, settings)?;
+    let cfg = extract_settings(date_formats, languages, locales, region, settings)?;
     let results = py.allow_threads(|| dateoxide_core::parse_batch(&date_strings, &cfg));
     let py_items: Vec<PyObject> = results
         .into_iter()
@@ -296,24 +326,30 @@ fn parse_batch(
 /// Drop-in replacement for `dateparser.search.search_dates(...)`.
 #[pyfunction]
 #[pyo3(signature = (text, languages=None, settings=None, add_detected_language=false))]
-#[allow(unused_variables)]
 fn search_dates(
     py: Python<'_>,
     text: &str,
     languages: Option<Vec<String>>,
     settings: Option<&Bound<'_, PyDict>>,
     add_detected_language: bool,
-) -> PyResult<Option<Vec<(String, PyObject)>>> {
-    let cfg = extract_settings(None, languages, None, settings)?;
-    let found = py.allow_threads(|| dateoxide_core::search_dates(text, &cfg));
+) -> PyResult<Option<Py<PyList>>> {
+    let cfg = extract_settings(None, languages, None, None, settings)?;
+    let found = py.allow_threads(|| dateoxide_core::search_dates_with_locale(text, &cfg));
     if found.is_empty() {
         return Ok(None);
     }
-    let out: Vec<(String, PyObject)> = found
+    let items: Vec<PyObject> = found
         .into_iter()
-        .map(|(s, dt)| Ok((s, parsed_to_py(py, dt)?)))
+        .map(|(s, dt, loc)| {
+            let py_dt = parsed_to_py(py, dt)?;
+            if add_detected_language {
+                Ok((s, py_dt, loc).into_pyobject(py)?.into_any().unbind())
+            } else {
+                Ok((s, py_dt).into_pyobject(py)?.into_any().unbind())
+            }
+        })
         .collect::<PyResult<_>>()?;
-    Ok(Some(out))
+    Ok(Some(PyList::new(py, items)?.unbind()))
 }
 
 /// Return all 205 compiled locale language codes.

@@ -1,28 +1,42 @@
-use crate::locale::{normalize_digits_and_lower, LocaleRegistry};
+use crate::get_date_data;
+use crate::locale::{fold_diacritics, normalize_digits_and_lower, LocaleRegistry};
 use crate::settings::{ParsedDateTime, Settings};
-use crate::parse_with_settings;
 
 /// Linear-time date finder across free-form text (compatible with `dateparser.search.search_dates`).
 /// Returns `Vec<(matched_substring, ParsedDateTime)>`.
 pub fn search_dates(text: &str, settings: &Settings) -> Vec<(String, ParsedDateTime)> {
+    search_dates_with_locale(text, settings)
+        .into_iter()
+        .map(|(s, dt, _)| (s, dt))
+        .collect()
+}
+
+/// Linear-time date finder across free-form text including the detected language code.
+pub fn search_dates_with_locale(
+    text: &str,
+    settings: &Settings,
+) -> Vec<(String, ParsedDateTime, Option<String>)> {
     if text.trim().is_empty() {
         return Vec::new();
     }
 
     let registry = LocaleRegistry::global();
 
-    // Collect whitespace-delimited tokens with their exact byte ranges in the original string
     let spans = collect_word_spans(text);
     if spans.is_empty() {
         return Vec::new();
     }
 
-    // Classify each token as: strong date signal, connector/filler, or non-date
     let mut kinds = Vec::with_capacity(spans.len());
     for &(start, end) in &spans {
         let raw = &text[start..end];
-        let trimmed = raw.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | '!' | '?' | '(' | ')' | '[' | ']' | '"' | '\'' | '«' | '»'));
-        kinds.push(classify_token(trimmed, registry));
+        let trimmed = raw.trim_matches(|c: char| {
+            matches!(
+                c,
+                ',' | '.' | ';' | '!' | '?' | '(' | ')' | '[' | ']' | '"' | '\'' | '«' | '»'
+            )
+        });
+        kinds.push(classify_token(trimmed, registry, settings.normalize));
     }
 
     let mut results = Vec::new();
@@ -33,11 +47,9 @@ pub fn search_dates(text: &str, settings: &Settings) -> Vec<(String, ParsedDateT
             continue;
         }
 
-        // Expand candidate span greedily across adjacent Signal or single Connector tokens (max 8 tokens)
         let mut best_end = i;
         let mut j = i + 1;
         while j < spans.len() && (j - i) < 8 {
-            // Stop at sentence-ending punctuation after the previous token (except day dots like "26.")
             let prev_raw = &text[spans[j - 1].0..spans[j - 1].1];
             let prev_ends_sentence = prev_raw.ends_with([';', '!', '?'])
                 || (prev_raw.ends_with('.')
@@ -55,7 +67,6 @@ pub fn search_dates(text: &str, settings: &Settings) -> Vec<(String, ParsedDateT
                     j += 1;
                 }
                 TokenKind::Connector => {
-                    // Include connector only if followed by a Signal token
                     if j + 1 < spans.len() && kinds[j + 1] == TokenKind::Signal {
                         j += 1;
                     } else {
@@ -66,10 +77,8 @@ pub fn search_dates(text: &str, settings: &Settings) -> Vec<(String, ParsedDateT
             }
         }
 
-        // Try longest subspan from [i..=best_end] down to [i..=i]
         let mut matched = false;
         for end_idx in (i..=best_end).rev() {
-            // Skip spans that end on a dangling preposition/article ("in", "at", "on", "de", "of", "à", "the")
             let last_tok_lower = normalize_digits_and_lower(
                 text[spans[end_idx].0..spans[end_idx].1]
                     .trim_matches(|c: char| matches!(c, ',' | '.' | ';' | '!' | '?' | '(' | ')')),
@@ -85,21 +94,24 @@ pub fn search_dates(text: &str, settings: &Settings) -> Vec<(String, ParsedDateT
 
             let sub_start = spans[i].0;
             let sub_end = spans[end_idx].1;
-            let raw_sub = text[sub_start..sub_end]
-                .trim_matches(|c: char| matches!(c, ',' | ';' | '!' | '?' | '(' | ')' | '[' | ']' | '"' | '\''));
+            let raw_sub = text[sub_start..sub_end].trim_matches(|c: char| {
+                matches!(
+                    c,
+                    ',' | ';' | '!' | '?' | '(' | ')' | '[' | ']' | '"' | '\''
+                )
+            });
             let raw_sub = raw_sub.trim_end_matches('.');
 
-            // Avoid matching bare 1–3 digit numbers like "42" or "2" as dates inside prose
             if raw_sub.bytes().all(|b| b.is_ascii_digit()) && raw_sub.len() < 4 {
                 continue;
             }
-            // Avoid matching standalone words like "in" or "ago" or "at"
-            if end_idx == i && !is_valid_single_token_date(raw_sub, registry) {
+            if end_idx == i && !is_valid_single_token_date(raw_sub, registry, settings.normalize) {
                 continue;
             }
 
-            if let Some(dt) = parse_with_settings(raw_sub, settings) {
-                results.push((raw_sub.to_string(), dt));
+            let dd = get_date_data(raw_sub, settings);
+            if let Some(dt) = dd.date_obj {
+                results.push((raw_sub.to_string(), dt, dd.locale));
                 i = end_idx + 1;
                 matched = true;
                 break;
@@ -139,27 +151,33 @@ fn collect_word_spans(s: &str) -> Vec<(usize, usize)> {
     out
 }
 
-fn classify_token(tok: &str, registry: &LocaleRegistry) -> TokenKind {
+fn classify_token(tok: &str, registry: &LocaleRegistry, normalize: bool) -> TokenKind {
     if tok.is_empty() {
         return TokenKind::Other;
     }
 
-    // Contains any ASCII or Unicode digit (dates, times, years, counts, CJK dates)
-    if tok.chars().any(|c| c.is_ascii_digit() || matches!(c, '\u{0660}'..='\u{0669}' | '年' | '月' | '日')) {
+    if tok.chars().any(|c| {
+        c.is_ascii_digit()
+            || matches!(
+                c,
+                '\u{0660}'..='\u{0669}' | '年' | '月' | '日' | '년' | '월' | '일'
+            )
+    }) {
         return TokenKind::Signal;
     }
 
     let lower = normalize_digits_and_lower(tok);
 
-    // Common connector words inside dates ("de", "of", "at", "à", "saat", "and", "ve", "le", "the", "il", "y", "a")
     if matches!(
         lower.as_str(),
         "of" | "the" | "at" | "on" | "de" | "del" | "el" | "la" | "le" | "à" | "am" | "um"
             | "saat" | "and" | "ve" | "und" | "et" | "il" | "y" | "a" | "an" | "in" | "en"
             | "dans" | "vor" | "hace"
     ) {
-        // Note: "in", "vor", "hace", "dans", "en" can START a relative expression like "vor 2 Wochen"
-        if matches!(lower.as_str(), "in" | "vor" | "hace" | "dans" | "il" | "a" | "an" | "en") {
+        if matches!(
+            lower.as_str(),
+            "in" | "vor" | "hace" | "dans" | "il" | "a" | "an" | "en"
+        ) {
             return TokenKind::Signal;
         }
         return TokenKind::Connector;
@@ -168,8 +186,13 @@ fn classify_token(tok: &str, registry: &LocaleRegistry) -> TokenKind {
     if registry.known_date_tokens.contains(&lower) {
         return TokenKind::Signal;
     }
+    if normalize {
+        let folded = fold_diacritics(&lower);
+        if registry.known_date_tokens.contains(&folded) {
+            return TokenKind::Signal;
+        }
+    }
 
-    // Common timezone abbreviations
     if tok.len() >= 3
         && tok.len() <= 5
         && tok.bytes().all(|b| b.is_ascii_uppercase())
@@ -178,11 +201,11 @@ fn classify_token(tok: &str, registry: &LocaleRegistry) -> TokenKind {
         return TokenKind::Signal;
     }
 
-    // Relative modifiers
     if matches!(
         lower.as_str(),
-        "last" | "next" | "this" | "geçen" | "gelecek" | "bu" | "bir" | "iki" | "üç" | "one"
-            | "two" | "three" | "four" | "five" | "zwei" | "drei" | "ein" | "une" | "deux"
+        "last" | "next" | "this" | "geçen" | "gecen" | "gelecek" | "bu" | "bir" | "iki" | "üç"
+            | "one" | "two" | "three" | "four" | "five" | "zwei" | "drei" | "ein" | "une"
+            | "deux" | "tonight" | "anoche" | "noon" | "midnight"
     ) {
         return TokenKind::Signal;
     }
@@ -190,22 +213,28 @@ fn classify_token(tok: &str, registry: &LocaleRegistry) -> TokenKind {
     TokenKind::Other
 }
 
-fn is_valid_single_token_date(tok: &str, registry: &LocaleRegistry) -> bool {
-    // ISO/numeric date, time, or CJK date
-    if tok.contains(['-', '/', '.', ':', '年', '月', '日']) && tok.chars().any(|c| c.is_ascii_digit())
+fn is_valid_single_token_date(tok: &str, registry: &LocaleRegistry, normalize: bool) -> bool {
+    if tok.contains(['-', '/', '.', ':', '年', '月', '日', '년', '월', '일'])
+        && tok.chars().any(|c| c.is_ascii_digit())
     {
         return true;
     }
-    // 4-digit year in plausible range
     if tok.len() == 4 && tok.bytes().all(|b| b.is_ascii_digit()) {
         if let Ok(y) = tok.parse::<u32>() {
             return (1900..=2100).contains(&y);
         }
     }
-    // Exact relative word ("yesterday", "today", "tomorrow", "bugün", "dün", "yarın", "demain", "gestern", "今日")
     let lower = normalize_digits_and_lower(tok);
-    if registry.exact_phrase_index.contains_key(&lower) {
+    if registry.exact_phrase_index.contains_key(&lower)
+        || matches!(lower.as_str(), "tonight" | "anoche")
+    {
         return true;
+    }
+    if normalize {
+        let folded = fold_diacritics(&lower);
+        if registry.folded_exact_phrase_index.contains_key(&folded) {
+            return true;
+        }
     }
     false
 }

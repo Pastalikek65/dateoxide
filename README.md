@@ -4,12 +4,12 @@
 
 `dateoxide` replaces runtime Python regex compilation and 205 dynamically imported locale modules with a compiled zero-backtracking Rust engine (`dateoxide-core`) exposed to Python via **PyO3 + maturin**.
 
-- **290x – 10,680x faster** single-threaded parsing (`2,479x – 82,228x` with GIL-free parallel `parse_batch`)
-- **9.7x lower memory footprint** (`+5.3 MB` vs `+51.4 MB` RSS delta across 205 languages)
-- **29.8x faster cold import** (`3.2 ms` vs `95.5 ms`)
+- **158x – 10,527x faster** single-threaded parsing (`1,300x – 54,133x` with GIL-free parallel `parse_batch`)
+- **8.1x lower memory footprint** (`+6.36 MB` vs `+51.47 MB` RSS delta across 205 languages)
+- **33.2x faster cold import** (`2.55 ms` vs `84.72 ms`)
 - **Zero ReDoS** — no backtracking regular expressions on hot paths
-- **205 languages supported** out of the box (Turkish, English, German, French, Spanish, Russian, Japanese, Chinese, Arabic, and 196 more)
-- **Drop-in compatible API**: `parse()`, `DateDataParser`, `search_dates()`, and `settings`
+- **205/205 languages verified** out of the box (Turkish, English, German, French, Spanish, Italian, Portuguese, Russian, Ukrainian, Polish, Czech, Dutch, Swedish, Greek, Hebrew, Arabic, Persian, Hindi, Korean, Japanese, Chinese, Indonesian, Vietnamese, Thai, and 181 more)
+- **Accent-tolerant normalization (`NORMALIZE=True`)**, time-of-day phrases (`"yesterday at noon"`, `"tonight"`, `"dün gece"`), compact ISO (`"20261126T153000Z"`), Apache log timestamps, and full `dateparser` settings compatibility (`DATE_ORDER`, `region`, `PARSERS`, `SKIP_TOKENS`, `RETURN_TIME_AS_PERIOD`, `PREFER_DATES_FROM`, `search_dates(..., add_detected_language=True)`)
 
 ---
 
@@ -21,17 +21,17 @@ Measured with [`benchmarks/bench_vs_dateparser.py`](benchmarks/bench_vs_datepars
 
 | Metric | `dateparser` (Python) | `dateoxide` (Rust) | Improvement |
 | :--- | ---: | ---: | ---: |
-| **Cold import time** | 95.53 ms | **3.21 ms** | **29.8x faster** |
-| **RSS after import** | +7.98 MB | **+0.20 MB** | **39.9x smaller** |
-| **RSS delta after parsing** | +51.39 MB | **+5.32 MB** | **9.7x less RAM** |
+| **Cold import time** | 84.72 ms | **2.55 ms** | **33.2x faster** |
+| **RSS after import** | +8.27 MB | **+0.19 MB** | **43.5x smaller** |
+| **RSS delta after parsing** | +51.47 MB | **+6.36 MB** | **8.1x less RAM** |
 
 ### Parsing Throughput (Operations / Second)
 
 | Workload | `dateparser.parse` | `dateoxide.parse` | `dateoxide.DateDataParser` | `dateoxide.parse_batch` *(Rayon)* |
 | :--- | ---: | ---: | ---: | ---: |
-| **ISO / RFC / Numeric** | 444 /s | **1,517,316 /s** *(3,419x)* | **4,739,898 /s** *(10,680x)* | **5,491,488 /s** *(12,373x)* |
-| **Multilingual Natural Language (Auto)** | 1,207 /s | **351,043 /s** *(291x)* | **462,029 /s** *(383x)* | **2,992,471 /s** *(2,479x)* |
-| **Invalid / Non-Date Text (Worst Case)** | 59 /s | **584,484 /s** *(9,858x)* | **830,420 /s** *(14,006x)* | **4,875,480 /s** *(82,228x)* |
+| **ISO / RFC / Numeric** | 448 /s | **1,201,923 /s** *(2,684x)* | **4,713,646 /s** *(10,527x)* | **5,408,914 /s** *(12,080x)* |
+| **Multilingual Natural Language (Auto)** | 1,251 /s | **197,634 /s** *(158x)* | **229,369 /s** *(183x)* | **1,626,104 /s** *(1,300x)* |
+| **Invalid / Non-Date Text (Worst Case)** | 59 /s | **350,424 /s** *(5,981x)* | **457,746 /s** *(7,813x)* | **3,171,462 /s** *(54,133x)* |
 
 Reproduce locally:
 ```bash
@@ -49,11 +49,32 @@ import dateoxide as dateparser
 
 dateparser.parse("3 days ago")
 dateparser.parse("3 gün önce")
+dateparser.parse("3 gun once")          # diacritic-folded normalization
+dateparser.parse("dün gece")            # time-of-day phrases
+dateparser.parse("yesterday at noon")
 dateparser.parse("vor 2 Wochen")
 dateparser.parse("hier à 14h30")
 dateparser.parse("12 de diciembre de 2025")
-dateparser.parse("2026年11月26日")
+dateparser.parse("2026년 11월 26일")     # Korean
+dateparser.parse("2026年11月26日")       # Japanese / Chinese
+dateparser.parse("١٢ ديسمبر ٢٠٢٥")       # Arabic-Indic numerals
+dateparser.parse("20261126T153000Z")    # Compact ISO-8601
 dateparser.parse("2026-11-26T12:00:00Z", settings={"TO_TIMEZONE": "Europe/Istanbul"})
+```
+
+### Settings & Regional Compatibility
+
+```python
+import dateoxide
+
+# Region-aware numeric ordering
+dateoxide.parse("05-11-2026", region="US")  # 2026-05-11
+dateoxide.parse("05-11-2026", region="GB")  # 2026-11-05
+
+# Skip noisy prefixes, filter enabled parsers, toggle diacritic normalization
+dateoxide.parse("Published: 12 December 2025", settings={"SKIP_TOKENS": ["Published:"]})
+dateoxide.parse("15 Subat 2026", settings={"NORMALIZE": False})  # None (strict accents)
+dateoxide.parse("3 days ago", settings={"PARSERS": ["absolute-time"]})  # None
 ```
 
 ### Reusable `DateDataParser` (Zero per-call settings overhead)
@@ -63,9 +84,9 @@ from dateoxide import DateDataParser
 
 parser = DateDataParser(
     languages=["tr", "en"],
-    settings={"DATE_ORDER": "DMY", "PREFER_DATES_FROM": "past"},
+    settings={"DATE_ORDER": "DMY", "PREFER_DATES_FROM": "past", "RETURN_TIME_AS_PERIOD": True},
 )
-data = parser.get_date_data("12 Aralık 2025")
+data = parser.get_date_data("12 Aralık 2025 14:30")
 print(data.date_obj, data.period, data.locale)
 ```
 
@@ -84,8 +105,8 @@ results = dateoxide.parse_batch(dates)  # Runs across all CPU cores via Rayon
 from dateoxide.search import search_dates
 
 text = "Toplantı 15 Ocak 2026 tarihinde yapılacak, önceki görüşme 3 gün önce bitti."
-matches = search_dates(text)
-# [('15 Ocak 2026', datetime(2026, 1, 15, 0, 0)), ('3 gün önce', datetime(...))]
+matches = search_dates(text, add_detected_language=True)
+# [('15 Ocak 2026', datetime(2026, 1, 15, 0, 0), 'tr'), ('3 gün önce', datetime(...), 'tr')]
 ```
 
 ---
@@ -106,10 +127,10 @@ let batch = parse_batch(&["2026-11-26", "vor 2 Wochen", "3日前"], &Settings::d
 
 ## Architecture: Why Is It So Fast & Lean?
 
-1. **Zero-Regex Byte Scanner Fast Path (`fast_path.rs`):** ISO-8601, RFC-2822/3339, delimited numeric dates, compact `YYYYMMDD`, and Unix timestamps are parsed directly from bytes without touching regexes or locale tables.
-2. **Compile-Time Binary Locale Database (`build.rs` + `postcard`):** All 205 languages are compiled at build time into a compact embedded binary (`include_bytes!`) lazily loaded via `OnceLock` on first natural-language parse — eliminating Python's 205-module import tax.
-3. **Zero-Regex Structured Relative Patterns (`relative.rs`):** 99.97% of `dateparser`'s 3,621 `relative-type-regex` entries are pure `<prefix><NUMBER><suffix>` shapes. `dateoxide` pre-compiles them into flat prefix/suffix matchers with guaranteed linear time and zero ReDoS risk.
-4. **O(tokens) Inverted Language Index (`locale/mod.rs`):** Instead of iterating through 205 languages on unknown input, `dateoxide` votes across tokens in a single `FxHashMap` lookup (plus Unicode script detection for CJK, Cyrillic, Arabic, Devanagari, etc.), rejecting non-date strings in nanoseconds.
+1. **Zero-Regex Byte Scanner Fast Path (`fast_path.rs`):** Extended & compact ISO-8601, RFC-2822/3339, delimited numeric dates, standalone compact times (`5:30p.m.`, `09h15`), and Unix timestamps are parsed directly from bytes without touching regexes or locale tables.
+2. **Compile-Time Binary Locale Database (`build.rs` + `postcard`):** All 205 languages (including script-tagged locales like `az-Cyrl`, `sr-Latn`, `uz-Cyrl`) are compiled at build time into a compact embedded binary (`include_bytes!`) lazily loaded via `OnceLock` on first natural-language parse — eliminating Python's 205-module import tax.
+3. **Zero-Regex Structured Relative Patterns (`relative.rs`):** 99.97% of `dateparser`'s 3,621 `relative-type-regex` entries are pure `<prefix><NUMBER><suffix>` shapes. `dateoxide` pre-compiles them into flat prefix/suffix matchers with guaranteed linear time and zero ReDoS risk, plus multi-sense relative disambiguation (`PREFER_DATES_FROM`) and time-of-day anchoring.
+4. **O(tokens) Inverted Language Index + Diacritic Folding (`locale/mod.rs`):** Instead of iterating through 205 languages on unknown input, `dateoxide` scores exact and diacritic-folded tokens in `FxHashMap` lookups (plus Unicode script detection for Korean, Japanese, Chinese, Cyrillic, Arabic, Greek, Hebrew, Thai, Devanagari), rejecting non-date strings in microseconds.
 5. **GIL-Free Rayon Parallelism (`parse_batch`):** Releases Python's GIL via `py.allow_threads` and fans out across all CPU cores with Rayon.
 
 ---
@@ -123,7 +144,7 @@ maturin develop --release
 # Run Rust core tests
 cargo test -p dateoxide-core --release
 
-# Run Python compatibility & multilingual test suite
+# Run Python compatibility & 205-language test suite
 pytest -v
 
 # Run head-to-head benchmark vs dateparser
