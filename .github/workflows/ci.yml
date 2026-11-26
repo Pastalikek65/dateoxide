@@ -29,5 +29,6 @@ jobs:
           python-version: ${{ matrix.python }}
       - uses: dtolnay/rust-toolchain@stable
       - run: pip install maturin pytest dateparser
-      - run: maturin develop --release
+      - run: maturin build --release --out dist --find-interpreter
+      - run: pip install dist/*.whl
       - run: pytest -v
