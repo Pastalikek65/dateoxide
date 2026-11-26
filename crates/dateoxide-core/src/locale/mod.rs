@@ -405,6 +405,7 @@ impl LocaleRegistry {
         explicit_langs: Option<&[String]>,
         default_langs: &[String],
         normalize: bool,
+        use_given_order: bool,
     ) -> Vec<usize> {
         if let Some(langs) = explicit_langs {
             if !langs.is_empty() {
@@ -420,12 +421,32 @@ impl LocaleRegistry {
             }
         }
 
+        let order_with_defaults = |mut ids: Vec<usize>| -> Vec<usize> {
+            if use_given_order && !default_langs.is_empty() {
+                let mut ordered = Vec::with_capacity(ids.len());
+                for code in default_langs {
+                    if let Some(did) = self.resolve_lang_id(code) {
+                        if ids.contains(&did) && !ordered.contains(&did) {
+                            ordered.push(did);
+                        }
+                    }
+                }
+                for id in ids {
+                    if !ordered.contains(&id) {
+                        ordered.push(id);
+                    }
+                }
+                ids = ordered;
+            }
+            ids
+        };
+
         // Fast exact relative phrase lookup
         if let Some(matches) = self.exact_phrase_index.get(normalized) {
             let mut out: Vec<usize> = matches.iter().map(|(id, _)| *id as usize).collect();
             out.sort_unstable();
             out.dedup();
-            return out;
+            return order_with_defaults(out);
         }
 
         if normalize {
@@ -434,7 +455,7 @@ impl LocaleRegistry {
                 let mut out: Vec<usize> = matches.iter().map(|(id, _)| *id as usize).collect();
                 out.sort_unstable();
                 out.dedup();
-                return out;
+                return order_with_defaults(out);
             }
         }
 
@@ -521,7 +542,8 @@ impl LocaleRegistry {
         // Highest score first; ties broken by global language priority (lower id = higher priority)
         ranked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-        ranked.into_iter().take(8).map(|(id, _)| id as usize).collect()
+        let top: Vec<usize> = ranked.into_iter().take(8).map(|(id, _)| id as usize).collect();
+        order_with_defaults(top)
     }
 }
 

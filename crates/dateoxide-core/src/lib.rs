@@ -117,6 +117,7 @@ pub fn parse_freshness(input: &str, settings: &Settings) -> DateData {
         settings.languages.as_deref(),
         &settings.default_languages,
         settings.normalize,
+        settings.use_given_language_order,
     );
     if let Some(m) = relative::try_parse_relative(&normalized, &candidates, registry, settings) {
         return DateData {
@@ -236,6 +237,7 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
         settings.languages.as_deref(),
         &settings.default_languages,
         settings.normalize,
+        settings.use_given_language_order,
     );
 
     if candidates.is_empty() {

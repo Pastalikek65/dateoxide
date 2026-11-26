@@ -234,6 +234,19 @@ pub fn pop_tz_offset_from_string(
     (cleaned.to_string(), tz)
 }
 
+/// Resolve a local `NaiveDateTime` inside an IANA timezone, shifting past DST spring-forward gaps.
+#[inline]
+fn resolve_iana_local(tz: Tz, naive: NaiveDateTime) -> chrono::DateTime<Tz> {
+    if let Some(dt) = tz.from_local_datetime(&naive).earliest() {
+        return dt;
+    }
+    let shifted = naive + chrono::Duration::hours(1);
+    if let Some(dt) = tz.from_local_datetime(&shifted).earliest() {
+        return dt;
+    }
+    naive.and_utc().with_timezone(&tz)
+}
+
 /// Apply parsed timezone + Settings (`TIMEZONE`, `TO_TIMEZONE`, `RETURN_AS_TIMEZONE_AWARE`)
 /// to produce the final `ParsedDateTime`.
 pub fn finalize_datetime(
@@ -265,11 +278,7 @@ pub fn finalize_datetime(
                 .single()
                 .map(|d| d.to_utc())
                 .unwrap_or_else(|| naive.and_utc()),
-            Some(TzSpec::Iana(tz)) => tz
-                .from_local_datetime(&naive)
-                .earliest()
-                .map(|d| d.to_utc())
-                .unwrap_or_else(|| naive.and_utc()),
+            Some(TzSpec::Iana(tz)) => resolve_iana_local(tz, naive).to_utc(),
             None => chrono::Local
                 .from_local_datetime(&naive)
                 .earliest()
@@ -305,9 +314,7 @@ pub fn finalize_datetime(
                 }
             }
             Some(TzSpec::Iana(tz)) => {
-                if let Some(dt) = tz.from_local_datetime(&naive).earliest() {
-                    return ParsedDateTime::Tz(dt);
-                }
+                return ParsedDateTime::Tz(resolve_iana_local(tz, naive));
             }
             None => {
                 if let Some(dt) = chrono::Local.from_local_datetime(&naive).earliest() {

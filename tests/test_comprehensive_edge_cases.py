@@ -203,3 +203,66 @@ def test_conversational_fractional_and_search_improvements():
     assert res_de is not None and len(res_de) == 1
     assert "09:00 Uhr" in res_de[0][0]
     assert res_de[0][1] == datetime(2026, 11, 27, 9, 0)
+
+
+def test_py_typed_tz_validation_dst_gap_cache_and_multilingual_time_spans():
+    from pathlib import Path
+    from dateoxide import SettingValidationError
+    from dateoxide.utils import time_spans
+
+    # 1. PEP 561 py.typed marker
+    assert (Path(dateoxide.__file__).resolve().parent / "py.typed").is_file()
+
+    # 2. Invalid TIMEZONE / TO_TIMEZONE raises SettingValidationError
+    with pytest.raises(SettingValidationError):
+        dateoxide.parse("2026-11-26 12:00", settings={"TIMEZONE": "Invalid/NotAZone"})
+    with pytest.raises(SettingValidationError):
+        dateoxide.parse("2026-11-26 12:00", settings={"TO_TIMEZONE": "Invalid/NotAZone"})
+
+    # 3. DST spring-forward gap in America/New_York (2026-03-08 02:30 -> shifted to 03:30 EDT = 07:30 UTC)
+    dst_gap = dateoxide.parse(
+        "2026-03-08 02:30:00",
+        settings={"TIMEZONE": "America/New_York", "TO_TIMEZONE": "UTC"},
+    )
+    assert dst_gap == datetime(2026, 3, 8, 7, 30)
+
+    # 4. USE_GIVEN_LANGUAGE_ORDER respects DEFAULT_LANGUAGES ordering on shared phrases
+    dd_es = DateDataParser(
+        settings={
+            "RELATIVE_BASE": FIXED_BASE,
+            "DEFAULT_LANGUAGES": ["es", "pt"],
+            "USE_GIVEN_LANGUAGE_ORDER": True,
+        }
+    ).get_date_data("hoy")
+    assert dd_es.locale == "es"
+    assert dd_es.date_obj == FIXED_BASE
+
+    # 5. Bounded parser cache (eviction with CACHE_SIZE_LIMIT=4 & disabled with 0)
+    cached_ddp = DateDataParser(settings={"RELATIVE_BASE": FIXED_BASE, "CACHE_SIZE_LIMIT": 4})
+    for day in range(1, 11):
+        s = f"2026-11-{day:02d}"
+        assert cached_ddp.parse(s) == datetime(2026, 11, day)
+        assert cached_ddp.get_date_data(s).date_obj == datetime(2026, 11, day)
+    assert cached_ddp.parse("2026-11-01") == datetime(2026, 11, 1)
+
+    uncached_ddp = DateDataParser(settings={"RELATIVE_BASE": FIXED_BASE, "CACHE_SIZE_LIMIT": 0})
+    assert uncached_ddp.parse("3 gün önce") == datetime(2026, 11, 23, 15, 0)
+
+    # 6. Multilingual time spans (TR, DE, FR, ES)
+    for txt, exp_type, exp_dir, exp_num in [
+        ("son 7 gün içinde", "days", "past", 7),
+        ("geçen hafta raporlar", "week", "past", None),
+        ("önümüzdeki 2 hafta", "weeks", "future", 2),
+        ("letzten 5 Tage", "days", "past", 5),
+        ("semaine dernière", "week", "past", None),
+        ("últimos 3 días", "days", "past", 3),
+    ]:
+        sp = time_spans.detect_time_span(txt)
+        assert sp is not None, f"Failed time_span on {txt!r}"
+        assert (sp["type"], sp["direction"], sp.get("number")) == (exp_type, exp_dir, exp_num)
+
+    tr_found = search_dates(
+        "son 7 gün hataları",
+        settings={"RELATIVE_BASE": FIXED_BASE, "RETURN_TIME_SPAN": True},
+    )
+    assert tr_found is not None and len(tr_found) == 2

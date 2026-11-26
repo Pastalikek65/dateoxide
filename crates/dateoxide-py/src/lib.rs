@@ -7,6 +7,9 @@ use dateoxide_core::timezone::TzSpec;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
+use rustc_hash::FxHashMap;
+use std::collections::VecDeque;
+use std::sync::Mutex;
 
 pyo3::create_exception!(_dateoxide, SettingValidationError, PyValueError);
 
@@ -332,6 +335,27 @@ fn extract_settings(
         }
     }
 
+    if let Some(ref tz) = cfg.timezone {
+        if dateoxide_core::timezone::parse_tz_spec_with_abbrevs(tz, &cfg.timezone_abbreviations)
+            .is_none()
+        {
+            return Err(SettingValidationError::new_err(format!(
+                "Invalid TIMEZONE: '{}'",
+                tz
+            )));
+        }
+    }
+    if let Some(ref tz) = cfg.to_timezone {
+        if dateoxide_core::timezone::parse_tz_spec_with_abbrevs(tz, &cfg.timezone_abbreviations)
+            .is_none()
+        {
+            return Err(SettingValidationError::new_err(format!(
+                "Invalid TO_TIMEZONE: '{}'",
+                tz
+            )));
+        }
+    }
+
     Ok(cfg)
 }
 
@@ -459,11 +483,72 @@ impl PyDateData {
     }
 }
 
+#[derive(Default)]
+struct ParserCache {
+    map: FxHashMap<String, DateData>,
+    order: VecDeque<String>,
+}
+
 /// Reusable, zero-overhead configured parser (avoids re-parsing settings dict per call).
 #[pyclass(name = "DateDataParser")]
 pub struct PyDateDataParser {
     settings: Settings,
     detect_languages_function: Option<PyObject>,
+    cache: Mutex<ParserCache>,
+}
+
+impl PyDateDataParser {
+    fn resolve_date_data(
+        &self,
+        py: Python<'_>,
+        date_string: &str,
+        date_formats: Option<Vec<String>>,
+    ) -> PyResult<DateData> {
+        let mut cfg_owned: Option<Settings> = None;
+        if let Some(fmts) = date_formats {
+            let mut c = self.settings.clone();
+            c.date_formats = Some(fmts);
+            cfg_owned = Some(c);
+        }
+        if self.settings.languages.is_none() {
+            if let Some(ref func) = self.detect_languages_function {
+                if let Some(detected) = call_detect_languages(py, func, date_string)? {
+                    let c = cfg_owned.get_or_insert_with(|| self.settings.clone());
+                    c.languages = Some(detected);
+                }
+            }
+        }
+        if let Some(ref cfg) = cfg_owned {
+            return Ok(dateoxide_core::get_date_data(date_string, cfg));
+        }
+
+        let limit = self.settings.cache_size_limit;
+        if limit > 0 && self.settings.relative_base.is_some() {
+            if let Ok(guard) = self.cache.lock() {
+                if let Some(cached) = guard.map.get(date_string) {
+                    return Ok(cached.clone());
+                }
+            }
+            let data = dateoxide_core::get_date_data(date_string, &self.settings);
+            if let Ok(mut guard) = self.cache.lock() {
+                if !guard.map.contains_key(date_string) {
+                    while guard.order.len() >= limit {
+                        if let Some(oldest) = guard.order.pop_front() {
+                            guard.map.remove(&oldest);
+                        } else {
+                            break;
+                        }
+                    }
+                    let key = date_string.to_string();
+                    guard.order.push_back(key.clone());
+                    guard.map.insert(key, data.clone());
+                }
+            }
+            return Ok(data);
+        }
+
+        Ok(dateoxide_core::get_date_data(date_string, &self.settings))
+    }
 }
 
 #[pymethods]
@@ -484,6 +569,7 @@ impl PyDateDataParser {
         Ok(Self {
             settings: cfg,
             detect_languages_function,
+            cache: Mutex::new(ParserCache::default()),
         })
     }
 
@@ -494,22 +580,7 @@ impl PyDateDataParser {
         date_string: &str,
         date_formats: Option<Vec<String>>,
     ) -> PyResult<PyDateData> {
-        let mut cfg_owned: Option<Settings> = None;
-        if let Some(fmts) = date_formats {
-            let mut c = self.settings.clone();
-            c.date_formats = Some(fmts);
-            cfg_owned = Some(c);
-        }
-        if self.settings.languages.is_none() {
-            if let Some(ref func) = self.detect_languages_function {
-                if let Some(detected) = call_detect_languages(py, func, date_string)? {
-                    let c = cfg_owned.get_or_insert_with(|| self.settings.clone());
-                    c.languages = Some(detected);
-                }
-            }
-        }
-        let cfg_ref = cfg_owned.as_ref().unwrap_or(&self.settings);
-        let data = dateoxide_core::get_date_data(date_string, cfg_ref);
+        let data = self.resolve_date_data(py, date_string, date_formats)?;
         datedata_to_py(py, data)
     }
 
@@ -537,22 +608,8 @@ impl PyDateDataParser {
         date_string: &str,
         date_formats: Option<Vec<String>>,
     ) -> PyResult<Option<PyObject>> {
-        let mut cfg_owned: Option<Settings> = None;
-        if let Some(fmts) = date_formats {
-            let mut c = self.settings.clone();
-            c.date_formats = Some(fmts);
-            cfg_owned = Some(c);
-        }
-        if self.settings.languages.is_none() {
-            if let Some(ref func) = self.detect_languages_function {
-                if let Some(detected) = call_detect_languages(py, func, date_string)? {
-                    let c = cfg_owned.get_or_insert_with(|| self.settings.clone());
-                    c.languages = Some(detected);
-                }
-            }
-        }
-        let cfg_ref = cfg_owned.as_ref().unwrap_or(&self.settings);
-        match dateoxide_core::parse_with_settings(date_string, cfg_ref) {
+        let data = self.resolve_date_data(py, date_string, date_formats)?;
+        match data.date_obj {
             Some(dt) => Ok(Some(parsed_to_py(py, dt)?)),
             None => Ok(None),
         }

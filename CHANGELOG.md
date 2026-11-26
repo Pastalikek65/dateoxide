@@ -13,8 +13,14 @@ All notable changes to this project will be documented in this file.
 - **Modular Cargo features**: `dateoxide-core` now exposes `default = ["rayon", "calendars"]` (`cargo check --no-default-features` compiles cleanly with sequential batch fallback).
 - **Criterion Rust micro-benchmarks**: added `crates/dateoxide-core/benches/parse_bench.rs`.
 - **Linux `musllinux_1_2` (`x86_64`) wheels** added to `.github/workflows/release.yml` for Alpine Docker images.
+- **PEP 561 `py.typed` marker** shipped alongside `dateoxide/__init__.pyi` for `mypy`/`pyright` type checking.
+- **`USE_GIVEN_LANGUAGE_ORDER` enforcement** across `detect_candidates` and relative phrase resolution.
+- **Timezone validation & DST gap handling**: invalid `TIMEZONE`/`TO_TIMEZONE` now raise `SettingValidationError`, and non-existent local times during DST spring-forward shift forward inside the IANA zone instead of falling back to UTC.
+- **Bounded `DateDataParser` cache** honoring `CACHE_SIZE_LIMIT`.
+- **Multilingual `time_spans`** extended to Turkish, German, French, and Spanish alongside English.
 
 ### Fixed
+- **`release.yml` artifact upload path**: restored `path: dist` under `actions/upload-artifact@v4` in `build-wheels`.
 - **`search_dates` 6/6 on torture suite**: fixed English conjunction splits (`"or on 12"` in `"Let us meet tomorrow at 5pm or on 12 December 2025."`) and kept trailing German `"Uhr"` inside matched spans (`"09:00 Uhr"`).
 - **Weekday-only time consistency**: `"last Friday"` / `"geçen pazartesi"` now resolve to `00:00:00` consistently with `dateparser`.
 

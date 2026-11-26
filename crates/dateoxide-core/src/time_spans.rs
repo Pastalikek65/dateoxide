@@ -27,6 +27,7 @@ static SPAN_PATTERNS: OnceLock<Vec<CompiledSpanPattern>> = OnceLock::new();
 fn patterns() -> &'static [CompiledSpanPattern] {
     SPAN_PATTERNS.get_or_init(|| {
         let specs = [
+            // English
             (r"(?i)\b(?:for\s+the\s+|during\s+the\s+|in\s+the\s+)?(?:past|last|previous)\s+month\b", "month", "past", false),
             (r"(?i)\b(?:for\s+the\s+|during\s+the\s+|in\s+the\s+)?(?:past|last|previous)\s+week\b", "week", "past", false),
             (r"(?i)\b(?:for\s+the\s+|during\s+the\s+|in\s+the\s+)?(?:past|last|previous)\s+(\d+)\s+days?\b", "days", "past", true),
@@ -37,6 +38,50 @@ fn patterns() -> &'static [CompiledSpanPattern] {
             (r"(?i)\b(?:for\s+the\s+|during\s+the\s+|in\s+the\s+)?(?:next|coming|following)\s+(\d+)\s+days?\b", "days", "future", true),
             (r"(?i)\b(?:for\s+the\s+|during\s+the\s+|in\s+the\s+)?(?:next|coming|following)\s+(\d+)\s+weeks?\b", "weeks", "future", true),
             (r"(?i)\b(?:for\s+the\s+|during\s+the\s+|in\s+the\s+)?(?:next|coming|following)\s+(\d+)\s+months?\b", "months", "future", true),
+            // Turkish
+            (r"(?i)\b(?:geçen|gecen|önceki|onceki)\s+ay\b", "month", "past", false),
+            (r"(?i)\b(?:geçen|gecen|önceki|onceki)\s+hafta\b", "week", "past", false),
+            (r"(?i)\b(?:son|geçen|gecen)\s+(\d+)\s+(?:gün|gun)\b", "days", "past", true),
+            (r"(?i)\b(?:son|geçen|gecen)\s+(\d+)\s+hafta\b", "weeks", "past", true),
+            (r"(?i)\b(?:son|geçen|gecen)\s+(\d+)\s+ay\b", "months", "past", true),
+            (r"(?i)\b(?:gelecek|önümüzdeki|onumuzdeki|sonraki)\s+ay\b", "month", "future", false),
+            (r"(?i)\b(?:gelecek|önümüzdeki|onumuzdeki|sonraki)\s+hafta\b", "week", "future", false),
+            (r"(?i)\b(?:gelecek|önümüzdeki|onumuzdeki|sonraki)\s+(\d+)\s+(?:gün|gun)\b", "days", "future", true),
+            (r"(?i)\b(?:gelecek|önümüzdeki|onumuzdeki|sonraki)\s+(\d+)\s+hafta\b", "weeks", "future", true),
+            (r"(?i)\b(?:gelecek|önümüzdeki|onumuzdeki|sonraki)\s+(\d+)\s+ay\b", "months", "future", true),
+            // German
+            (r"(?i)\b(?:letzten?|vergangenen?)\s+monat\b", "month", "past", false),
+            (r"(?i)\bletzte\s+woche\b", "week", "past", false),
+            (r"(?i)\b(?:letzten?|vergangenen?)\s+(\d+)\s+tage?\b", "days", "past", true),
+            (r"(?i)\b(?:letzten?|vergangenen?)\s+(\d+)\s+wochen?\b", "weeks", "past", true),
+            (r"(?i)\b(?:letzten?|vergangenen?)\s+(\d+)\s+monate?\b", "months", "past", true),
+            (r"(?i)\b(?:nächsten?|naechsten?|kommenden?)\s+monat\b", "month", "future", false),
+            (r"(?i)\b(?:nächste|naechste|kommende)\s+woche\b", "week", "future", false),
+            (r"(?i)\b(?:nächsten?|naechsten?|kommenden?)\s+(\d+)\s+tage?\b", "days", "future", true),
+            (r"(?i)\b(?:nächsten?|naechsten?|kommenden?)\s+(\d+)\s+wochen?\b", "weeks", "future", true),
+            (r"(?i)\b(?:nächsten?|naechsten?|kommenden?)\s+(\d+)\s+monate?\b", "months", "future", true),
+            // French
+            (r"(?i)\b(?:mois\s+dernier|dernier\s+mois)\b", "month", "past", false),
+            (r"(?i)\b(?:semaine\s+dernière|semaine\s+derniere|dernière\s+semaine)\b", "week", "past", false),
+            (r"(?i)\b(?:(\d+)\s+derniers?\s+jours|derniers?\s+(\d+)\s+jours)\b", "days", "past", true),
+            (r"(?i)\b(?:(\d+)\s+dernières?\s+semaines|(\d+)\s+dernieres?\s+semaines)\b", "weeks", "past", true),
+            (r"(?i)\b(?:(\d+)\s+derniers?\s+mois)\b", "months", "past", true),
+            (r"(?i)\b(?:mois\s+prochain|prochain\s+mois)\b", "month", "future", false),
+            (r"(?i)\b(?:semaine\s+prochaine|prochaine\s+semaine)\b", "week", "future", false),
+            (r"(?i)\b(\d+)\s+prochains?\s+jours\b", "days", "future", true),
+            (r"(?i)\b(\d+)\s+prochaines?\s+semaines\b", "weeks", "future", true),
+            (r"(?i)\b(\d+)\s+prochains?\s+mois\b", "months", "future", true),
+            // Spanish
+            (r"(?i)\b(?:mes\s+pasado|último\s+mes|ultimo\s+mes)\b", "month", "past", false),
+            (r"(?i)\b(?:semana\s+pasada|última\s+semana|ultima\s+semana)\b", "week", "past", false),
+            (r"(?i)\b(?:últimos|ultimos|pasados)\s+(\d+)\s+(?:días|dias)\b", "days", "past", true),
+            (r"(?i)\b(?:últimas|ultimas|pasadas)\s+(\d+)\s+semanas\b", "weeks", "past", true),
+            (r"(?i)\b(?:últimos|ultimos|pasados)\s+(\d+)\s+meses\b", "months", "past", true),
+            (r"(?i)\b(?:próximo|proximo)\s+mes\b", "month", "future", false),
+            (r"(?i)\b(?:próxima|proxima)\s+semana\b", "week", "future", false),
+            (r"(?i)\b(?:próximos|proximos|siguientes)\s+(\d+)\s+(?:días|dias)\b", "days", "future", true),
+            (r"(?i)\b(?:próximas|proximas|siguientes)\s+(\d+)\s+semanas\b", "weeks", "future", true),
+            (r"(?i)\b(?:próximos|proximos|siguientes)\s+(\d+)\s+meses\b", "months", "future", true),
         ];
         specs
             .into_iter()
@@ -56,7 +101,7 @@ pub fn detect_time_span(text: &str) -> Option<TimeSpanMatch> {
         if let Some(caps) = pat.regex.captures(text) {
             let full = caps.get(0)?;
             let number = if pat.has_num {
-                let num_str = caps.get(1)?.as_str();
+                let num_str = caps.iter().skip(1).flatten().next()?.as_str();
                 match num_str.parse::<u32>() {
                     Ok(n) => Some(n),
                     Err(_) => continue,

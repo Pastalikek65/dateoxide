@@ -201,14 +201,33 @@ pub fn try_parse_relative(
     // 1. O(1) Global Exact Relative Phrase lookup ("yesterday", "bugün", "yarın", "demain", "今日", "कल", "غدا")
     if let Some(matches) = registry.exact_phrase_index.get(trimmed_article) {
         let mut matched_specs: Vec<(usize, RelativeSpec)> = Vec::new();
-        for &(lid, spec) in matches {
-            let lid_usize = lid as usize;
-            if candidate_ids.is_empty() || candidate_ids.contains(&lid_usize) {
-                matched_specs.push((lid_usize, spec));
+        if settings.use_given_language_order && !candidate_ids.is_empty() {
+            for &cid in candidate_ids {
+                for &(lid, spec) in matches {
+                    if lid as usize == cid {
+                        matched_specs.push((cid, spec));
+                    }
+                }
+            }
+        } else {
+            for &(lid, spec) in matches {
+                let lid_usize = lid as usize;
+                if candidate_ids.is_empty() || candidate_ids.contains(&lid_usize) {
+                    matched_specs.push((lid_usize, spec));
+                }
             }
         }
         if !matched_specs.is_empty() {
-            let specs_only: Vec<RelativeSpec> = matched_specs.iter().map(|(_, s)| *s).collect();
+            let specs_only: Vec<RelativeSpec> = if settings.use_given_language_order && !candidate_ids.is_empty() {
+                let first_lid = matched_specs[0].0;
+                matched_specs
+                    .iter()
+                    .filter(|(l, _)| *l == first_lid)
+                    .map(|(_, s)| *s)
+                    .collect()
+            } else {
+                matched_specs.iter().map(|(_, s)| *s).collect()
+            };
             let chosen = select_relative_spec(&specs_only, settings.prefer_dates_from);
             let chosen_lid = matched_specs
                 .iter()
@@ -230,14 +249,33 @@ pub fn try_parse_relative(
     if settings.normalize {
         if let Some(matches) = registry.folded_exact_phrase_index.get(&folded_full) {
             let mut matched_specs: Vec<(usize, RelativeSpec)> = Vec::new();
-            for &(lid, spec) in matches {
-                let lid_usize = lid as usize;
-                if candidate_ids.is_empty() || candidate_ids.contains(&lid_usize) {
-                    matched_specs.push((lid_usize, spec));
+            if settings.use_given_language_order && !candidate_ids.is_empty() {
+                for &cid in candidate_ids {
+                    for &(lid, spec) in matches {
+                        if lid as usize == cid {
+                            matched_specs.push((cid, spec));
+                        }
+                    }
+                }
+            } else {
+                for &(lid, spec) in matches {
+                    let lid_usize = lid as usize;
+                    if candidate_ids.is_empty() || candidate_ids.contains(&lid_usize) {
+                        matched_specs.push((lid_usize, spec));
+                    }
                 }
             }
             if !matched_specs.is_empty() {
-                let specs_only: Vec<RelativeSpec> = matched_specs.iter().map(|(_, s)| *s).collect();
+                let specs_only: Vec<RelativeSpec> = if settings.use_given_language_order && !candidate_ids.is_empty() {
+                    let first_lid = matched_specs[0].0;
+                    matched_specs
+                        .iter()
+                        .filter(|(l, _)| *l == first_lid)
+                        .map(|(_, s)| *s)
+                        .collect()
+                } else {
+                    matched_specs.iter().map(|(_, s)| *s).collect()
+                };
                 let chosen = select_relative_spec(&specs_only, settings.prefer_dates_from);
                 let chosen_lid = matched_specs
                     .iter()
