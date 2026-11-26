@@ -197,14 +197,15 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
     );
 
     if candidates.is_empty() {
-        if settings.allows_parser(ParserKind::AbsoluteTime)
-            && (normalized.contains('年')
-                || normalized.contains('月')
-                || normalized.contains('日')
-                || normalized.contains('년')
-                || normalized.contains('월')
-                || normalized.contains('일'))
-        {
+        let is_cjk_or_bare_year = (normalized.len() == 4
+            && normalized.bytes().all(|b| b.is_ascii_digit()))
+            || normalized.contains('年')
+            || normalized.contains('月')
+            || normalized.contains('日')
+            || normalized.contains('년')
+            || normalized.contains('월')
+            || normalized.contains('일');
+        if settings.allows_parser(ParserKind::AbsoluteTime) && is_cjk_or_bare_year {
             if let Some(m) = absolute::try_parse_absolute(&normalized, &[], registry, settings) {
                 return DateData {
                     date_obj: Some(finalize_datetime(m.naive, tz, settings)),

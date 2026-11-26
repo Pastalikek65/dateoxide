@@ -144,6 +144,18 @@ dates = ["2026-11-26", "3 gün önce", "vor 2 Wochen", "not a date"] * 25_000
 results = dateoxide.parse_batch(dates)  # Runs across all CPU cores via Rayon
 ```
 
+### Real-World Examples (`examples/`)
+
+- [`examples/telegram_reminder_bot.py`](examples/telegram_reminder_bot.py) — Multilingual Telegram reminder parser & UTC scheduler
+- [`examples/log_pipeline.py`](examples/log_pipeline.py) — Mixed Nginx CLF / RFC 3339 / bracketed log normalizer with `parse_batch`
+- [`examples/big_data_parser.py`](examples/big_data_parser.py) — 50,000-record multilingual ETL throughput & RSS demo
+
+```bash
+python examples/telegram_reminder_bot.py
+python examples/log_pipeline.py
+python examples/big_data_parser.py
+```
+
 ---
 
 ## Standalone Rust Usage (`dateoxide-core`)
@@ -182,11 +194,12 @@ maturin develop --release
 # Run Rust core tests
 cargo test -p dateoxide-core --release
 
-# Run full 2,700+ test suite
+# Run full 3,000+ test suite (including parity matrix, fuzzing & Umm al-Qura Hijri)
 pytest -v
 
-# Run head-to-head benchmark vs dateparser
+# Run standard & torture head-to-head benchmarks vs dateparser
 python benchmarks/bench_vs_dateparser.py
+python benchmarks/torture_benchmark.py
 ```
 
 Automated PyPI (OIDC Trusted Publishing) and crates.io multi-platform wheel builds trigger on release tags:

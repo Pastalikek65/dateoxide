@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - uses: dtolnay/rust-toolchain@stable
-      - run: pip install maturin pytest dateparser
+      - run: pip install maturin pytest dateparser hijridate
       - run: maturin build --release --out dist -i python
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
