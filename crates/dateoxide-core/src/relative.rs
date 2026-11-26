@@ -1,4 +1,4 @@
-use crate::fast_path::{days_in_month, parse_time_str};
+use crate::fast_path::{days_in_month, parse_time_str, resolve_time_only_date};
 use crate::locale::{
     fold_diacritics, CompiledLocale, LocaleRegistry, RelativeAffix, RelativeSpec, TimeUnit,
 };
@@ -183,34 +183,23 @@ pub fn try_parse_relative(
     }
 
     let base = settings.effective_base();
+    let trimmed_article = normalized.strip_prefix("the ").unwrap_or(normalized);
     let folded_full = if settings.normalize {
-        fold_diacritics(normalized)
+        fold_diacritics(trimmed_article)
     } else {
-        normalized.to_string()
+        trimmed_article.to_string()
     };
 
-    // 0. Special compound day + time-of-day idioms & half-hour phrases
-    if matches!(
-        if settings.normalize { folded_full.as_str() } else { normalized },
-        "half an hour ago" | "half hour ago" | "yarım saat önce" | "yarim saat once"
-    ) {
-        if let Some(dt) = apply_relative_offset(base, -1, 30.0, TimeUnit::Minute) {
-            return Some(RelativeMatch {
-                naive: dt,
-                period: Period::Day,
-                locale: if normalized.contains("saat") { "tr" } else { "en" }.to_string(),
-                has_time: false,
-                parts: vec!["year", "month", "day", "time"],
-                part_of_day: None,
-            });
-        }
+    // 0. Special compound day + time-of-day idioms, half/fractional durations & conversational clocks
+    if let Some(m) = try_conversational_clock_or_fraction(trimmed_article, settings) {
+        return Some(m);
     }
-    if let Some(m) = try_compound_tod_idiom(normalized, &folded_full, candidate_ids, registry, base, settings) {
+    if let Some(m) = try_compound_tod_idiom(trimmed_article, &folded_full, candidate_ids, registry, base, settings) {
         return Some(m);
     }
 
     // 1. O(1) Global Exact Relative Phrase lookup ("yesterday", "bugün", "yarın", "demain", "今日", "कल", "غدا")
-    if let Some(matches) = registry.exact_phrase_index.get(normalized) {
+    if let Some(matches) = registry.exact_phrase_index.get(trimmed_article) {
         let mut matched_specs: Vec<(usize, RelativeSpec)> = Vec::new();
         for &(lid, spec) in matches {
             let lid_usize = lid as usize;
@@ -408,6 +397,28 @@ fn try_compound_tod_idiom(
         "this morning" | "today morning" => (0, 9, "en"),
         "this afternoon" | "today afternoon" => (0, 15, "en"),
         "this evening" | "today evening" => (0, 18, "en"),
+        "day before yesterday" => {
+            let dt = base - Duration::days(2);
+            return Some(RelativeMatch {
+                naive: dt,
+                period: Period::Day,
+                locale: "en".to_string(),
+                has_time: false,
+                parts: vec!["year", "month", "day"],
+                part_of_day: None,
+            });
+        }
+        "day after tomorrow" => {
+            let dt = base + Duration::days(2);
+            return Some(RelativeMatch {
+                naive: dt,
+                period: Period::Day,
+                locale: "en".to_string(),
+                has_time: false,
+                parts: vec!["year", "month", "day"],
+                part_of_day: None,
+            });
+        }
         "yesterday morning" => (-1, 9, "en"),
         "yesterday afternoon" => (-1, 15, "en"),
         "yesterday evening" => (-1, 18, "en"),
@@ -887,7 +898,297 @@ fn try_relative_period_or_weekday(
     };
 
     base.checked_add_signed(Duration::days(delta_days))
-        .map(|dt| (dt, Period::Day))
+        .map(|dt| (dt.date().and_hms_opt(0, 0, 0).unwrap_or(dt), Period::Day))
+}
+
+/// Parse standalone fractional relative durations and conversational clock idioms
+/// (e.g. "two and a half hours ago", "bir buçuk saat önce", "quarter past 3", "saat 3 buçuk").
+pub fn try_conversational_clock_or_fraction(
+    normalized: &str,
+    settings: &Settings,
+) -> Option<RelativeMatch> {
+    let base = settings.effective_base();
+    let s = if settings.normalize {
+        fold_diacritics(normalized)
+    } else {
+        normalized.to_string()
+    };
+    let s = s.trim();
+
+    if matches!(
+        s,
+        "half an hour ago" | "half hour ago" | "yarım saat önce" | "yarim saat once"
+    ) {
+        let dt = apply_relative_offset(base, -1, 30.0, TimeUnit::Minute)?;
+        return Some(RelativeMatch {
+            naive: dt,
+            period: Period::Day,
+            locale: if s.contains("saat") { "tr" } else { "en" }.to_string(),
+            has_time: false,
+            parts: vec!["year", "month", "day", "time"],
+            part_of_day: None,
+        });
+    }
+    if matches!(
+        s,
+        "in half an hour" | "in half hour" | "yarım saat sonra" | "yarim saat sonra"
+    ) {
+        let dt = apply_relative_offset(base, 1, 30.0, TimeUnit::Minute)?;
+        return Some(RelativeMatch {
+            naive: dt,
+            period: Period::Day,
+            locale: if s.contains("saat") { "tr" } else { "en" }.to_string(),
+            has_time: false,
+            parts: vec!["year", "month", "day", "time"],
+            part_of_day: None,
+        });
+    }
+    if matches!(s, "half a day ago") {
+        let dt = apply_relative_offset(base, -1, 12.0, TimeUnit::Hour)?;
+        return Some(RelativeMatch {
+            naive: dt,
+            period: Period::Day,
+            locale: "en".to_string(),
+            has_time: false,
+            parts: vec!["year", "month", "day", "time"],
+            part_of_day: None,
+        });
+    }
+
+    if let Some(m) = try_fractional_duration(s, base) {
+        return Some(m);
+    }
+    if let Some(m) = try_conversational_clock(s, settings) {
+        return Some(m);
+    }
+    None
+}
+
+fn parse_small_num_or_word(tok: &str) -> Option<f64> {
+    if let Ok(v) = tok.parse::<f64>() {
+        if v.is_finite() && v >= 0.0 {
+            return Some(v);
+        }
+    }
+    match tok {
+        "a" | "an" | "one" | "bir" | "ein" | "eine" | "un" | "une" | "uno" | "una" => Some(1.0),
+        "two" | "iki" | "zwei" | "deux" | "dos" => Some(2.0),
+        "three" | "üç" | "uc" | "drei" | "trois" | "tres" => Some(3.0),
+        "four" | "dört" | "dort" | "vier" | "quatre" | "cuatro" => Some(4.0),
+        "five" | "beş" | "bes" | "fünf" | "funf" | "cinq" | "cinco" => Some(5.0),
+        "six" | "altı" | "alti" | "sechs" | "seis" => Some(6.0),
+        "seven" | "yedi" | "sieben" | "sept" | "siete" => Some(7.0),
+        "eight" | "sekiz" | "acht" | "huit" | "ocho" => Some(8.0),
+        "nine" | "dokuz" | "neun" | "neuf" | "nueve" => Some(9.0),
+        "ten" | "on" | "zehn" | "dix" | "diez" => Some(10.0),
+        "eleven" | "on bir" => Some(11.0),
+        "twelve" | "on iki" => Some(12.0),
+        _ => None,
+    }
+}
+
+fn parse_unit_token(tok: &str) -> Option<TimeUnit> {
+    match tok {
+        "second" | "seconds" | "sec" | "secs" | "saniye" | "sekunde" | "sekunden" => Some(TimeUnit::Second),
+        "minute" | "minutes" | "min" | "mins" | "dakika" | "dk" => Some(TimeUnit::Minute),
+        "hour" | "hours" | "hr" | "hrs" | "saat" | "stunde" | "stunden" => Some(TimeUnit::Hour),
+        "day" | "days" | "gün" | "gun" | "tag" | "tage" | "tagen" => Some(TimeUnit::Day),
+        "week" | "weeks" | "hafta" | "woche" | "wochen" => Some(TimeUnit::Week),
+        "month" | "months" | "ay" | "monat" | "monate" | "monaten" => Some(TimeUnit::Month),
+        "year" | "years" | "yıl" | "yil" | "sene" | "jahr" | "jahre" | "jahren" => Some(TimeUnit::Year),
+        _ => None,
+    }
+}
+
+fn apply_fractional_offset(base: NaiveDateTime, sign: i8, whole_and_half: f64, unit: TimeUnit) -> Option<NaiveDateTime> {
+    match unit {
+        TimeUnit::Month => {
+            let days = (whole_and_half * 30.0).round();
+            apply_relative_offset(base, sign, days, TimeUnit::Day)
+        }
+        TimeUnit::Year => {
+            let months = (whole_and_half * 12.0).round();
+            apply_relative_offset(base, sign, months, TimeUnit::Month)
+        }
+        _ => apply_relative_offset(base, sign, whole_and_half, unit),
+    }
+}
+
+fn try_fractional_duration(s: &str, base: NaiveDateTime) -> Option<RelativeMatch> {
+    // English: "[in ]<n> and a half <unit>[ ago| from now]"
+    let (sign_en, core_en): (i8, &str) = if let Some(rest) = s.strip_prefix("in ") {
+        (1, rest.trim())
+    } else if let Some(rest) = s.strip_suffix(" ago") {
+        (-1, rest.trim())
+    } else if let Some(rest) = s.strip_suffix(" from now") {
+        (1, rest.trim())
+    } else {
+        (0, s)
+    };
+    if sign_en != 0 {
+        if let Some((left, right)) = core_en.split_once(" and a half ") {
+            if let (Some(n), Some(unit)) = (parse_small_num_or_word(left.trim()), parse_unit_token(right.trim())) {
+                let dt = apply_fractional_offset(base, sign_en, n + 0.5, unit)?;
+                return Some(RelativeMatch {
+                    naive: dt,
+                    period: period_for_unit(unit),
+                    locale: "en".to_string(),
+                    has_time: false,
+                    parts: parts_for_relative(false, Some(unit)),
+                    part_of_day: None,
+                });
+            }
+        }
+    }
+
+    // Turkish: "<n> buçuk <unit> önce/sonra" (folded: "bucuk", "once")
+    let (sign_tr, core_tr): (i8, &str) = if let Some(rest) = s.strip_suffix(" once").or_else(|| s.strip_suffix(" önce")) {
+        (-1, rest.trim())
+    } else if let Some(rest) = s.strip_suffix(" sonra") {
+        (1, rest.trim())
+    } else {
+        (0, "")
+    };
+    if sign_tr != 0 {
+        if let Some((left, right)) = core_tr.split_once(" bucuk ").or_else(|| core_tr.split_once(" buçuk ")) {
+            if let (Some(n), Some(unit)) = (parse_small_num_or_word(left.trim()), parse_unit_token(right.trim())) {
+                let dt = apply_fractional_offset(base, sign_tr, n + 0.5, unit)?;
+                return Some(RelativeMatch {
+                    naive: dt,
+                    period: period_for_unit(unit),
+                    locale: "tr".to_string(),
+                    has_time: false,
+                    parts: parts_for_relative(false, Some(unit)),
+                    part_of_day: None,
+                });
+            }
+        }
+    }
+
+    // German: "vor eineinhalb <unit>" / "in anderthalb <unit>"
+    let (sign_de, core_de): (i8, &str) = if let Some(rest) = s.strip_prefix("vor ") {
+        (-1, rest.trim())
+    } else if let Some(rest) = s.strip_prefix("in ") {
+        (1, rest.trim())
+    } else {
+        (0, "")
+    };
+    if sign_de != 0 {
+        for kw in ["eineinhalb ", "anderthalb "] {
+            if let Some(unit_str) = core_de.strip_prefix(kw) {
+                if let Some(unit) = parse_unit_token(unit_str.trim()) {
+                    let dt = apply_fractional_offset(base, sign_de, 1.5, unit)?;
+                    return Some(RelativeMatch {
+                        naive: dt,
+                        period: period_for_unit(unit),
+                        locale: "de".to_string(),
+                        has_time: false,
+                        parts: parts_for_relative(false, Some(unit)),
+                        part_of_day: None,
+                    });
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn parse_clock_hour_spec(raw: &str) -> Option<u32> {
+    let mut t = raw.trim().trim_end_matches('.');
+    let mut is_pm = false;
+    let mut is_am = false;
+    for suf in ["p.m.", "p.m", "pm"] {
+        if let Some(rest) = t.strip_suffix(suf) {
+            t = rest.trim();
+            is_pm = true;
+            break;
+        }
+    }
+    if !is_pm {
+        for suf in ["a.m.", "a.m", "am"] {
+            if let Some(rest) = t.strip_suffix(suf) {
+                t = rest.trim();
+                is_am = true;
+                break;
+            }
+        }
+    }
+    let val = parse_small_num_or_word(t)?;
+    let mut h = val as u32;
+    if (h as f64 - val).abs() > 1e-6 || h > 23 {
+        return None;
+    }
+    if is_pm {
+        if h == 0 || h > 12 {
+            return None;
+        }
+        if h < 12 {
+            h += 12;
+        }
+    } else if is_am {
+        if h == 0 || h > 12 {
+            return None;
+        }
+        if h == 12 {
+            h = 0;
+        }
+    }
+    Some(h)
+}
+
+fn try_conversational_clock(s: &str, settings: &Settings) -> Option<RelativeMatch> {
+    // English: "[a ]quarter past <H>", "[a ]quarter to <H>", "half past <H>"
+    let trimmed = s.strip_prefix("a ").unwrap_or(s);
+    let en_clock: Option<(u32, u32)> = if let Some(rest) = trimmed.strip_prefix("quarter past ") {
+        parse_clock_hour_spec(rest).map(|h| (h, 15))
+    } else if let Some(rest) = trimmed.strip_prefix("quarter to ") {
+        parse_clock_hour_spec(rest).map(|h| (if h == 0 { 23 } else { h - 1 }, 45))
+    } else if let Some(rest) = trimmed.strip_prefix("half past ") {
+        parse_clock_hour_spec(rest).map(|h| (h, 30))
+    } else {
+        None
+    };
+    if let Some((hh, mm)) = en_clock {
+        let nt = NaiveTime::from_hms_opt(hh, mm, 0)?;
+        let nd = resolve_time_only_date(nt, settings);
+        return Some(RelativeMatch {
+            naive: nd.and_time(nt),
+            period: Period::Day,
+            locale: "en".to_string(),
+            has_time: true,
+            parts: vec!["time"],
+            part_of_day: None,
+        });
+    }
+
+    // Turkish: "[saat ]<H> bucuk" / "[saat ]<H> ceyrek gece" / "[saat ]<H> ceyrek kala"
+    let tr_s = s.strip_prefix("saat ").unwrap_or(s).trim();
+    let tr_clock: Option<(u32, u32)> = if let Some(rest) = tr_s.strip_suffix(" bucuk").or_else(|| tr_s.strip_suffix(" buçuk")) {
+        parse_clock_hour_spec(rest).map(|h| (h, 30))
+    } else if let Some(rest) = tr_s.strip_suffix(" ceyrek gece").or_else(|| tr_s.strip_suffix(" çeyrek geçe")) {
+        let base_h = rest.trim().split(['\'', '’']).next().unwrap_or("").trim();
+        parse_clock_hour_spec(base_h).map(|h| (h, 15))
+    } else if let Some(rest) = tr_s.strip_suffix(" ceyrek kala").or_else(|| tr_s.strip_suffix(" çeyrek kala")) {
+        let base_h = rest.trim().split(['\'', '’']).next().unwrap_or("").trim();
+        parse_clock_hour_spec(base_h).map(|h| (if h == 0 { 23 } else { h - 1 }, 45))
+    } else {
+        None
+    };
+    if let Some((hh, mm)) = tr_clock {
+        let nt = NaiveTime::from_hms_opt(hh, mm, 0)?;
+        let nd = resolve_time_only_date(nt, settings);
+        return Some(RelativeMatch {
+            naive: nd.and_time(nt),
+            period: Period::Day,
+            locale: "tr".to_string(),
+            has_time: true,
+            parts: vec!["time"],
+            part_of_day: None,
+        });
+    }
+
+    None
 }
 
 /// Extract a trailing time from strings like "yesterday at 5pm", "hier à 14h30", "dün saat 15:30".

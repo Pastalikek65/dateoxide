@@ -171,3 +171,35 @@ def test_boundary_and_setting_combinations():
         "circa 12 December 2025",
         settings={"SKIP_TOKENS": ["circa"]},
     ) == datetime(2025, 12, 12)
+
+
+def test_conversational_fractional_and_search_improvements():
+    cfg = {"RELATIVE_BASE": FIXED_BASE}
+    assert dateoxide.parse("the day after tomorrow", settings=cfg) == datetime(2026, 11, 28, 15, 0)
+    assert dateoxide.parse("the day before yesterday", settings=cfg) == datetime(2026, 11, 24, 15, 0)
+    assert dateoxide.parse("two and a half hours ago", settings=cfg) == datetime(2026, 11, 26, 12, 30)
+    assert dateoxide.parse("bir buçuk saat önce", settings=cfg) == datetime(2026, 11, 26, 13, 30)
+    assert dateoxide.parse("in 2 and a half days", settings=cfg) == datetime(2026, 11, 29, 3, 0)
+    assert dateoxide.parse("vor eineinhalb Stunden", settings=cfg) == datetime(2026, 11, 26, 13, 30)
+
+    # Conversational clock phrases
+    assert dateoxide.parse("quarter past 3", settings=cfg) == datetime(2026, 11, 26, 3, 15)
+    assert dateoxide.parse("quarter to 4", settings=cfg) == datetime(2026, 11, 26, 3, 45)
+    assert dateoxide.parse("half past 5", settings=cfg) == datetime(2026, 11, 26, 5, 30)
+    assert dateoxide.parse("saat 3 buçuk", settings=cfg) == datetime(2026, 11, 26, 3, 30)
+    assert dateoxide.parse("3'ü çeyrek geçe", settings=cfg) == datetime(2026, 11, 26, 3, 15)
+
+    # Weekday-only aligns to 00:00:00 like dateparser
+    assert dateoxide.parse("last Friday", settings=cfg) == datetime(2026, 11, 20, 0, 0)
+    assert dateoxide.parse("geçen pazartesi", settings=cfg) == datetime(2026, 11, 23, 0, 0)
+
+    # Search fixes: 'or on 12 December 2025' and 'Uhr' attachment
+    res = search_dates("Let us meet tomorrow at 5pm or on 12 December 2025.", settings=cfg)
+    assert res is not None and len(res) == 2
+    assert res[0][1] == datetime(2026, 11, 27, 17, 0)
+    assert res[1][1] == datetime(2025, 12, 12, 0, 0)
+
+    res_de = search_dates("Morgen um 09:00 Uhr Rechnung bezahlen", settings=cfg)
+    assert res_de is not None and len(res_de) == 1
+    assert "09:00 Uhr" in res_de[0][0]
+    assert res_de[0][1] == datetime(2026, 11, 27, 9, 0)

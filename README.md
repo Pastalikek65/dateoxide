@@ -59,20 +59,17 @@ python benchmarks/torture_benchmark.py --json
 
 ### Independent Torture Benchmark (Accuracy, ReDoS & Known Differences)
 
-Measured with [`benchmarks/torture_benchmark.py`](benchmarks/torture_benchmark.py) across 79 adversarial cases (multilingual casing/scripts, month-end clamping, leap/ISO-week traps, RFC/CLF/DST, false-positive traps), dirty `search_dates`, and 6 ReDoS stress bombs (`dateoxide 0.1.0` vs `dateparser 1.5.1` on Windows 11, 32-core, Python 3.12.10):
+Measured with [`benchmarks/torture_benchmark.py`](benchmarks/torture_benchmark.py) across 79 adversarial cases (multilingual casing/scripts, fractional/conversational phrases, month-end clamping, leap/ISO-week traps, RFC/CLF/DST, false-positive traps), dirty `search_dates`, and 6 ReDoS stress bombs (`dateoxide 0.2.0` vs `dateparser 1.5.1` on Python 3.12.10):
 
-| Metric | `dateparser 1.5.1` | `dateoxide` |
+| Metric | `dateparser 1.5.1` | `dateoxide 0.2.0` |
 | :--- | ---: | ---: |
-| **Torture accuracy (79 hard cases)** | 66 / 79 (`1,675.90 ms`) | **74 / 79 (`0.77 ms`)** |
-| **Dirty `search_dates` (6 docs)** | 4 / 6 (`678.77 ms`) | **5 / 6 (`0.47 ms`)** |
-| **6 ReDoS stress bombs (3k–5k chars)** | `8,298.90 ms` | **`2.51 ms`** |
-| **Full 79-case isolated throughput & RSS** | `134.0 /s` (`+64.79 MB`) | **`38,938.5 /s` (`+10.21 MB`)** *(290.6x)* |
+| **Torture accuracy (79 hard cases)** | 66 / 79 (`4,243.30 ms`) | **78 / 79 (`1.60 ms`)** |
+| **Dirty `search_dates` (6 docs)** | 4 / 6 (`1,885.91 ms`) | **6 / 6 (`0.48 ms`)** |
+| **6 ReDoS stress bombs (3k–5k chars)** | `20,111.62 ms` | **`5.46 ms`** |
+| **Full 79-case isolated throughput & RSS** | `57.4 /s` (`+64.52 MB`) | **`20,629.9 /s` (`+10.24 MB`)** *(359.4x)* |
 
-**Transparently noted misses & differences (`5 / 79` on `dateoxide`):**
-- `"the day after tomorrow"` returns `None` (`"day after tomorrow"` works; leading `"the"` isn't stripped yet; `dateparser` parses it).
-- `"quarter past 3"` and `"two and a half hours ago"` return `None` in **both** `dateoxide` and `dateparser`.
-- `"last Friday"` preserves `RELATIVE_BASE` time (`15:00`) in `dateoxide`, whereas `dateparser` resets time to `00:00`.
-- `"2026-13-01"` swaps to `2026-01-13` under default `STRICT_DATE_ORDER="none"` in **both** libraries (set `STRICT_DATE_ORDER="all"` to reject).
+**Transparently noted difference (`1 / 79`):**
+- `"2026-13-01"` swaps to `2026-01-13` under default `STRICT_DATE_ORDER="none"` in **both** `dateoxide` and `dateparser` (set `STRICT_DATE_ORDER="all"` to reject invalid month indices strictly).
 
 ---
 

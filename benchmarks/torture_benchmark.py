@@ -47,7 +47,7 @@ def build_cases() -> list[TortureCase]:
         TortureCase("multilingual_hard", "15 EKİM 2025 SAAT 14:30", base_cfg, datetime(2025, 10, 15, 14, 30)),
         TortureCase("multilingual_hard", "3 GÜN ÖNCE", base_cfg, datetime(2026, 11, 23, 15, 0)),
         TortureCase("multilingual_hard", "1 yıl 2 ay 3 gün önce", base_cfg, datetime(2025, 9, 23, 15, 0)),
-        TortureCase("multilingual_hard", "geçen pazartesi", base_cfg, datetime(2026, 11, 23, 15, 0)),
+        TortureCase("multilingual_hard", "geçen pazartesi", base_cfg, datetime(2026, 11, 23, 0, 0)),
         TortureCase("multilingual_hard", "yarın sabah", base_cfg, datetime(2026, 11, 27, 9, 0)),
         TortureCase("multilingual_hard", "29 февраля 2024 года", base_cfg, datetime(2024, 2, 29)),
         TortureCase("multilingual_hard", "15 maja 2025", base_cfg, datetime(2025, 5, 15)),

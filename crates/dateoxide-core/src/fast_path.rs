@@ -180,7 +180,7 @@ fn try_compact_iso_datetime(core: &str, tz: Option<TzSpec>) -> Option<FastPathMa
     })
 }
 
-fn resolve_time_only_date(time: NaiveTime, settings: &Settings) -> NaiveDate {
+pub(crate) fn resolve_time_only_date(time: NaiveTime, settings: &Settings) -> NaiveDate {
     let base = settings.effective_base();
     let mut date = base.date();
     match settings.prefer_dates_from {

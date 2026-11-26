@@ -239,6 +239,18 @@ fn classify_token(tok: &str, registry: &LocaleRegistry, normalize: bool) -> Toke
 
     if matches!(
         lower.as_str(),
+        "or" | "if" | "so" | "as" | "by" | "is" | "are" | "was" | "were" | "be" | "to" | "for"
+            | "from" | "not" | "but" | "with" | "us" | "we" | "me" | "my" | "it" | "its" | "let"
+    ) {
+        return TokenKind::Other;
+    }
+
+    if lower == "uhr" {
+        return TokenKind::Signal;
+    }
+
+    if matches!(
+        lower.as_str(),
         "of" | "the" | "at" | "on" | "de" | "del" | "el" | "la" | "le" | "à" | "am" | "um"
             | "saat" | "and" | "ve" | "und" | "et" | "il" | "y" | "a" | "an" | "in" | "en"
             | "dans" | "vor" | "hace"

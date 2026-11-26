@@ -8,6 +8,38 @@ use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
+pyo3::create_exception!(_dateoxide, SettingValidationError, PyValueError);
+
+const ALLOWED_SETTINGS: &[&str] = &[
+    "DATE_ORDER",
+    "PREFER_LOCALE_DATE_ORDER",
+    "STRICT_DATE_ORDER",
+    "TIMEZONE",
+    "TO_TIMEZONE",
+    "RETURN_AS_TIMEZONE_AWARE",
+    "TIMEZONE_ABBREVIATIONS",
+    "PREFER_DAY_OF_MONTH",
+    "PREFER_MONTH_OF_YEAR",
+    "PREFER_DATES_FROM",
+    "RELATIVE_BASE",
+    "STRICT_PARSING",
+    "REQUIRE_PARTS",
+    "SKIP_TOKENS",
+    "NORMALIZE",
+    "DEFAULT_LANGUAGES",
+    "USE_GIVEN_LANGUAGE_ORDER",
+    "LANGUAGE_DETECTION_CONFIDENCE_THRESHOLD",
+    "RETURN_TIME_SPAN",
+    "DEFAULT_START_OF_WEEK",
+    "DEFAULT_DAYS_IN_MONTH",
+    "RETURN_TIME_AS_PERIOD",
+    "PARSERS",
+    "IGNORE_SURROUNDING_TEXT",
+    "CACHE_SIZE_LIMIT",
+    "PARTS_OF_DAY",
+    "FUZZY",
+];
+
 fn parsed_to_py(py: Python<'_>, dt: ParsedDateTime) -> PyResult<PyObject> {
     match dt {
         ParsedDateTime::Naive(ndt) => Ok(ndt.into_pyobject(py)?.into_any().unbind()),
@@ -88,11 +120,23 @@ fn extract_settings(
         ));
     };
 
+    for key in dict.keys() {
+        let key_str: String = key.extract().map_err(|_| {
+            SettingValidationError::new_err("Setting keys must be strings")
+        })?;
+        if !ALLOWED_SETTINGS.contains(&key_str.as_str()) {
+            return Err(SettingValidationError::new_err(format!(
+                "\"{}\" is not a valid setting",
+                key_str
+            )));
+        }
+    }
+
     if let Some(v) = dict.get_item("DATE_ORDER")? {
         if !v.is_none() {
             let s: String = v.extract()?;
             cfg.date_order = Some(DateOrder::from_str(&s).ok_or_else(|| {
-                PyValueError::new_err(format!("Invalid DATE_ORDER: '{}'", s))
+                SettingValidationError::new_err(format!("Invalid DATE_ORDER: '{}'", s))
             })?);
         }
     }
@@ -100,7 +144,7 @@ fn extract_settings(
         if !v.is_none() {
             let s: String = v.extract()?;
             cfg.strict_date_order = StrictDateOrder::from_str(&s).ok_or_else(|| {
-                PyValueError::new_err(format!("Invalid STRICT_DATE_ORDER: '{}'", s))
+                SettingValidationError::new_err(format!("Invalid STRICT_DATE_ORDER: '{}'", s))
             })?;
         }
     }
@@ -113,7 +157,7 @@ fn extract_settings(
         if !v.is_none() {
             let s: String = v.extract()?;
             cfg.prefer_dates_from = PreferDatesFrom::from_str(&s).ok_or_else(|| {
-                PyValueError::new_err(format!("Invalid PREFER_DATES_FROM: '{}'", s))
+                SettingValidationError::new_err(format!("Invalid PREFER_DATES_FROM: '{}'", s))
             })?;
         }
     }
@@ -121,7 +165,7 @@ fn extract_settings(
         if !v.is_none() {
             let s: String = v.extract()?;
             cfg.prefer_day_of_month = PreferDayOfMonth::from_str(&s).ok_or_else(|| {
-                PyValueError::new_err(format!("Invalid PREFER_DAY_OF_MONTH: '{}'", s))
+                SettingValidationError::new_err(format!("Invalid PREFER_DAY_OF_MONTH: '{}'", s))
             })?;
         }
     }
@@ -129,7 +173,7 @@ fn extract_settings(
         if !v.is_none() {
             let s: String = v.extract()?;
             cfg.prefer_month_of_year = PreferMonthOfYear::from_str(&s).ok_or_else(|| {
-                PyValueError::new_err(format!("Invalid PREFER_MONTH_OF_YEAR: '{}'", s))
+                SettingValidationError::new_err(format!("Invalid PREFER_MONTH_OF_YEAR: '{}'", s))
             })?;
         }
     }
@@ -142,7 +186,7 @@ fn extract_settings(
         if !v.is_none() {
             if let Ok(b) = v.extract::<bool>() {
                 if b {
-                    return Err(PyValueError::new_err("RELATIVE_BASE cannot be True"));
+                    return Err(SettingValidationError::new_err("RELATIVE_BASE cannot be True"));
                 }
             } else {
                 let ndt: NaiveDateTime = v.extract()?;
@@ -162,7 +206,7 @@ fn extract_settings(
         if !v.is_none() {
             if let Ok(b) = v.extract::<bool>() {
                 if b {
-                    return Err(PyValueError::new_err("TO_TIMEZONE cannot be True"));
+                    return Err(SettingValidationError::new_err("TO_TIMEZONE cannot be True"));
                 }
             } else {
                 cfg.to_timezone = Some(v.extract()?);
@@ -175,7 +219,7 @@ fn extract_settings(
                 cfg.return_as_timezone_aware = Some(b);
             } else if let Ok(s) = v.extract::<String>() {
                 if !s.eq_ignore_ascii_case("default") {
-                    return Err(PyValueError::new_err(format!(
+                    return Err(SettingValidationError::new_err(format!(
                         "Invalid RETURN_AS_TIMEZONE_AWARE: '{}'",
                         s
                     )));
@@ -206,7 +250,7 @@ fn extract_settings(
             let parts: Vec<String> = v.extract()?;
             for p in parts {
                 let dp = DatePart::from_str(&p).ok_or_else(|| {
-                    PyValueError::new_err(format!("Invalid REQUIRE_PARTS item: '{}'", p))
+                    SettingValidationError::new_err(format!("Invalid REQUIRE_PARTS item: '{}'", p))
                 })?;
                 cfg.require_parts.push(dp);
             }
@@ -231,7 +275,7 @@ fn extract_settings(
         if !v.is_none() {
             let s: String = v.extract()?;
             cfg.default_start_of_week = StartOfWeek::from_str(&s).ok_or_else(|| {
-                PyValueError::new_err(format!("Invalid DEFAULT_START_OF_WEEK: '{}'", s))
+                SettingValidationError::new_err(format!("Invalid DEFAULT_START_OF_WEEK: '{}'", s))
             })?;
         }
     }
@@ -256,7 +300,7 @@ fn extract_settings(
             let mut parsed_kinds = Vec::with_capacity(p_strs.len());
             for ps in p_strs {
                 let kind = ParserKind::from_str(&ps).ok_or_else(|| {
-                    PyValueError::new_err(format!("Invalid PARSERS item: '{}'", ps))
+                    SettingValidationError::new_err(format!("Invalid PARSERS item: '{}'", ps))
                 })?;
                 parsed_kinds.push(kind);
             }
@@ -770,7 +814,8 @@ fn supported_languages() -> Vec<String> {
 }
 
 #[pymodule]
-fn _dateoxide(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _dateoxide(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("SettingValidationError", py.get_type::<SettingValidationError>())?;
     m.add_function(wrap_pyfunction!(parse, m)?)?;
     m.add_function(wrap_pyfunction!(parse_batch, m)?)?;
     m.add_function(wrap_pyfunction!(search_dates, m)?)?;

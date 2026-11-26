@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-11-26
+
+### Added
+- **Conversational & fractional natural-language parsing**:
+  - `"the day after tomorrow"`, `"the day before yesterday"` (leading `"the"` stripping + exact idioms)
+  - Fractional multi-unit relative phrases: `"two and a half hours ago"`, `"in 2 and a half days"`, `"bir buçuk saat önce"`, `"vor eineinhalb Stunden"`, `"in anderthalb Monaten"`
+  - Conversational clocks: `"quarter past 3"`, `"quarter to 4"`, `"half past 5"`, `"saat 3 buçuk"`, `"3'ü çeyrek geçe"`, `"saat 4'e çeyrek kala"` (with `PREFER_DATES_FROM` support)
+- **`SettingValidationError` parity**: `parse(..., settings={...})` now validates unknown setting keys and invalid values with the same `SettingValidationError` exception exported by `dateoxide.conf`.
+- **Modular Cargo features**: `dateoxide-core` now exposes `default = ["rayon", "calendars"]` (`cargo check --no-default-features` compiles cleanly with sequential batch fallback).
+- **Criterion Rust micro-benchmarks**: added `crates/dateoxide-core/benches/parse_bench.rs`.
+- **Linux `musllinux_1_2` (`x86_64`) wheels** added to `.github/workflows/release.yml` for Alpine Docker images.
+
+### Fixed
+- **`search_dates` 6/6 on torture suite**: fixed English conjunction splits (`"or on 12"` in `"Let us meet tomorrow at 5pm or on 12 December 2025."`) and kept trailing German `"Uhr"` inside matched spans (`"09:00 Uhr"`).
+- **Weekday-only time consistency**: `"last Friday"` / `"geçen pazartesi"` now resolve to `00:00:00` consistently with `dateparser`.
+
 ## [0.1.1] - 2026-11-26
 
 ### Added

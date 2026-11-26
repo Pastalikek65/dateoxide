@@ -8,11 +8,7 @@ from enum import Enum
 from functools import wraps
 from typing import Any, Callable, Iterable, Mapping
 
-from ._dateoxide import parse as _raw_parse
-
-
-class SettingValidationError(ValueError):
-    """Raised when invalid configuration values are passed to ``Settings``."""
+from ._dateoxide import SettingValidationError, parse as _raw_parse
 
 
 class PartOfDay(str, Enum):

@@ -113,6 +113,8 @@ def test_parity_error_and_validation_behavior():
     for bad in invalid_settings:
         with pytest.raises(SettingValidationError):
             Settings(settings=bad)
+        with pytest.raises(SettingValidationError):
+            dateoxide.parse("2026-11-26", settings=bad)
         with pytest.raises((DpSettingValidationError, Exception)):
             dateparser.parse("2026-11-26", settings=bad)
 

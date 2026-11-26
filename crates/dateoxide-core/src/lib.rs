@@ -38,6 +38,7 @@
 //! ```
 
 pub mod absolute;
+#[cfg(feature = "calendars")]
 pub mod calendars;
 pub mod fast_path;
 pub mod locale;
@@ -46,9 +47,11 @@ pub mod search;
 pub mod settings;
 pub mod time_spans;
 pub mod timezone;
+#[cfg(feature = "calendars")]
 pub mod umm_al_qura;
 
 use locale::{normalize_digits_and_lower, LocaleRegistry};
+#[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use search::SearchMatch;
 use settings::{DateData, ParsedDateTime, ParserKind, Period, Settings};
@@ -236,6 +239,17 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
     );
 
     if candidates.is_empty() {
+        if settings.allows_parser(ParserKind::RelativeTime) {
+            if let Some(m) = relative::try_conversational_clock_or_fraction(&normalized, settings) {
+                return DateData {
+                    date_obj: Some(finalize_datetime(m.naive, tz, settings)),
+                    period: apply_time_period(m.period, m.has_time, settings),
+                    locale: Some(m.locale),
+                    parts: m.parts,
+                    part_of_day: m.part_of_day,
+                };
+            }
+        }
         let is_cjk_or_bare_year = (normalized.len() == 4
             && normalized.bytes().all(|b| b.is_ascii_digit()))
             || normalized.contains('年')
@@ -306,21 +320,32 @@ fn ignore_surrounding_fallback(trimmed: &str, settings: &Settings) -> DateData {
     DateData::empty()
 }
 
-/// Parallel batch parsing powered by Rayon across all available CPU cores.
+/// Parallel batch parsing powered by Rayon across all available CPU cores
+/// (falls back to sequential iteration when the `rayon` feature is disabled).
 pub fn parse_batch<S: AsRef<str> + Sync>(
     inputs: &[S],
     settings: &Settings,
 ) -> Vec<Option<ParsedDateTime>> {
-    if inputs.len() < 256 {
+    #[cfg(feature = "rayon")]
+    {
+        if inputs.len() < 256 {
+            return inputs
+                .iter()
+                .map(|s| parse_with_settings(s.as_ref(), settings))
+                .collect();
+        }
         return inputs
-            .iter()
+            .par_iter()
             .map(|s| parse_with_settings(s.as_ref(), settings))
             .collect();
     }
-    inputs
-        .par_iter()
-        .map(|s| parse_with_settings(s.as_ref(), settings))
-        .collect()
+    #[cfg(not(feature = "rayon"))]
+    {
+        inputs
+            .iter()
+            .map(|s| parse_with_settings(s.as_ref(), settings))
+            .collect()
+    }
 }
 
 /// Find and parse all date expressions embedded in free-form text.
@@ -377,6 +402,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "calendars")]
     #[test]
     fn test_calendars_conversions() {
         let s = fixed_settings();
