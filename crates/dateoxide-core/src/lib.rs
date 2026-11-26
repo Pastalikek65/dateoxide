@@ -458,4 +458,88 @@ mod tests {
             NaiveDate::from_ymd_opt(2025, 12, 15).unwrap()
         );
     }
+
+    #[test]
+    fn test_iso_week_dates_and_year_zero_guard() {
+        let s = fixed_settings();
+        assert_eq!(
+            parse_with_settings("2026-W48-4", &s).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 11, 26).unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("2026-W48", &s).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 11, 23).unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("2026W484", &s).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 11, 26).unwrap()
+        );
+        assert!(parse_with_settings("2026-W54-1", &s).is_none());
+        assert!(parse_with_settings("0000-01-01", &s).is_none());
+
+        let mut s_strict = fixed_settings();
+        s_strict.strict_parsing = true;
+        assert!(parse_with_settings("2026-W48", &s_strict).is_none());
+    }
+
+    #[test]
+    fn test_no_spaces_time_and_time_only_preferences() {
+        let mut s_ns = fixed_settings();
+        s_ns.parsers = Some(vec![ParserKind::NoSpacesTime]);
+        assert_eq!(
+            parse_with_settings("1430", &s_ns).unwrap().naive_local(),
+            NaiveDate::from_ymd_opt(2026, 11, 26)
+                .unwrap()
+                .and_hms_opt(14, 30, 0)
+                .unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("143025", &s_ns).unwrap().naive_local(),
+            NaiveDate::from_ymd_opt(2026, 11, 26)
+                .unwrap()
+                .and_hms_opt(14, 30, 25)
+                .unwrap()
+        );
+        s_ns.date_order = Some(DateOrder::DMY);
+        assert_eq!(
+            parse_with_settings("26112026", &s_ns).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 11, 26).unwrap()
+        );
+        s_ns.date_order = Some(DateOrder::MDY);
+        assert_eq!(
+            parse_with_settings("11262026", &s_ns).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 11, 26).unwrap()
+        );
+
+        let mut s_fut = fixed_settings();
+        s_fut.prefer_dates_from = PreferDatesFrom::Future;
+        assert_eq!(
+            parse_with_settings("09:00", &s_fut).unwrap().naive_local(),
+            NaiveDate::from_ymd_opt(2026, 11, 27)
+                .unwrap()
+                .and_hms_opt(9, 0, 0)
+                .unwrap()
+        );
+
+        let mut s_past = fixed_settings();
+        s_past.prefer_dates_from = PreferDatesFrom::Past;
+        assert_eq!(
+            parse_with_settings("18:00", &s_past).unwrap().naive_local(),
+            NaiveDate::from_ymd_opt(2026, 11, 25)
+                .unwrap()
+                .and_hms_opt(18, 0, 0)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_search_dates_false_positive_guards() {
+        let s = fixed_settings();
+        let found = search_dates_full("Let us meet tomorrow at 5pm or next Friday.", &s);
+        assert!(!found.iter().any(|m| m.text == "Let"));
+        assert_eq!(found.len(), 2);
+
+        assert!(search_dates_full("She can see her man, did you say?", &s).is_empty());
+        assert!(search_dates_full("Python 3.12.1 on 192.168.1.1", &s).is_empty());
+    }
 }

@@ -4,8 +4,10 @@
 """
 from __future__ import annotations
 
+import calendar
 import json
-from datetime import datetime
+from collections import Counter
+from datetime import datetime, timedelta
 from pathlib import Path
 import pytest
 
@@ -22,8 +24,41 @@ LOCALES = json.loads(
 )
 
 
-def _build_205_lang_cases() -> list[tuple[str, str, str, tuple[int, int, int] | None]]:
-    cases: list[tuple[str, str, str, tuple[int, int, int] | None]] = []
+def _add_months(dt: datetime, delta: int) -> datetime:
+    total = dt.year * 12 + (dt.month - 1) + delta
+    y, m0 = divmod(total, 12)
+    m = m0 + 1
+    d = min(dt.day, calendar.monthrange(y, m)[1])
+    return dt.replace(year=y, month=m, day=d)
+
+
+def _expected_relative_dt(base: datetime, sign: int, amount: int, unit_id: int) -> datetime:
+    s = -amount if sign < 0 else amount
+    if unit_id == 0:
+        return _add_months(base, s * 12)
+    if unit_id == 1:
+        return _add_months(base, s)
+    if unit_id == 2:
+        return base + timedelta(weeks=s)
+    if unit_id == 3:
+        return base + timedelta(days=s)
+    if unit_id == 4:
+        return base + timedelta(hours=s)
+    if unit_id == 5:
+        return base + timedelta(minutes=s)
+    if unit_id == 6:
+        return base + timedelta(seconds=s)
+    if unit_id == 7:
+        return _add_months(base, s * 120)
+    if unit_id == 8:
+        return _add_months(base, s * 1200)
+    if unit_id == 9:
+        return base + timedelta(weeks=s * 2)
+    raise ValueError(f"Unknown unit_id: {unit_id}")
+
+
+def _build_205_lang_cases() -> list[tuple[str, str, str, tuple[int, int, int] | datetime | None]]:
+    cases: list[tuple[str, str, str, tuple[int, int, int] | datetime | None]] = []
     for loc in LOCALES:
         code = loc["code"]
         # 3 distinct months per language (Jan, Jun, Dec) -> ~615 cases
@@ -35,14 +70,43 @@ def _build_205_lang_cases() -> list[tuple[str, str, str, tuple[int, int, int] | 
         for wd_idx in (0, 4):
             wd_names = loc["weekdays"][wd_idx]
             if wd_names:
-                cases.append((code, "weekday", f"15 {loc['months'][2][0]} 2025 {wd_names[0]}" if loc["months"][2] else wd_names[0], (2025, 3, 15) if loc["months"][2] else None))
-        # Up to 2 exact relative phrases per language -> ~408 cases
-        for rel in loc["relative_exact"][:2]:
-            cases.append((code, "rel_exact", rel[0], None))
-        # First relative affix pattern if available -> ~121 cases
-        if loc["relative_affix"]:
-            pref, suff, _, _ = loc["relative_affix"][0]
-            cases.append((code, "rel_affix", f"{pref}4{suff}", None))
+                cases.append(
+                    (
+                        code,
+                        "weekday",
+                        f"15 {loc['months'][2][0]} 2025 {wd_names[0]}"
+                        if loc["months"][2]
+                        else wd_names[0],
+                        (2025, 3, 15) if loc["months"][2] else None,
+                    )
+                )
+        # Unambiguous exact relative phrases: 0-offset, past non-zero, future non-zero
+        phrase_counts = Counter(entry[0] for entry in loc["relative_exact"])
+        for kind_tag, pred in (
+            ("rel_exact_cur", lambda e: e[2] == 0),
+            ("rel_exact_past", lambda e: e[2] > 0 and e[1] < 0),
+            ("rel_exact_fut", lambda e: e[2] > 0 and e[1] > 0),
+        ):
+            for phrase, sign, amt, uid in loc["relative_exact"]:
+                if phrase_counts[phrase] == 1 and pred((phrase, sign, amt, uid)):
+                    cases.append(
+                        (code, kind_tag, phrase, _expected_relative_dt(FIXED_BASE, sign, amt, uid))
+                    )
+                    break
+        # Unambiguous relative affix patterns: first past (-1) and first future (+1)
+        affix_counts = Counter((entry[0], entry[1]) for entry in loc["relative_affix"])
+        for kind_tag, target_sign in (("rel_affix_past", -1), ("rel_affix_fut", 1)):
+            for pref, suff, sign, uid in loc["relative_affix"]:
+                if affix_counts[(pref, suff)] == 1 and sign == target_sign:
+                    cases.append(
+                        (
+                            code,
+                            kind_tag,
+                            f"{pref}4{suff}",
+                            _expected_relative_dt(FIXED_BASE, sign, 4, uid),
+                        )
+                    )
+                    break
     return cases
 
 
@@ -58,13 +122,15 @@ def test_upstream_dateparser_corpus(text: str, ymd: list[int]):
     )
 
 
-@pytest.mark.parametrize("lang,kind,text,expected_ymd", LANG_MATRIX_CASES)
+@pytest.mark.parametrize("lang,kind,text,expected", LANG_MATRIX_CASES)
 def test_205_language_matrix(
-    lang: str, kind: str, text: str, expected_ymd: tuple[int, int, int] | None
+    lang: str, kind: str, text: str, expected: tuple[int, int, int] | datetime | None
 ):
     dt = dateoxide.parse(text, languages=[lang], settings=SETTINGS)
     assert dt is not None, f"[{lang}:{kind}] failed on {text!r}"
-    if expected_ymd is not None:
-        assert (dt.year, dt.month, dt.day) == expected_ymd, (
-            f"[{lang}:{kind}] {text!r} -> {(dt.year, dt.month, dt.day)} vs {expected_ymd}"
+    if isinstance(expected, datetime):
+        assert dt == expected, f"[{lang}:{kind}] {text!r} -> {dt!r} vs {expected!r}"
+    elif expected is not None:
+        assert (dt.year, dt.month, dt.day) == expected, (
+            f"[{lang}:{kind}] {text!r} -> {(dt.year, dt.month, dt.day)} vs {expected}"
         )
