@@ -1,0 +1,17 @@
+[package]
+name = "dateoxide-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PyO3 Python bindings for dateoxide-core."
+
+[lib]
+name = "_dateoxide"
+crate-type = ["cdylib"]
+
+[dependencies]
+chrono = "0.4"
+chrono-tz = "0.10"
+dateoxide-core = { path = "../dateoxide-core" }
+pyo3 = { version = "0.24", features = ["chrono", "chrono-tz"] }

@@ -1,0 +1,12 @@
+THIRD-PARTY NOTICES AND ATTRIBUTION
+
+dateoxide compiles multilingual calendar and relative-date lexical data derived from:
+
+1. Unicode Common Locale Data Repository (CLDR)
+   Copyright © 1991-2026 Unicode, Inc. All rights reserved.
+   Licensed under the Unicode License v3 (https://www.unicode.org/license.txt).
+
+2. scrapinghub/dateparser (date_translation_data)
+   Copyright (c) Scrapinghub. All rights reserved.
+   Licensed under the BSD 3-Clause License:
+   https://github.com/scrapinghub/dateparser/blob/master/LICENSE
