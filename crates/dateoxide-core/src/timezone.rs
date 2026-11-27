@@ -317,6 +317,23 @@ pub fn pop_tz_offset_from_string(
     (cleaned.to_string(), tz)
 }
 
+/// Strip a trailing timezone token and return `(cleaned, Some((raw_token, tz_spec)))`.
+pub fn pop_tz_token_and_offset(
+    input: &str,
+    custom: Option<&FxHashMap<String, String>>,
+) -> (String, Option<(String, TzSpec)>) {
+    let trimmed = input.trim();
+    let (cleaned, tz) = match custom {
+        Some(map) => extract_trailing_timezone_with_abbrevs(trimmed, map),
+        None => extract_trailing_timezone(trimmed),
+    };
+    let tz_pair = tz.map(|spec| {
+        let stripped = trimmed.get(cleaned.len()..).unwrap_or("").trim();
+        (stripped.to_string(), spec)
+    });
+    (cleaned.to_string(), tz_pair)
+}
+
 /// Resolve a local `NaiveDateTime` inside an IANA timezone, shifting past DST spring-forward gaps.
 #[inline]
 pub fn resolve_iana_local(tz: Tz, naive: NaiveDateTime) -> chrono::DateTime<Tz> {

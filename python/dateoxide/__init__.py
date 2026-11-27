@@ -13,14 +13,18 @@ from ._dateoxide import (
     DateData,
     DateDataParser,
     __version__,
+    detect_time_span,
+    generate_time_span,
     parse,
     parse_batch,
     parse_batch_timestamps,
     parse_date_range,
     parse_french_republican,
+    parse_freshness,
     parse_hijri,
     parse_jalali,
     parse_minguo,
+    pop_tz_offset_from_string,
     search_dates,
     supported_languages,
 )
@@ -70,6 +74,10 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
+
+
 __all__ = [
     "DateData",
     "DateDataParser",
@@ -83,15 +91,19 @@ __all__ = [
     "conf",
     "custom_language_detection",
     "date",
+    "detect_time_span",
     "freshness_date_parser",
+    "generate_time_span",
     "parse",
     "parse_batch",
     "parse_batch_timestamps",
     "parse_date_range",
     "parse_french_republican",
+    "parse_freshness",
     "parse_hijri",
     "parse_jalali",
     "parse_minguo",
+    "pop_tz_offset_from_string",
     "search",
     "search_dates",
     "supported_languages",

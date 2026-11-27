@@ -7,7 +7,7 @@ on:
 
 jobs:
   rust:
-    name: Rust Core Tests
+    name: Rust Core Tests & Packaging
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,6 +15,12 @@ jobs:
       - run: cargo test -p dateoxide-core --release
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo check -p dateoxide-core --no-default-features
+      - name: Verify crate packaging & dual-license files
+        run: |
+          cargo package -p dateoxide-core --list | grep -qx "LICENSE"
+          cargo package -p dateoxide-core --list | grep -qx "LICENSE-APACHE"
+          cargo package -p dateoxide-core --list | grep -qx "NOTICE"
+          cargo package -p dateoxide-core --no-verify
 
   python-wheels:
     name: Build & Test (${{ matrix.os }}, Python ${{ matrix.python }})
@@ -22,7 +28,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.10", "3.12"]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -30,9 +36,20 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - uses: dtolnay/rust-toolchain@stable
-      - run: pip install maturin pytest dateparser hijridate
+      - run: pip install maturin pytest
       - run: maturin build --release --out dist -i python
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-      - run: python -c "import glob, subprocess, sys; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', *glob.glob('dist/*.whl')])"
-      - run: pytest -v
+      - name: Isolated clean-env TZ smoke test (no dateparser)
+        run: |
+          python -c "import glob, subprocess, sys; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', *glob.glob('dist/*.whl')])"
+          python -c "from datetime import datetime; import dateoxide; dt = dateoxide.parse('2026-05-15 12:00', settings={'TIMEZONE': 'Europe/Berlin', 'RETURN_AS_TIMEZONE_AWARE': True}); assert dt is not None and dt.tzinfo is not None, dt"
+      - name: Install dev parity deps & run full pytest suite
+        run: |
+          pip install dateparser hijridate mypy
+          pytest -v
+      - name: Type-check & verify .pyi stubs on Ubuntu Python 3.12
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: |
+          mypy python/dateoxide
+          python -m mypy.stubtest dateoxide

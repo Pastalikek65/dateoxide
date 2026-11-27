@@ -6,7 +6,7 @@ use dateoxide_core::settings::{
 use dateoxide_core::timezone::TzSpec;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyList, PyString, PyTuple};
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
@@ -72,6 +72,11 @@ fn parsed_to_timestamp(dt: &ParsedDateTime) -> f64 {
 }
 
 fn extract_optional_strings(date_strings: &Bound<'_, PyAny>) -> PyResult<Vec<Option<String>>> {
+    if date_strings.is_instance_of::<PyString>() || date_strings.is_instance_of::<PyBytes>() {
+        return Err(PyTypeError::new_err(
+            "date_strings must be an iterable of strings, not a bare str or bytes",
+        ));
+    }
     let iter = date_strings.try_iter()?;
     let mut out = Vec::with_capacity(date_strings.len().unwrap_or(0));
     for item in iter {
@@ -274,7 +279,9 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("TIMEZONE")? {
         if !v.is_none() {
-            let s: String = v.extract()?;
+            let s: String = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             if !s.eq_ignore_ascii_case("local") {
                 cfg.timezone = Some(s);
             }
@@ -287,7 +294,10 @@ fn extract_settings(
                     return Err(SettingValidationError::new_err("TO_TIMEZONE cannot be True"));
                 }
             } else {
-                cfg.to_timezone = Some(v.extract()?);
+                cfg.to_timezone = Some(
+                    v.extract()
+                        .map_err(|e| SettingValidationError::new_err(e.to_string()))?,
+                );
             }
         }
     }
@@ -302,12 +312,18 @@ fn extract_settings(
                         s
                     )));
                 }
+            } else {
+                return Err(SettingValidationError::new_err(
+                    "RETURN_AS_TIMEZONE_AWARE must be a bool or 'default'",
+                ));
             }
         }
     }
     if let Some(v) = dict.get_item("TIMEZONE_ABBREVIATIONS")? {
         if !v.is_none() {
-            let map: std::collections::HashMap<String, String> = v.extract()?;
+            let map: std::collections::HashMap<String, String> = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             for (k, val) in map {
                 cfg.timezone_abbreviations.insert(k.to_ascii_uppercase(), val);
             }
@@ -315,19 +331,35 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("DEFAULT_LANGUAGES")? {
         if !v.is_none() {
-            let def_langs: Vec<String> = v.extract()?;
+            if v.is_instance_of::<PyString>() || v.is_instance_of::<PyBytes>() {
+                return Err(SettingValidationError::new_err(
+                    "DEFAULT_LANGUAGES must be a sequence of language codes, not str/bytes",
+                ));
+            }
+            let def_langs: Vec<String> = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             validate_language_codes(&def_langs)?;
             cfg.default_languages = def_langs;
         }
     }
     if let Some(v) = dict.get_item("USE_GIVEN_LANGUAGE_ORDER")? {
         if !v.is_none() {
-            cfg.use_given_language_order = v.extract()?;
+            cfg.use_given_language_order = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
         }
     }
     if let Some(v) = dict.get_item("LANGUAGE_DETECTION_CONFIDENCE_THRESHOLD")? {
         if !v.is_none() {
-            let val: f64 = v.extract()?;
+            if v.is_instance_of::<PyBool>() {
+                return Err(SettingValidationError::new_err(
+                    "LANGUAGE_DETECTION_CONFIDENCE_THRESHOLD cannot be a bool",
+                ));
+            }
+            let val: f64 = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             if !val.is_finite() || !(0.0..=1.0).contains(&val) {
                 return Err(SettingValidationError::new_err(format!(
                     "Invalid LANGUAGE_DETECTION_CONFIDENCE_THRESHOLD: {}",
@@ -339,7 +371,14 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("REQUIRE_PARTS")? {
         if !v.is_none() {
-            let parts: Vec<String> = v.extract()?;
+            if v.is_instance_of::<PyString>() || v.is_instance_of::<PyBytes>() {
+                return Err(SettingValidationError::new_err(
+                    "REQUIRE_PARTS must be a sequence of part names, not str/bytes",
+                ));
+            }
+            let parts: Vec<String> = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             for p in parts {
                 let dp = DatePart::from_str(&p).ok_or_else(|| {
                     SettingValidationError::new_err(format!("Invalid REQUIRE_PARTS item: '{}'", p))
@@ -350,17 +389,23 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("NORMALIZE")? {
         if !v.is_none() {
-            cfg.normalize = v.extract()?;
+            cfg.normalize = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
         }
     }
     if let Some(v) = dict.get_item("RETURN_TIME_AS_PERIOD")? {
         if !v.is_none() {
-            cfg.return_time_as_period = v.extract()?;
+            cfg.return_time_as_period = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
         }
     }
     if let Some(v) = dict.get_item("RETURN_TIME_SPAN")? {
         if !v.is_none() {
-            cfg.return_time_span = v.extract()?;
+            cfg.return_time_span = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
         }
     }
     if let Some(v) = dict.get_item("DEFAULT_START_OF_WEEK")? {
@@ -373,6 +418,11 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("DEFAULT_DAYS_IN_MONTH")? {
         if !v.is_none() {
+            if v.is_instance_of::<PyBool>() {
+                return Err(SettingValidationError::new_err(
+                    "DEFAULT_DAYS_IN_MONTH cannot be a bool",
+                ));
+            }
             let d: i64 = v.extract().map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             if !(1..=31).contains(&d) {
                 return Err(SettingValidationError::new_err(format!(
@@ -385,17 +435,33 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("IGNORE_SURROUNDING_TEXT")? {
         if !v.is_none() {
-            cfg.ignore_surrounding_text = v.extract()?;
+            cfg.ignore_surrounding_text = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
         }
     }
     if let Some(v) = dict.get_item("SKIP_TOKENS")? {
         if !v.is_none() {
-            cfg.skip_tokens = v.extract()?;
+            if v.is_instance_of::<PyString>() || v.is_instance_of::<PyBytes>() {
+                return Err(SettingValidationError::new_err(
+                    "SKIP_TOKENS must be a sequence of strings, not str/bytes",
+                ));
+            }
+            cfg.skip_tokens = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
         }
     }
     if let Some(v) = dict.get_item("PARSERS")? {
         if !v.is_none() {
-            let p_strs: Vec<String> = v.extract()?;
+            if v.is_instance_of::<PyString>() || v.is_instance_of::<PyBytes>() {
+                return Err(SettingValidationError::new_err(
+                    "PARSERS must be a sequence of parser names, not str/bytes",
+                ));
+            }
+            let p_strs: Vec<String> = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             let mut parsed_kinds = Vec::with_capacity(p_strs.len());
             for ps in p_strs {
                 let kind = ParserKind::from_str(&ps).ok_or_else(|| {
@@ -408,25 +474,40 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("PARTS_OF_DAY")? {
         if !v.is_none() {
-            if let Some(t) = extract_time_field(&v, "early_morning")? {
+            if let Some(t) = extract_time_field(&v, "early_morning")
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?
+            {
                 cfg.parts_of_day.early_morning = t;
             }
-            if let Some(t) = extract_time_field(&v, "morning")? {
+            if let Some(t) = extract_time_field(&v, "morning")
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?
+            {
                 cfg.parts_of_day.morning = t;
             }
-            if let Some(t) = extract_time_field(&v, "afternoon")? {
+            if let Some(t) = extract_time_field(&v, "afternoon")
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?
+            {
                 cfg.parts_of_day.afternoon = t;
             }
-            if let Some(t) = extract_time_field(&v, "evening")? {
+            if let Some(t) = extract_time_field(&v, "evening")
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?
+            {
                 cfg.parts_of_day.evening = t;
             }
-            if let Some(t) = extract_time_field(&v, "night")? {
+            if let Some(t) = extract_time_field(&v, "night")
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?
+            {
                 cfg.parts_of_day.night = t;
             }
         }
     }
     if let Some(v) = dict.get_item("CACHE_SIZE_LIMIT")? {
         if !v.is_none() {
+            if v.is_instance_of::<PyBool>() {
+                return Err(SettingValidationError::new_err(
+                    "CACHE_SIZE_LIMIT cannot be a bool",
+                ));
+            }
             let limit: isize = v
                 .extract()
                 .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
@@ -478,6 +559,11 @@ fn call_detect_languages(
     };
     if res.is_none() {
         return Ok(None);
+    }
+    if res.is_instance_of::<PyString>() || res.is_instance_of::<PyBytes>() {
+        return Err(PyTypeError::new_err(
+            "detect_languages_function must return a sequence of language codes, not a bare str",
+        ));
     }
     let langs: Vec<String> = res.extract()?;
     if langs.is_empty() {
@@ -668,7 +754,7 @@ struct ParserCache {
 }
 
 /// Reusable, zero-overhead configured parser (avoids re-parsing settings dict per call).
-#[pyclass(name = "DateDataParser")]
+#[pyclass(name = "DateDataParser", module = "dateoxide.date")]
 pub struct PyDateDataParser {
     settings: Settings,
     detect_languages_function: Option<PyObject>,
@@ -1141,25 +1227,32 @@ fn parse_freshness(
 }
 
 #[pyfunction]
-#[pyo3(signature = (date_string, custom_abbrevs=None))]
+#[pyo3(signature = (date_string, as_offset=true, timezone_abbreviations=None))]
 fn pop_tz_offset_from_string(
     py: Python<'_>,
     date_string: &str,
-    custom_abbrevs: Option<&Bound<'_, PyDict>>,
+    as_offset: bool,
+    timezone_abbreviations: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<(String, Option<PyObject>)> {
     let mut map = rustc_hash::FxHashMap::default();
-    if let Some(d) = custom_abbrevs {
+    if let Some(d) = timezone_abbreviations {
         let extracted: std::collections::HashMap<String, String> = d.extract()?;
         for (k, v) in extracted {
             map.insert(k.to_ascii_uppercase(), v);
         }
     }
-    let (cleaned, tz_opt) = dateoxide_core::timezone::pop_tz_offset_from_string(
+    let (cleaned, tz_pair) = dateoxide_core::timezone::pop_tz_token_and_offset(
         date_string,
         if map.is_empty() { None } else { Some(&map) },
     );
-    let tz_py = match tz_opt {
-        Some(tz) => Some(tzspec_to_py(py, tz)?),
+    let tz_py = match tz_pair {
+        Some((raw_tok, tz)) => {
+            if as_offset {
+                Some(tzspec_to_py(py, tz)?)
+            } else {
+                Some(raw_tok.into_pyobject(py)?.into_any().unbind())
+            }
+        }
         None => None,
     };
     Ok((cleaned, tz_py))
@@ -1237,7 +1330,7 @@ fn detect_time_span(py: Python<'_>, text: &str) -> PyResult<Option<Py<PyDict>>> 
 fn generate_time_span(
     py: Python<'_>,
     span_info: &Bound<'_, PyDict>,
-    base_date: Option<NaiveDateTime>,
+    base_date: Option<&Bound<'_, PyAny>>,
     settings: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<(PyObject, PyObject)> {
     let cfg = extract_settings(None, None, None, None, false, settings)?;
@@ -1253,14 +1346,40 @@ fn generate_time_span(
         Some(v) if !v.is_none() => v.extract()?,
         _ => 1,
     };
-    let base = base_date.unwrap_or_else(|| chrono::Local::now().naive_local());
+    let (base, preserved_tz): (NaiveDateTime, Option<PyObject>) = match base_date {
+        None => (chrono::Local::now().naive_local(), None),
+        Some(bd) if bd.is_none() => (chrono::Local::now().naive_local(), None),
+        Some(bd) => {
+            if let Ok(ndt) = bd.extract::<NaiveDateTime>() {
+                (ndt, None)
+            } else if bd.hasattr("tzinfo")? && bd.hasattr("replace")? {
+                let tzi = bd.getattr("tzinfo")?;
+                let tz_opt = if tzi.is_none() { None } else { Some(tzi.unbind()) };
+                let kw = PyDict::new(py);
+                kw.set_item("tzinfo", py.None())?;
+                let naive_py = bd.call_method("replace", (), Some(&kw))?;
+                let ndt: NaiveDateTime = naive_py.extract()?;
+                (ndt, tz_opt)
+            } else {
+                return Err(PyTypeError::new_err("base_date must be a datetime object or None"));
+            }
+        }
+    };
     let (start, end) =
         dateoxide_core::time_spans::generate_time_span(&span_type, &direction, number, base, &cfg)
             .ok_or_else(|| PyValueError::new_err("invalid time span parameters"))?;
-    Ok((
-        start.into_pyobject(py)?.into_any().unbind(),
-        end.into_pyobject(py)?.into_any().unbind(),
-    ))
+    let start_py = start.into_pyobject(py)?;
+    let end_py = end.into_pyobject(py)?;
+    if let Some(ref tz_obj) = preserved_tz {
+        let kw = PyDict::new(py);
+        kw.set_item("tzinfo", tz_obj.bind(py))?;
+        Ok((
+            start_py.call_method("replace", (), Some(&kw))?.unbind(),
+            end_py.call_method("replace", (), Some(&kw))?.unbind(),
+        ))
+    } else {
+        Ok((start_py.into_any().unbind(), end_py.into_any().unbind()))
+    }
 }
 
 /// Return all 205 compiled locale language codes.

@@ -11,7 +11,7 @@ class _Factory:
 
 def _init_factory() -> Any:
     try:
-        import langdetect as _langdetect
+        import langdetect as _langdetect  # type: ignore[import-not-found]
     except ImportError as exc:
         raise ImportError(
             "langdetect is not installed. Install optional dependency with: pip install langdetect"

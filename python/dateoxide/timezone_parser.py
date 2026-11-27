@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, tzinfo, timezone
+from datetime import datetime, timedelta, timezone
 
 from ._dateoxide import pop_tz_offset_from_string
 
@@ -11,8 +11,8 @@ _OFFSET_RE = re.compile(r"^(?:(?:UTC|GMT)?[+-]\d{1,2}(?::?\d{2})?|Z|UTC|GMT)$", 
 _ABBR_RE = re.compile(r"^[A-Z]{2,5}$")
 
 
-def get_local_tz_offset() -> tzinfo:
-    return datetime.now().astimezone().tzinfo or timezone.utc
+def get_local_tz_offset() -> timedelta:
+    return _compute_local_tz_offset()
 
 
 def _compute_local_tz_offset() -> timedelta:
