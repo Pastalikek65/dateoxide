@@ -160,8 +160,16 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
 
     let is_korean =
         scan_s.contains('년') || scan_s.contains('월') || scan_s.contains('일') || scan_s.contains('시');
-    let is_pm = scan_s.contains("오후") || scan_s.contains("pm") || scan_s.contains("下午");
-    let is_am = scan_s.contains("오전") || scan_s.contains("am") || scan_s.contains("上午");
+    let is_pm = scan_s.contains("오후")
+        || scan_s.contains("pm")
+        || scan_s.contains("下午")
+        || scan_s.contains("午後")
+        || scan_s.contains("晚上");
+    let is_am = scan_s.contains("오전")
+        || scan_s.contains("am")
+        || scan_s.contains("上午")
+        || scan_s.contains("午前")
+        || scan_s.contains("早上");
 
     let mut loose_nums: Vec<(u32, usize)> = Vec::new();
     let mut cur_num = String::new();
@@ -285,7 +293,7 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
     let mut part_of_day: Option<PartOfDay> = None;
     let mut tod_time: Option<NaiveTime> = None;
     if has_time {
-        if is_pm && hour >= 1 && hour < 12 {
+        if is_pm && (1..12).contains(&hour) {
             hour += 12;
         } else if is_am && hour == 12 {
             hour = 0;
@@ -678,7 +686,7 @@ fn try_parse_in_locale(
     let has_time = time.is_some();
     if let (Some(t), Some(is_pm)) = (time, ampm) {
         let mut h = t.hour();
-        if is_pm && h >= 1 && h < 12 {
+        if is_pm && (1..12).contains(&h) {
             h += 12;
         } else if !is_pm && h == 12 {
             h = 0;
@@ -708,7 +716,7 @@ fn try_parse_in_locale(
         [(n, len)] => {
             if month.is_some() && day.is_none() && (1..=31).contains(n) && *len <= 2 {
                 day = Some(*n);
-            } else if year.is_none() && *len == 2 {
+            } else if year.is_none() && *len == 2 && weekday_seen.is_none() {
                 year = Some(expand_two_digit_year(*n));
             } else {
                 return None;

@@ -10,6 +10,8 @@ pub struct SearchMatch {
     pub date_obj: ParsedDateTime,
     pub period: Period,
     pub locale: Option<String>,
+    pub parts: Vec<&'static str>,
+    pub part_of_day: Option<crate::settings::PartOfDay>,
 }
 
 /// Linear-time date finder across free-form text (compatible with `dateparser.search.search_dates`).
@@ -37,12 +39,24 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
         return Vec::new();
     }
 
-    if settings.return_time_span {
+    let owned_inner;
+    let parse_settings: &Settings = if settings.ignore_surrounding_text {
+        owned_inner = {
+            let mut c = settings.clone();
+            c.ignore_surrounding_text = false;
+            c
+        };
+        &owned_inner
+    } else {
+        settings
+    };
+
+    if parse_settings.return_time_span {
         if let Some(span) = time_spans::detect_time_span(text) {
-            let base = settings.effective_base();
+            let base = parse_settings.effective_base();
             let num = span.number.unwrap_or(1);
             if let Some((start_dt, end_dt)) =
-                time_spans::generate_time_span(span.span_type, span.direction, num, base, settings)
+                time_spans::generate_time_span(span.span_type, span.direction, num, base, parse_settings)
             {
                 let period = match span.span_type {
                     "week" | "weeks" => Period::Week,
@@ -52,15 +66,19 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                 return vec![
                     SearchMatch {
                         text: format!("{} (start)", span.matched_text),
-                        date_obj: finalize_datetime(start_dt, None, settings),
+                        date_obj: finalize_datetime(start_dt, None, parse_settings),
                         period,
                         locale: Some("en".to_string()),
+                        parts: vec!["year", "month", "day"],
+                        part_of_day: None,
                     },
                     SearchMatch {
                         text: format!("{} (end)", span.matched_text),
-                        date_obj: finalize_datetime(end_dt, None, settings),
+                        date_obj: finalize_datetime(end_dt, None, parse_settings),
                         period,
                         locale: Some("en".to_string()),
+                        parts: vec!["year", "month", "day"],
+                        part_of_day: None,
                     },
                 ];
             }
@@ -108,12 +126,14 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                 if raw_sub.is_empty() {
                     continue;
                 }
-                if let Some(m) = crate::fast_path::try_custom_formats(raw_sub, settings) {
+                if let Some(m) = crate::fast_path::try_custom_formats(raw_sub, parse_settings) {
                     results.push(SearchMatch {
                         text: raw_sub.to_string(),
-                        date_obj: finalize_datetime(m.naive, m.tz, settings),
+                        date_obj: finalize_datetime(m.naive, m.tz, parse_settings),
                         period: m.period,
                         locale: m.locale,
+                        parts: m.parts,
+                        part_of_day: None,
                     });
                     i = end_idx + 1;
                     custom_matched = true;
@@ -210,13 +230,15 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                 if !cjk_subs.is_empty() {
                     let mut any_cjk = false;
                     for sub in cjk_subs {
-                        let dd = get_date_data(sub, settings);
+                        let dd = get_date_data(sub, parse_settings);
                         if let Some(dt) = dd.date_obj {
                             results.push(SearchMatch {
                                 text: sub.to_string(),
                                 date_obj: dt,
                                 period: dd.period,
                                 locale: dd.locale,
+                                parts: dd.parts,
+                                part_of_day: dd.part_of_day,
                             });
                             any_cjk = true;
                         }
@@ -227,17 +249,17 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                         break;
                     }
                 }
-                if !is_valid_single_token_date(raw_sub, registry, settings.normalize) {
+                if !is_valid_single_token_date(raw_sub, registry, parse_settings.normalize) {
                     continue;
                 }
             }
 
-            let dd = get_date_data(raw_sub, settings);
+            let dd = get_date_data(raw_sub, parse_settings);
             if let Some(dt) = dd.date_obj {
                 let has_digits = raw_sub
                     .chars()
                     .any(|c| c.is_ascii_digit() || ('\u{0660}'..='\u{0669}').contains(&c));
-                if settings.languages.is_none()
+                if parse_settings.languages.is_none()
                     && !has_digits
                     && should_skip_ambiguous_phrase(
                         raw_sub,
@@ -253,6 +275,8 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                     date_obj: dt,
                     period: dd.period,
                     locale: dd.locale,
+                    parts: dd.parts,
+                    part_of_day: dd.part_of_day,
                 });
                 i = end_idx + 1;
                 matched = true;
@@ -485,15 +509,21 @@ fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
 
         let cand = s[start..cur].trim_end_matches(':');
         if saw_date_unit
-            && cand.len() < s.len()
             && (cand.chars().any(|c| c.is_ascii_digit() || ('０'..='９').contains(&c))
                 || cand.contains('元'))
         {
-            out.push(cand);
-            pos = cur;
-        } else {
-            pos = start + adv;
+            // Whole token is already a single CJK date: return empty so single-token parser handles it intact
+            if start == 0 && cand.len() == s.len() {
+                return Vec::new();
+            }
+            if cand.len() < s.len() {
+                out.push(cand);
+                pos = cur;
+                continue;
+            }
         }
+        // Advance past non-date digit runs to avoid O(N^2) re-scanning
+        pos = cur.max(start + adv);
     }
     out
 }

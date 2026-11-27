@@ -51,17 +51,10 @@ pub fn parse_date_range(
         return None;
     }
 
-    let lower = s.to_lowercase();
+    let ascii_lower = s.to_ascii_lowercase();
     for prefix in RANGE_INTRODUCERS {
-        if lower.starts_with(prefix) && s.len() > prefix.len() {
-            // Ensure prefix boundary aligns cleanly before slicing original string
-            let char_count = prefix.chars().count();
-            let byte_cut = s
-                .char_indices()
-                .nth(char_count)
-                .map(|(idx, _)| idx)
-                .unwrap_or(s.len());
-            s = s[byte_cut..].trim_start();
+        if ascii_lower.starts_with(prefix) && s.len() > prefix.len() {
+            s = s[prefix.len()..].trim_start();
             break;
         }
     }
@@ -92,22 +85,11 @@ fn try_split_connector_range(
     s: &str,
     settings: &Settings,
 ) -> Option<(ParsedDateTime, ParsedDateTime)> {
-    let lower = s.to_lowercase();
+    let ascii_lower = s.to_ascii_lowercase();
     for &conn in RANGE_CONNECTORS {
-        // Case-insensitive search when connector is ASCII, exact search otherwise
+        // Search ASCII connectors case-insensitively with 1:1 byte offsets (avoids 'İ' case-expansion drift)
         let split_pos = if conn.is_ascii() {
-            lower.find(conn).and_then(|pos| {
-                // Map char index from lowercased string to original string safely
-                let chars_before = lower[..pos].chars().count();
-                let chars_conn = conn.chars().count();
-                let start = s.char_indices().nth(chars_before).map(|(i, _)| i)?;
-                let end = s
-                    .char_indices()
-                    .nth(chars_before + chars_conn)
-                    .map(|(i, _)| i)
-                    .unwrap_or(s.len());
-                Some((start, end))
-            })
+            ascii_lower.find(conn).map(|pos| (pos, pos + conn.len()))
         } else {
             s.find(conn).map(|pos| (pos, pos + conn.len()))
         };
@@ -120,7 +102,7 @@ fn try_split_connector_range(
         if left.is_empty() || right.is_empty() {
             continue;
         }
-        if conn == " and " && !lower.starts_with("between ") && !input_had_between(s) {
+        if conn == " and " && !ascii_lower.starts_with("between ") && !input_had_between(s) {
             // Only parse "A and B" if left looks date-like; check right and left cleanly
         }
 
@@ -140,14 +122,51 @@ fn try_split_connector_range(
             ));
         }
 
-        let Some(end_dt) = parse_with_settings(right, settings) else {
+        // Date+Time on left, bare Time on right: "May 10, 2026 14:00 - 16:30"
+        if let Some(t2) = parse_time_str(right) {
+            if let Some(start_dt) = parse_with_settings(left, settings) {
+                let sn = start_dt.naive_local();
+                let d2_date = if t2 < sn.time() {
+                    sn.date().succ_opt().unwrap_or(sn.date())
+                } else {
+                    sn.date()
+                };
+                let end_naive = d2_date.and_time(t2);
+                return Some((start_dt, finalize_datetime(end_naive, None, settings)));
+            }
+        }
+
+        // Left is full CJK/Korean date, right is bare day ("2026年5月10日〜15日", "2026년 5월 10일 - 15일")
+        let end_dt_opt = parse_with_settings(right, settings);
+        if end_dt_opt.is_none() && (right.ends_with('日') || right.ends_with('号') || right.ends_with('일')) {
+            if let Some(start_dt) = parse_with_settings(left, settings) {
+                let sn = start_dt.naive_local();
+                let inherited = if right.ends_with('일') {
+                    format!("{}년 {}월 {}", sn.year(), sn.month(), right)
+                } else {
+                    format!("{}年{}月{}", sn.year(), sn.month(), right)
+                };
+                if let Some(end_dt) = parse_with_settings(&inherited, settings) {
+                    return Some((start_dt, end_dt));
+                }
+            }
+        }
+
+        let Some(end_dt) = end_dt_opt else {
             continue;
         };
 
-        // Inherit year from right endpoint when left lacks a 4-digit year (e.g. "12 Ocak - 15 Şubat 2026")
+        // Inherit year from right endpoint only when needed (preserve direct weekday/word parses like "from Monday to Friday")
         let left_has_year = has_four_digit_year(left);
         if !left_has_year {
             let end_year = end_dt.naive_local().year();
+            if !left.chars().any(|c| c.is_ascii_digit()) {
+                if let Some(direct_start) = parse_with_settings(left, settings) {
+                    if direct_start.naive_local().year() == end_year {
+                        return Some((direct_start, end_dt));
+                    }
+                }
+            }
             let left_with_year = format!("{} {}", left.trim_end_matches(','), end_year);
             if let Some(mut start_dt) = parse_with_settings(&left_with_year, settings) {
                 if start_dt.naive_local() > end_dt.naive_local() {
@@ -225,8 +244,10 @@ fn try_compact_same_month_range(
         let before_dash = &work[..dash_idx];
         let after_dash = &work[dash_idx + 1..];
         let d1_start = before_dash
-            .rfind(|c: char| !c.is_ascii_digit())
-            .map(|i| i + 1)
+            .char_indices()
+            .rev()
+            .find(|&(_, c)| !c.is_ascii_digit())
+            .map(|(i, c)| i + c.len_utf8())
             .unwrap_or(0);
         let d1 = &before_dash[d1_start..];
         let prefix = before_dash[..d1_start].trim_end();

@@ -146,6 +146,31 @@ fn resolve_fast_path_locale(match_locale: Option<String>, settings: &Settings) -
     "en".to_string()
 }
 
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn build_datedata(
+    naive: chrono::NaiveDateTime,
+    tz: Option<timezone::TzSpec>,
+    period: Period,
+    has_time: bool,
+    locale: String,
+    parts: Vec<&'static str>,
+    part_of_day: Option<settings::PartOfDay>,
+    settings: &Settings,
+) -> DateData {
+    let dt = finalize_datetime(naive, tz, settings);
+    if !timezone::is_valid_year_range(&dt) {
+        return DateData::empty();
+    }
+    DateData {
+        date_obj: Some(dt),
+        period: apply_time_period(period, has_time, settings),
+        locale: Some(locale),
+        parts,
+        part_of_day,
+    }
+}
+
 /// Full `dateparser.date.DateDataParser.get_date_data` equivalent returning
 /// `DateData { date_obj, period, locale, parts, part_of_day }`.
 pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
@@ -167,24 +192,30 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
 
     // 0. Custom user strptime formats (`date_formats`)
     if let Some(m) = fast_path::try_custom_formats(trimmed, settings) {
-        return DateData {
-            date_obj: Some(finalize_datetime(m.naive, m.tz, settings)),
-            period: apply_time_period(m.period, m.has_time, settings),
-            locale: Some(resolve_fast_path_locale(m.locale, settings)),
-            parts: m.parts,
-            part_of_day: None,
-        };
+        return build_datedata(
+            m.naive,
+            m.tz,
+            m.period,
+            m.has_time,
+            resolve_fast_path_locale(m.locale, settings),
+            m.parts,
+            None,
+            settings,
+        );
     }
 
     // 1. Zero-regex, zero-allocation fast path
     if let Some(m) = fast_path::try_fast_path(trimmed, settings) {
-        return DateData {
-            date_obj: Some(finalize_datetime(m.naive, m.tz, settings)),
-            period: apply_time_period(m.period, m.has_time, settings),
-            locale: Some(resolve_fast_path_locale(m.locale, settings)),
-            parts: m.parts,
-            part_of_day: None,
-        };
+        return build_datedata(
+            m.naive,
+            m.tz,
+            m.period,
+            m.has_time,
+            resolve_fast_path_locale(m.locale, settings),
+            m.parts,
+            None,
+            settings,
+        );
     }
 
     // 2. Peel off optional trailing timezone (or Unix ctime mid-string TZ) before normalization
@@ -213,13 +244,16 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
     // Re-check fast path if Unicode digits (e.g. Arabic-Indic / Persian) were normalized to ASCII
     if normalized.as_bytes()[0].is_ascii_digit() && normalized != without_tz {
         if let Some(m) = fast_path::try_fast_path(&normalized, settings) {
-            return DateData {
-                date_obj: Some(finalize_datetime(m.naive, m.tz.or(tz), settings)),
-                period: apply_time_period(m.period, m.has_time, settings),
-                locale: Some(resolve_fast_path_locale(m.locale, settings)),
-                parts: m.parts,
-                part_of_day: None,
-            };
+            return build_datedata(
+                m.naive,
+                m.tz.or(tz),
+                m.period,
+                m.has_time,
+                resolve_fast_path_locale(m.locale, settings),
+                m.parts,
+                None,
+                settings,
+            );
         }
     }
 
@@ -273,13 +307,16 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
     if candidates.is_empty() {
         if settings.allows_parser(ParserKind::RelativeTime) {
             if let Some(m) = relative::try_conversational_clock_or_fraction(&normalized, settings) {
-                return DateData {
-                    date_obj: Some(finalize_datetime(m.naive, tz, settings)),
-                    period: apply_time_period(m.period, m.has_time, settings),
-                    locale: Some(m.locale),
-                    parts: m.parts,
-                    part_of_day: m.part_of_day,
-                };
+                return build_datedata(
+                    m.naive,
+                    tz,
+                    m.period,
+                    m.has_time,
+                    m.locale,
+                    m.parts,
+                    m.part_of_day,
+                    settings,
+                );
             }
         }
         let is_cjk_or_bare_year = (normalized.len() == 4
@@ -292,13 +329,16 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
             || normalized.contains('일');
         if settings.allows_parser(ParserKind::AbsoluteTime) && is_cjk_or_bare_year {
             if let Some(m) = absolute::try_parse_absolute(&normalized, &[], registry, settings) {
-                return DateData {
-                    date_obj: Some(finalize_datetime(m.naive, tz, settings)),
-                    period: apply_time_period(m.period, m.has_time, settings),
-                    locale: Some(m.locale),
-                    parts: m.parts,
-                    part_of_day: m.part_of_day,
-                };
+                return build_datedata(
+                    m.naive,
+                    tz,
+                    m.period,
+                    m.has_time,
+                    m.locale,
+                    m.parts,
+                    m.part_of_day,
+                    settings,
+                );
             }
         }
         return ignore_surrounding_fallback(trimmed, settings);
@@ -307,26 +347,32 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
     // 4. Multilingual Relative Date Engine
     if settings.allows_parser(ParserKind::RelativeTime) {
         if let Some(m) = relative::try_parse_relative(&normalized, &candidates, registry, settings) {
-            return DateData {
-                date_obj: Some(finalize_datetime(m.naive, tz, settings)),
-                period: apply_time_period(m.period, m.has_time, settings),
-                locale: Some(m.locale),
-                parts: m.parts,
-                part_of_day: m.part_of_day,
-            };
+            return build_datedata(
+                m.naive,
+                tz,
+                m.period,
+                m.has_time,
+                m.locale,
+                m.parts,
+                m.part_of_day,
+                settings,
+            );
         }
     }
 
     // 5. Multilingual Absolute & Partial Date Engine
     if settings.allows_parser(ParserKind::AbsoluteTime) {
         if let Some(m) = absolute::try_parse_absolute(&normalized, &candidates, registry, settings) {
-            return DateData {
-                date_obj: Some(finalize_datetime(m.naive, tz, settings)),
-                period: apply_time_period(m.period, m.has_time, settings),
-                locale: Some(m.locale),
-                parts: m.parts,
-                part_of_day: m.part_of_day,
-            };
+            return build_datedata(
+                m.naive,
+                tz,
+                m.period,
+                m.has_time,
+                m.locale,
+                m.parts,
+                m.part_of_day,
+                settings,
+            );
         }
     }
 
@@ -345,8 +391,8 @@ fn ignore_surrounding_fallback(trimmed: &str, settings: &Settings) -> DateData {
             date_obj: Some(first.date_obj),
             period: first.period,
             locale: first.locale,
-            parts: vec!["year", "month", "day"],
-            part_of_day: None,
+            parts: first.parts,
+            part_of_day: first.part_of_day,
         };
     }
     DateData::empty()
@@ -366,10 +412,10 @@ pub fn parse_batch<S: AsRef<str> + Sync>(
                 .map(|s| parse_with_settings(s.as_ref(), settings))
                 .collect();
         }
-        return inputs
+        inputs
             .par_iter()
             .map(|s| parse_with_settings(s.as_ref(), settings))
-            .collect();
+            .collect()
     }
     #[cfg(not(feature = "rayon"))]
     {
@@ -393,10 +439,10 @@ pub fn parse_batch_opt<S: AsRef<str> + Sync>(
                 .map(|opt| opt.as_ref().and_then(|s| parse_with_settings(s.as_ref(), settings)))
                 .collect();
         }
-        return inputs
+        inputs
             .par_iter()
             .map(|opt| opt.as_ref().and_then(|s| parse_with_settings(s.as_ref(), settings)))
-            .collect();
+            .collect()
     }
     #[cfg(not(feature = "rayon"))]
     {
@@ -1137,5 +1183,55 @@ mod tests {
         assert_eq!(zh_hits.len(), 2);
         assert_eq!(zh_hits[0].0, "2024年5月15日下午3点");
         assert_eq!(zh_hits[1].0, "2天前");
+    }
+
+    #[test]
+    fn test_p0_safety_and_correctness() {
+        let s = fixed_settings();
+
+        // Non-ASCII whitespace must never panic
+        assert!(parse_with_settings("2024-03-15\u{00A0}14:30", &s).is_some());
+        assert!(parse_with_settings("15\u{202F}March\u{202F}2024", &s).is_some());
+        assert!(parse_with_settings("2024年3月15日\u{3000}14時30分", &s).is_some());
+        assert!(parse_with_settings("hello\u{00A0}world", &s).is_none());
+
+        // Range UTF-8 & Turkish 'İ' safety
+        assert_eq!(
+            parse_date_range("12 NİSAN - 15 MAYIS 2026", &s)
+                .unwrap()
+                .1
+                .naive_local()
+                .date(),
+            NaiveDate::from_ymd_opt(2026, 5, 15).unwrap()
+        );
+        assert!(parse_date_range("2月-5日", &s).is_none());
+
+        // CJK standalone tokens in search_dates + Japanese PM/AM
+        let cjk = crate::search::search_dates("Meeting: 2026年5月10日", &s);
+        assert_eq!(cjk.len(), 1);
+        assert_eq!(cjk[0].0, "2026年5月10日");
+        assert_eq!(
+            parse_with_settings("2026年3月15日 午後2時30分", &s)
+                .unwrap()
+                .naive_local(),
+            NaiveDateTime::parse_from_str("2026-03-15 14:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+
+        // Locale scoring dominance ("Jun" -> en month June, not fy evening)
+        let jun_dd = get_date_data("Jun", &s);
+        assert_eq!(jun_dd.locale.as_deref(), Some("en"));
+        assert_eq!(jun_dd.date_obj.unwrap().naive_local().month(), 6);
+        assert!(get_date_data("15 mar 2026 alle 14:30", &s).date_obj.is_some());
+        assert!(get_date_data("15 mai 2026 kell 14:30", &s).date_obj.is_some());
+        assert!(get_date_data("15 jun 2026 pukul 14:30", &s).date_obj.is_some());
+
+        // Calendar bounds & rollovers
+        assert!(calendars::jalali_to_gregorian(11767034, 1, 1).is_none());
+        assert!(calendars::hijri_to_gregorian(6066335, 1, 1).is_none());
+        assert!(calendars::french_republican_to_gregorian(50_000_000, 7, 14).is_none());
+        assert!(parse_with_settings("0000-W01-1", &s).is_none());
+        let mut s_tz = s.clone();
+        s_tz.to_timezone = Some("Asia/Tokyo".to_string());
+        assert!(parse_with_settings("9999-12-31 23:00:00 UTC", &s_tz).is_none());
     }
 }

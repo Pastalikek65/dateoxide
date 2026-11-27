@@ -78,10 +78,10 @@ pub fn parse_tz_spec(s: &str) -> Option<TzSpec> {
         "ADT" | "ARST" | "ART" | "BRT" | "CLST" | "FKST" | "GFT" | "PYST" | "SRT" | "UYT" => -3 * 3600,
         "NDT" => -2 * 3600 - 1800,
         "BRST" | "FNT" | "UYST" => -2 * 3600,
-        "CVT" | "AZOT" | "EGT" => -1 * 3600,
+        "CVT" | "AZOT" | "EGT" => -3600,
         // Europe / Africa / Middle East
         "WET" => 0,
-        "CET" | "WEST" | "BST" | "WAT" | "MET" | "MEZ" | "DFT" => 1 * 3600,
+        "CET" | "WEST" | "BST" | "WAT" | "MET" | "MEZ" | "DFT" => 3600,
         "CEST" | "EET" | "CAT" | "SAST" | "MEST" | "MESZ" | "WAST" => 2 * 3600,
         "EEST" | "TRT" | "MSK" | "EAT" | "FET" | "IDT" => 3 * 3600,
         "IRST" => 3 * 3600 + 1800,
@@ -191,14 +191,13 @@ fn extract_trailing_timezone_non_paren<'a>(
     }
 
     // Handle whitespace-separated trailing token: "EST", "UTC+3", "Europe/Istanbul", or custom abbrev
-    if let Some(sp) = s.rfind(|c: char| c.is_whitespace()) {
-        let last = &s[sp + 1..];
+    if let Some((sp, sp_ch)) = s.char_indices().rev().find(|&(_, c)| c.is_whitespace()) {
+        let last = &s[sp + sp_ch.len_utf8()..];
         let upper = last.to_ascii_uppercase();
         let is_custom = !custom.is_empty() && (custom.contains_key(&upper) || custom.contains_key(last));
         let is_two_letter_tz = last.len() == 2
             && matches!(last, "UT" | "ET" | "PT")
             && s[..sp]
-                .trim_end()
                 .split_whitespace()
                 .next_back()
                 .map(|prev| prev.contains(':'))
@@ -409,4 +408,15 @@ pub fn finalize_datetime(
     }
 
     ParsedDateTime::Naive(naive)
+}
+
+#[inline]
+pub fn is_valid_year_range(dt: &ParsedDateTime) -> bool {
+    use chrono::Datelike;
+    let y = match dt {
+        ParsedDateTime::Naive(n) => n.year(),
+        ParsedDateTime::FixedOffset(f) => f.year(),
+        ParsedDateTime::Tz(t) => t.year(),
+    };
+    (1..=9999).contains(&y)
 }

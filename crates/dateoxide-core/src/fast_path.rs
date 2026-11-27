@@ -272,7 +272,7 @@ fn translate_input_for_strptime(
     if pairs.is_empty() {
         return None;
     }
-    pairs.sort_unstable_by(|a, b| b.0.len().cmp(&a.0.len()));
+    pairs.sort_unstable_by_key(|a| std::cmp::Reverse(a.0.len()));
 
     let mut out = String::with_capacity(norm.len() + 8);
     let mut pos = 0usize;
@@ -756,6 +756,9 @@ fn try_iso_week_date(
         7 => Weekday::Sun,
         _ => return None,
     };
+    if !(1..=9999).contains(&year) {
+        return None;
+    }
     let nd = NaiveDate::from_isoywd_opt(year, week, wd)?;
     let has_time = time_part.is_some();
     let time = match time_part {
@@ -809,14 +812,14 @@ fn try_timestamp_or_compact(
                 let ss: u32 = if core.len() == 6 { core[4..6].parse().ok()? } else { 0 };
                 let time = NaiveTime::from_hms_opt(hh, mm, ss)?;
                 let date = resolve_time_only_date(time, settings);
-                return Some(FastPathMatch {
+                Some(FastPathMatch {
                     naive: date.and_time(time),
                     tz,
                     period: Period::Day,
                     has_time: true,
                     parts: vec!["time"],
                     locale: None,
-                });
+                })
             }
             8 => {
                 if !settings.allows_parser(ParserKind::BaseFormats)

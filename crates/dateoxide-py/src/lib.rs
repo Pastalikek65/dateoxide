@@ -101,10 +101,12 @@ fn extract_settings(
     use_given_order: bool,
     settings_obj: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Settings> {
-    let mut cfg = Settings::default();
-    cfg.date_formats = date_formats;
-    cfg.region = region;
-    cfg.use_given_language_order = use_given_order;
+    let mut cfg = Settings {
+        date_formats,
+        region,
+        use_given_language_order: use_given_order,
+        ..Default::default()
+    };
 
     let mut combined_langs: Vec<String> = Vec::new();
     if let Some(ls) = languages {
@@ -125,10 +127,16 @@ fn extract_settings(
         return Ok(cfg);
     }
 
-    // Accept either dict or dateoxide.conf.Settings instance (via .as_dict())
+    // Accept either dict or dateoxide.conf.Settings instance (via .as_effective_dict() / .as_dict())
     let owned_dict;
     let dict: &Bound<'_, PyDict> = if let Ok(d) = raw_settings.downcast::<PyDict>() {
         d
+    } else if raw_settings.hasattr("as_effective_dict")? {
+        let res = raw_settings.call_method0("as_effective_dict")?;
+        owned_dict = res.downcast_into::<PyDict>().map_err(|_| {
+            PyValueError::new_err("Settings.as_effective_dict() must return a dict")
+        })?;
+        &owned_dict
     } else if raw_settings.hasattr("as_dict")? {
         let res = raw_settings.call_method0("as_dict")?;
         owned_dict = res.downcast_into::<PyDict>().map_err(|_| {
@@ -756,6 +764,7 @@ impl PyDateDataParser {
 }
 
 /// Drop-in replacement for `dateparser.parse(...)`.
+#[allow(clippy::too_many_arguments)]
 #[pyfunction]
 #[pyo3(signature = (date_string, date_formats=None, languages=None, locales=None, region=None, settings=None, detect_languages_function=None))]
 fn parse(
@@ -831,6 +840,7 @@ fn parse_date_range(
 }
 
 /// Drop-in replacement for `dateparser.search.search_dates(...)`.
+#[allow(clippy::too_many_arguments)]
 #[pyfunction]
 #[pyo3(signature = (text, languages=None, settings=None, add_detected_language=false, detect_languages_function=None, strategy="split", date_formats=None, add_period=false))]
 #[allow(unused_variables)]
@@ -975,8 +985,10 @@ fn detect_time_span(py: Python<'_>, text: &str) -> PyResult<Option<Py<PyDict>>> 
     d.set_item("type", m.span_type)?;
     d.set_item("direction", m.direction)?;
     d.set_item("matched_text", m.matched_text)?;
-    d.set_item("start_pos", m.start_pos)?;
-    d.set_item("end_pos", m.end_pos)?;
+    let start_char = text[..m.start_pos].chars().count();
+    let end_char = start_char + text[m.start_pos..m.end_pos].chars().count();
+    d.set_item("start_pos", start_char)?;
+    d.set_item("end_pos", end_char)?;
     if let Some(n) = m.number {
         d.set_item("number", n)?;
     }

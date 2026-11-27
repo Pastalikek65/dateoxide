@@ -385,6 +385,31 @@ impl LocaleRegistry {
             });
         }
 
+        // Register disambiguating locale connectors so candidate detection ranks e.g. it/et/id accurately
+        for &(tok, langs) in &[
+            ("alle", &["it", "de"][..]),
+            ("kell", &["et"][..]),
+            ("pukul", &["id", "ms"][..]),
+            ("ora", &["ro"][..]),
+            ("klo", &["fi"][..]),
+            ("στις", &["el"][..]),
+            ("lúc", &["vi"][..]),
+            ("เวลา", &["th"][..]),
+            ("الساعة", &["ar"][..]),
+            ("at", &["en"][..]),
+            ("um", &["de"][..]),
+        ] {
+            for &code in langs {
+                if let Some(&lid) = code_to_id.get(code) {
+                    let list = token_to_langs.entry(tok.to_string()).or_default();
+                    let lid_u16 = lid as u16;
+                    if !list.contains(&lid_u16) {
+                        list.push(lid_u16);
+                    }
+                }
+            }
+        }
+
         Self {
             locales,
             code_to_id,
@@ -481,7 +506,12 @@ impl LocaleRegistry {
             return order_with_defaults(out);
         }
 
-        if normalize {
+        if normalize
+            && !self
+                .locales
+                .first()
+                .is_some_and(|en| en.months.contains_key(normalized) || en.weekdays.contains_key(normalized))
+        {
             let f = fold_diacritics(normalized);
             if let Some(matches) = self.folded_exact_phrase_index.get(&f) {
                 let mut out: Vec<usize> = matches.iter().map(|(id, _)| *id as usize).collect();
@@ -499,29 +529,47 @@ impl LocaleRegistry {
             if tok.len() <= 1 && tok.is_ascii() {
                 continue;
             }
-            if let Some(langs) = self.token_to_langs.get(tok) {
+            let exact_langs = self.token_to_langs.get(tok);
+            let exact_matched = if let Some(langs) = exact_langs {
                 let weight = if langs.len() <= 3 {
-                    8
+                    16
                 } else if langs.len() <= 12 {
-                    4
+                    10
                 } else {
-                    2
+                    6
                 };
                 for &lid in langs {
                     *scores.entry(lid).or_insert(0) += weight;
                 }
-            }
+                true
+            } else {
+                false
+            };
             if normalize {
                 let ft = fold_diacritics(tok);
+                // Only award meaningful folded points when input wasn't already an exact token
+                // (prevents diacritic-stripped rare locales like "jûn"/"nóv"/"ápr" from outscoring "jun"/"nov"/"apr")
                 if let Some(langs) = self.folded_token_to_langs.get(&ft) {
-                    let weight = if langs.len() <= 3 {
-                        5
-                    } else if langs.len() <= 12 {
-                        3
+                    let weight = if !exact_matched || ft != tok {
+                        if langs.len() <= 3 {
+                            5
+                        } else if langs.len() <= 12 {
+                            3
+                        } else {
+                            1
+                        }
+                    } else if langs.len() <= 3 {
+                        2
                     } else {
                         1
                     };
                     for &lid in langs {
+                        // Never double-count the same locale for both exact and folded on one token
+                        if let Some(ex) = exact_langs {
+                            if ex.binary_search(&lid).is_ok() {
+                                continue;
+                            }
+                        }
                         *scores.entry(lid).or_insert(0) += weight;
                     }
                 }
@@ -574,7 +622,7 @@ impl LocaleRegistry {
         // Highest score first; ties broken by global language priority (lower id = higher priority)
         ranked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-        let top: Vec<usize> = ranked.into_iter().take(8).map(|(id, _)| id as usize).collect();
+        let top: Vec<usize> = ranked.into_iter().take(12).map(|(id, _)| id as usize).collect();
         order_with_defaults(top)
     }
 }

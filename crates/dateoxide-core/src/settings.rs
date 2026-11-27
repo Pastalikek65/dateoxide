@@ -12,6 +12,7 @@ pub enum DateOrder {
     DYM,
 }
 
+#[allow(clippy::should_implement_trait)]
 impl DateOrder {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_ascii_uppercase().as_str() {
@@ -34,6 +35,7 @@ pub enum StrictDateOrder {
     All,
 }
 
+#[allow(clippy::should_implement_trait)]
 impl StrictDateOrder {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
@@ -53,6 +55,7 @@ pub enum PreferDatesFrom {
     Future,
 }
 
+#[allow(clippy::should_implement_trait)]
 impl PreferDatesFrom {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
@@ -72,6 +75,7 @@ pub enum PreferDayOfMonth {
     Last,
 }
 
+#[allow(clippy::should_implement_trait)]
 impl PreferDayOfMonth {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
@@ -91,6 +95,7 @@ pub enum PreferMonthOfYear {
     Last,
 }
 
+#[allow(clippy::should_implement_trait)]
 impl PreferMonthOfYear {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
@@ -109,6 +114,7 @@ pub enum DatePart {
     Day,
 }
 
+#[allow(clippy::should_implement_trait)]
 impl DatePart {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
@@ -215,6 +221,7 @@ pub enum StartOfWeek {
     Sunday,
 }
 
+#[allow(clippy::should_implement_trait)]
 impl StartOfWeek {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
@@ -236,6 +243,7 @@ pub enum ParserKind {
     NoSpacesTime,
 }
 
+#[allow(clippy::should_implement_trait)]
 impl ParserKind {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
@@ -367,12 +375,7 @@ impl Default for Settings {
 pub fn extract_region_from_locale(code: &str) -> Option<&str> {
     let mut parts = code.trim().split(['-', '_']);
     let _lang = parts.next()?;
-    for sub in parts {
-        if sub.len() == 2 && sub.bytes().all(|b| b.is_ascii_alphabetic()) {
-            return Some(sub);
-        }
-    }
-    None
+    parts.find(|&sub| sub.len() == 2 && sub.bytes().all(|b| b.is_ascii_alphabetic()))
 }
 
 /// Map a 2-letter region/country code to its conventional numeric date order.

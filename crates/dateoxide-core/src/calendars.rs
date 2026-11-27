@@ -10,14 +10,12 @@ fn is_jalali_leap(jy: i32) -> bool {
 
 /// Convert a Solar Hijri (Jalali) calendar date to Gregorian `NaiveDate`.
 pub fn jalali_to_gregorian(jy: i32, jm: u32, jd: u32) -> Option<NaiveDate> {
-    if !(1..=12).contains(&jm) || jd == 0 {
+    if !(1..=12).contains(&jm) || jd == 0 || !(-2000..=12000).contains(&jy) {
         return None;
     }
     let max_d = if jm <= 6 {
         31
-    } else if jm <= 11 {
-        30
-    } else if is_jalali_leap(jy) {
+    } else if jm <= 11 || is_jalali_leap(jy) {
         30
     } else {
         29
@@ -26,9 +24,9 @@ pub fn jalali_to_gregorian(jy: i32, jm: u32, jd: u32) -> Option<NaiveDate> {
         return None;
     }
 
-    let jy = jy - 979;
-    let jm_z = jm as i32 - 1;
-    let jd_z = jd as i32 - 1;
+    let jy = jy as i64 - 979;
+    let jm_z = jm as i64 - 1;
+    let jd_z = jd as i64 - 1;
     let mut j_day_no = 365 * jy + jy.div_euclid(33) * 8 + (jy.rem_euclid(33) + 3) / 4;
     for i in 0..jm_z {
         j_day_no += if i < 6 { 31 } else { 30 };
@@ -60,7 +58,7 @@ pub fn jalali_to_gregorian(jy: i32, jm: u32, jd: u32) -> Option<NaiveDate> {
     }
 
     let g_days_in_month = [
-        31,
+        31i64,
         if leap { 29 } else { 28 },
         31,
         30,
@@ -82,7 +80,10 @@ pub fn jalali_to_gregorian(jy: i32, jm: u32, jd: u32) -> Option<NaiveDate> {
         gm += 1;
     }
     let gd = (g_day_no + 1) as u32;
-    NaiveDate::from_ymd_opt(gy, gm, gd)
+    if !(1..=9999).contains(&gy) {
+        return None;
+    }
+    NaiveDate::from_ymd_opt(gy as i32, gm, gd)
 }
 
 /// Convert an Islamic Hijri date to Gregorian `NaiveDate`.
@@ -103,7 +104,7 @@ pub fn hijri_to_gregorian(hy: i32, hm: u32, hd: u32) -> Option<NaiveDate> {
             if hd > month_len {
                 return None;
             }
-            return julian_day_to_gregorian(start_jdn + hd as i32 - 1);
+            return julian_day_to_gregorian((start_jdn + hd as i32 - 1) as i64);
         }
     }
 
@@ -112,10 +113,11 @@ pub fn hijri_to_gregorian(hy: i32, hm: u32, hd: u32) -> Option<NaiveDate> {
 
 /// Civil Tabular Islamic (Hijri) calendar fallback for historical/far-future years.
 pub fn hijri_to_gregorian_tabular(hy: i32, hm: u32, hd: u32) -> Option<NaiveDate> {
-    if !(1..=12).contains(&hm) || !(1..=30).contains(&hd) {
+    if !(1..=12).contains(&hm) || !(1..=30).contains(&hd) || !(-2000..=12000).contains(&hy) {
         return None;
     }
-    let is_leap = (11 * hy + 14).rem_euclid(30) < 11;
+    let hy64 = hy as i64;
+    let is_leap = (11 * hy64 + 14).rem_euclid(30) < 11;
     let max_d = if hm % 2 == 1 || (hm == 12 && is_leap) {
         30
     } else {
@@ -125,18 +127,18 @@ pub fn hijri_to_gregorian_tabular(hy: i32, hm: u32, hd: u32) -> Option<NaiveDate
         return None;
     }
 
-    let jd = ((11 * hy + 3) / 30)
-        + 354 * hy
-        + 30 * (hm as i32)
-        - ((hm as i32 - 1) / 2)
-        + (hd as i32)
+    let jd = ((11 * hy64 + 3) / 30)
+        + 354 * hy64
+        + 30 * (hm as i64)
+        - ((hm as i64 - 1) / 2)
+        + (hd as i64)
         + 1948440
         - 385;
 
     julian_day_to_gregorian(jd)
 }
 
-fn julian_day_to_gregorian(jd: i32) -> Option<NaiveDate> {
+fn julian_day_to_gregorian(jd: i64) -> Option<NaiveDate> {
     let mut l = jd + 68569;
     let n = (4 * l) / 146097;
     l -= (146097 * n + 3) / 4;
@@ -147,16 +149,20 @@ fn julian_day_to_gregorian(jd: i32) -> Option<NaiveDate> {
     let l2 = j / 11;
     let m = j + 2 - 12 * l2;
     let y = 100 * (n - 49) + i + l2;
-    NaiveDate::from_ymd_opt(y, m as u32, d as u32)
+    if !(1..=9999).contains(&y) {
+        return None;
+    }
+    NaiveDate::from_ymd_opt(y as i32, m as u32, d as u32)
 }
 
 fn is_french_republican_leap(year: i32) -> bool {
     matches!(year, 3 | 7 | 11 | 15) || (year > 15 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)))
 }
 
-/// Convert a French Republican calendar date to Gregorian `NaiveDate`.
+/// Convert a French Republican calendar date to Gregorian `NaiveDate` in O(1) time.
 pub fn french_republican_to_gregorian(ry: i32, rm: u32, rd: u32) -> Option<NaiveDate> {
-    if ry < 1 || !(1..=13).contains(&rm) || rd == 0 {
+    use chrono::Datelike;
+    if !(1..=8210).contains(&ry) || !(1..=13).contains(&rm) || rd == 0 {
         return None;
     }
     let max_d = if rm <= 12 {
@@ -171,12 +177,20 @@ pub fn french_republican_to_gregorian(ry: i32, rm: u32, rd: u32) -> Option<Naive
     }
 
     let epoch = NaiveDate::from_ymd_opt(1792, 9, 22)?;
-    let mut days = 0i64;
-    for y in 1..ry {
-        days += if is_french_republican_leap(y) { 366 } else { 365 };
+    let small_leaps = [3i32, 7, 11, 15].into_iter().filter(|&ly| ly < ry).count() as i64;
+    let later_leaps = if ry > 16 {
+        let n = (ry - 1) as i64;
+        (n / 4 - n / 100 + n / 400) - (15 / 4)
+    } else {
+        0
+    };
+    let leaps = small_leaps + later_leaps;
+    let days = (ry as i64 - 1) * 365 + leaps + ((rm - 1) * 30 + (rd - 1)) as i64;
+    let res = epoch.checked_add_signed(Duration::days(days))?;
+    if !(1..=9999).contains(&res.year()) {
+        return None;
     }
-    days += ((rm - 1) * 30 + (rd - 1)) as i64;
-    epoch.checked_add_signed(Duration::days(days))
+    Some(res)
 }
 
 fn jalali_month_from_token(tok: &str) -> Option<u32> {
@@ -296,11 +310,13 @@ fn parse_numeric_ymd_or_dmy(s: &str) -> Option<(i32, u32, u32)> {
     }
     let p0: i32 = parts[0].parse().ok()?;
     let p1: u32 = parts[1].parse().ok()?;
-    let p2: u32 = parts[2].parse().ok()?;
-    if parts[0].len() == 4 || p0 > 31 {
+    let p2_raw: i32 = parts[2].parse().ok()?;
+    let p2: u32 = u32::try_from(p2_raw).ok()?;
+    if parts[0].len() >= 4 || p0 > 31 {
         Some((p0, p1, p2))
-    } else if parts[2].len() == 4 || p2 > 31 {
-        Some((p2 as i32, p1, p0 as u32))
+    } else if parts[2].len() >= 4 || p2_raw > 31 {
+        let p0_u32 = u32::try_from(p0).ok()?;
+        Some((p2_raw, p1, p0_u32))
     } else {
         None
     }
@@ -463,7 +479,7 @@ pub fn parse_minguo(input: &str, settings: &Settings) -> DateData {
     let time = opt_time.unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
 
     let ymd = if let Some((my, mm, md)) = parse_numeric_ymd_or_dmy(core) {
-        Some((my + 1911, mm, md))
+        my.checked_add(1911).map(|gy| (gy, mm, md))
     } else if core.contains('年') && core.contains('月') && core.contains('日') {
         let mut my: Option<i32> = None;
         let mut mm: Option<u32> = None;
@@ -475,7 +491,7 @@ pub fn parse_minguo(input: &str, settings: &Settings) -> DateData {
             } else if !buf.is_empty() {
                 if let Ok(v) = buf.parse::<i32>() {
                     match ch {
-                        '年' => my = Some(v + 1911),
+                        '年' => my = v.checked_add(1911),
                         '月' => mm = Some(v as u32),
                         '日' | '號' | '号' => md = Some(v as u32),
                         _ => {}
@@ -495,6 +511,9 @@ pub fn parse_minguo(input: &str, settings: &Settings) -> DateData {
     let Some((gy, gm, gd)) = ymd else {
         return DateData::empty();
     };
+    if !(1..=9999).contains(&gy) {
+        return DateData::empty();
+    }
     let Some(nd) = NaiveDate::from_ymd_opt(gy, gm, gd) else {
         return DateData::empty();
     };

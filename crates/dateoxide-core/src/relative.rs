@@ -367,6 +367,10 @@ pub fn try_parse_relative(
 
     // 2. Peel off optional explicit time component
     let (phrase_no_time, extracted_time) = extract_trailing_or_leading_time(eff);
+    let top_is_month_or_wd = candidate_ids.first().is_some_and(|&top_id| {
+        let tloc = &registry.locales[top_id];
+        tloc.months.contains_key(eff) || tloc.weekdays.contains_key(eff)
+    });
 
     for &lid in candidate_ids {
         let loc = &registry.locales[lid];
@@ -388,7 +392,8 @@ pub fn try_parse_relative(
         }
 
         // 2b. <relative_exact|relative_weekday> [connector] <time_of_day> ("yesterday at noon", "next Monday morning")
-        if extracted_time.is_none() {
+        // Never allow a bare TOD word from a secondary locale to shadow an exact month/weekday in top candidate (e.g. "Jun" vs fy "jûn").
+        if extracted_time.is_none() && !(top_is_month_or_wd && lid != candidate_ids[0]) {
             if let Some((dt, pod)) = try_relative_plus_tod(eff, loc, base, settings) {
                 return Some(RelativeMatch {
                     naive: dt,
@@ -602,7 +607,7 @@ fn split_tod_hour<'a>(
     for (phrase, &hour) in &loc.time_of_day {
         if let Some(rest) = s.strip_suffix(phrase.as_str()) {
             if (rest.is_empty() || rest.ends_with(' '))
-                && best.map_or(true, |(_, _, bl)| phrase.len() > bl)
+                && best.is_none_or(|(_, _, bl)| phrase.len() > bl)
             {
                 best = Some((rest.trim_end(), hour, phrase.len()));
             }
@@ -621,7 +626,7 @@ fn split_tod_hour<'a>(
                     let p_words = phrase.split_whitespace().count();
                     if p_words <= total_words
                         && fs.split_whitespace().count() == total_words
-                        && best_folded.map_or(true, |(_, _, bl)| phrase.len() > bl)
+                        && best_folded.is_none_or(|(_, _, bl)| phrase.len() > bl)
                     {
                         best_folded = Some((total_words - p_words, hour, phrase.len()));
                     }
@@ -834,7 +839,7 @@ fn try_compound_relative(
 
     let strip_marker = |text: &str, markers: &rustc_hash::FxHashSet<String>| -> Option<String> {
         let mut sorted: Vec<&str> = markers.iter().map(|s| s.as_str()).collect();
-        sorted.sort_unstable_by(|a, b| b.len().cmp(&a.len()));
+        sorted.sort_unstable_by_key(|a| std::cmp::Reverse(a.len()));
         for w in sorted {
             if let Some(stripped) = text.strip_suffix(w) {
                 if stripped.is_empty() || stripped.ends_with(' ') || !w.is_ascii() {
@@ -978,7 +983,8 @@ fn apply_token_duration_pairs(
                 return None;
             }
             pending_num = Some(wn as f64);
-        } else if let Some(u) = lookup_unit(clean) {
+        } else {
+            let u = lookup_unit(clean)?;
             if !allow_single_char_attached_units && pending_num.is_none() {
                 return None;
             }
@@ -987,8 +993,6 @@ fn apply_token_duration_pairs(
             }
             let amt = pending_num.take().unwrap_or(1.0);
             pairs.push((amt, u));
-        } else {
-            return None;
         }
     }
 
@@ -1133,15 +1137,13 @@ fn try_cjk_relative_weekday(s: &str, base: NaiveDateTime) -> Option<(NaiveDateTi
         (-1, r)
     } else if let Some(r) = s.strip_prefix("下星期").or_else(|| s.strip_prefix("下周")) {
         (1, r)
-    } else if let Some(r) = s
-        .strip_prefix("本星期")
-        .or_else(|| s.strip_prefix("本周"))
-        .or_else(|| s.strip_prefix("这星期"))
-        .or_else(|| s.strip_prefix("这周"))
-    {
-        (0, r)
     } else {
-        return None;
+        let r = s
+            .strip_prefix("本星期")
+            .or_else(|| s.strip_prefix("本周"))
+            .or_else(|| s.strip_prefix("这星期"))
+            .or_else(|| s.strip_prefix("这周"))?;
+        (0, r)
     };
 
     let target_wd: i64 = match rest.trim() {
@@ -1205,10 +1207,9 @@ fn try_relative_period_or_weekday(
 
     let (dir, target_tok) = if let Some(d) = classify_relative_modifier(tokens[0]) {
         (d, tokens[1])
-    } else if let Some(d) = classify_relative_modifier(tokens[1]) {
-        (d, tokens[0])
     } else {
-        return None;
+        let d = classify_relative_modifier(tokens[1])?;
+        (d, tokens[0])
     };
 
     let unit_opt = loc.units.get(target_tok).copied().or_else(|| {

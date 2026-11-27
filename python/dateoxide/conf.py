@@ -49,6 +49,7 @@ class Settings:
     """Typed configuration container matching ``dateparser.conf.Settings``."""
 
     def __init__(self, settings: Mapping[str, Any] | None = None, **kwargs: Any) -> None:
+        object.__setattr__(self, "_initialized", False)
         self.DATE_ORDER: str = "MDY"
         self.PREFER_LOCALE_DATE_ORDER: bool = True
         self.STRICT_DATE_ORDER: str = "none"
@@ -86,17 +87,37 @@ class Settings:
             merged.update(dict(settings))
         merged.update(kwargs)
 
+        explicit_keys: set[str] = set()
         for k, v in merged.items():
             if not hasattr(self, k):
                 raise SettingValidationError(f"Unknown setting: {k!r}")
-            setattr(self, k, v)
+            object.__setattr__(self, k, v)
+            explicit_keys.add(k)
 
+        object.__setattr__(self, "_explicit_keys", explicit_keys)
+        object.__setattr__(self, "_initialized", True)
         check_settings(self)
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        if getattr(self, "_initialized", False) and not name.startswith("_"):
+            self._explicit_keys.add(name)
+        object.__setattr__(self, name, value)
+
     def replace(self, **kw: Any) -> Settings:
-        data = self.as_dict()
+        data = self.as_effective_dict()
         data.update(kw)
         return Settings(settings=data)
+
+    def as_effective_dict(self) -> dict[str, Any]:
+        """Return settings dictionary omitting un-overridden DATE_ORDER/SKIP_TOKENS/PARSERS defaults
+        so bare `Settings()` preserves `PREFER_LOCALE_DATE_ORDER`, `region`, and zero-alloc fast-path."""
+        d = self.as_dict()
+        explicit = getattr(self, "_explicit_keys", None)
+        if explicit is not None:
+            for key in ("DATE_ORDER", "SKIP_TOKENS", "PARSERS"):
+                if key not in explicit:
+                    d.pop(key, None)
+        return d
 
     def as_dict(self) -> dict[str, Any]:
         return {

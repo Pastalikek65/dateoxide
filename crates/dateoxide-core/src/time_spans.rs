@@ -200,12 +200,16 @@ pub fn generate_time_span(
     let past = direction == "past";
     if span_type == "week" {
         let ws = week_start(base_date, settings.default_start_of_week);
-        return if past {
-            Some((ws - Duration::days(7), ws - Duration::days(1)))
+        let (s_dt, e_dt) = if past {
+            (ws.checked_sub_signed(Duration::days(7))?, ws.checked_sub_signed(Duration::days(1))?)
         } else {
-            let start = ws + Duration::days(7);
-            Some((start, start + Duration::days(6)))
+            let start = ws.checked_add_signed(Duration::days(7))?;
+            (start, start.checked_add_signed(Duration::days(6))?)
         };
+        if !(1..=9999).contains(&s_dt.year()) || !(1..=9999).contains(&e_dt.year()) {
+            return None;
+        }
+        return Some((s_dt, e_dt));
     }
 
     let sign: i8 = if past { -1 } else { 1 };
@@ -220,6 +224,9 @@ pub fn generate_time_span(
         "weeks" => apply_relative_offset(base_date, sign, number as f64, TimeUnit::Week)?,
         _ => apply_relative_offset(base_date, sign, number as f64, TimeUnit::Month)?,
     };
+    if !(1..=9999).contains(&other.year()) || !(1..=9999).contains(&base_date.year()) {
+        return None;
+    }
 
     if past {
         Some((other, base_date))
