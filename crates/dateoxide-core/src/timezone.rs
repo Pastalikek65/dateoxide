@@ -410,6 +410,17 @@ pub fn finalize_datetime(
     ParsedDateTime::Naive(naive)
 }
 
+/// Apply timezone resolution and return `None` if the resulting year falls outside Gregorian `1..=9999`.
+#[inline]
+pub fn finalize_datetime_checked(
+    naive: NaiveDateTime,
+    extracted_tz: Option<TzSpec>,
+    settings: &Settings,
+) -> Option<ParsedDateTime> {
+    let dt = finalize_datetime(naive, extracted_tz, settings);
+    is_valid_year_range(&dt).then_some(dt)
+}
+
 #[inline]
 pub fn is_valid_year_range(dt: &ParsedDateTime) -> bool {
     use chrono::Datelike;

@@ -1301,7 +1301,7 @@ fn collapse_dot_spaces(s: &str) -> String {
 /// Parse time strings like "15:30", "15:30:45,123", "5:30p.m.", "PM 2:26", "下午 02:26:26", "14.12".
 pub fn parse_time_str(input: &str) -> Option<NaiveTime> {
     let mut s = input.trim().trim_end_matches('.');
-    if s.is_empty() {
+    if s.is_empty() || s.len() > 32 {
         return None;
     }
 

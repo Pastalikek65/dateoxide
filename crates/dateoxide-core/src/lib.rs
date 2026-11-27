@@ -58,7 +58,7 @@ use locale::{normalize_digits_and_lower, LocaleRegistry};
 use rayon::prelude::*;
 use search::SearchMatch;
 use settings::{DateData, ParsedDateTime, ParserKind, Period, Settings};
-use timezone::{extract_trailing_timezone_with_abbrevs, finalize_datetime};
+use timezone::{extract_trailing_timezone_with_abbrevs, finalize_datetime_checked};
 
 /// Parse a date string using default settings.
 #[inline]
@@ -123,8 +123,11 @@ pub fn parse_freshness(input: &str, settings: &Settings) -> DateData {
         settings.use_given_language_order,
     );
     if let Some(m) = relative::try_parse_relative(&normalized, &candidates, registry, settings) {
+        let Some(dt) = finalize_datetime_checked(m.naive, tz, settings) else {
+            return DateData::empty();
+        };
         return DateData {
-            date_obj: Some(finalize_datetime(m.naive, tz, settings)),
+            date_obj: Some(dt),
             period: apply_time_period(m.period, m.has_time, settings),
             locale: Some(m.locale),
             parts: m.parts,
@@ -160,10 +163,9 @@ fn build_datedata(
     part_of_day: Option<settings::PartOfDay>,
     settings: &Settings,
 ) -> DateData {
-    let dt = finalize_datetime(naive, tz, settings);
-    if !timezone::is_valid_year_range(&dt) {
+    let Some(dt) = finalize_datetime_checked(naive, tz, settings) else {
         return DateData::empty();
-    }
+    };
     DateData {
         date_obj: Some(dt),
         period: apply_time_period(period, has_time, settings),

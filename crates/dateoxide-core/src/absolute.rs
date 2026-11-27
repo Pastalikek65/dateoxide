@@ -190,11 +190,11 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
 
     let mut loose_nums: Vec<(u32, usize)> = Vec::new();
     let mut cur_num = String::new();
-    let chars: Vec<char> = scan_s.chars().collect();
+    let chars: Vec<(usize, char)> = scan_s.char_indices().collect();
     let mut idx = 0usize;
 
     while idx < chars.len() {
-        let ch = chars[idx];
+        let (byte_idx, ch) = chars[idx];
         if ch.is_ascii_digit() {
             cur_num.push(ch);
             idx += 1;
@@ -203,12 +203,12 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
         if ch.is_whitespace() {
             // Look ahead past whitespace: if followed by CJK/Korean suffix, keep cur_num attached!
             let mut la = idx + 1;
-            while la < chars.len() && chars[la].is_whitespace() {
+            while la < chars.len() && chars[la].1.is_whitespace() {
                 la += 1;
             }
             if la < chars.len()
                 && matches!(
-                    chars[la],
+                    chars[la].1,
                     '年' | '년' | '月' | '월' | '日' | '号' | '일' | '時' | '时' | '点' | '點' | '시' | '分' | '분' | '秒' | '초'
                 )
             {
@@ -244,16 +244,11 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
                 }
                 ':' => {
                     // Handle attached day+hour like "2016年6月2911:30" -> day=29, hour=11
-                    if len == 4 && day.is_none() {
+                    if len == 4 && day.is_none() && scan_s.len() - byte_idx <= 32 {
                         let d_cand = val / 100;
                         let h_cand = val % 100;
                         if (1..=31).contains(&d_cand) && h_cand <= 23 {
                             day = Some(d_cand);
-                            let byte_idx = scan_s
-                                .char_indices()
-                                .nth(idx)
-                                .map(|(b, _)| b)
-                                .unwrap_or(0);
                             if let Some(t) = parse_time_str(&format!("{}{}", h_cand, &scan_s[byte_idx..])) {
                                 hour = t.hour();
                                 minute = t.minute();
@@ -263,23 +258,20 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
                             }
                         }
                     }
-                    let byte_idx = scan_s
-                        .char_indices()
-                        .nth(idx)
-                        .map(|(b, _)| b)
-                        .unwrap_or(0);
                     let start = scan_s[..byte_idx]
                         .char_indices()
                         .rev()
                         .find(|&(_, c)| !c.is_ascii_digit())
                         .map(|(p, c)| p + c.len_utf8())
                         .unwrap_or(0);
-                    if let Some(t) = parse_time_str(scan_s[start..].trim()) {
-                        hour = t.hour();
-                        minute = t.minute();
-                        second = t.second();
-                        has_time = true;
-                        break;
+                    if scan_s.len() - start <= 32 {
+                        if let Some(t) = parse_time_str(scan_s[start..].trim()) {
+                            hour = t.hour();
+                            minute = t.minute();
+                            second = t.second();
+                            has_time = true;
+                            break;
+                        }
                     }
                 }
                 _ => loose_nums.push((val, len)),

@@ -2,7 +2,7 @@ use crate::fast_path::{days_in_month, parse_time_str};
 use crate::locale::TimeUnit;
 use crate::relative::apply_relative_offset;
 use crate::settings::{ParsedDateTime, Period, Settings};
-use crate::timezone::finalize_datetime;
+use crate::timezone::{finalize_datetime_checked, is_valid_year_range};
 use crate::{get_date_data, parse_with_settings};
 use chrono::{Datelike, Duration, NaiveDate};
 
@@ -162,9 +162,12 @@ fn try_iso_interval(s: &str, settings: &Settings) -> Option<(ParsedDateTime, Par
         let delta = end_naive - start_dt.naive_local();
         let end_dt = match start_dt {
             ParsedDateTime::Naive(_) => ParsedDateTime::Naive(end_naive),
-            ParsedDateTime::FixedOffset(f) => ParsedDateTime::FixedOffset(f + delta),
-            ParsedDateTime::Tz(t) => ParsedDateTime::Tz(t + delta),
+            ParsedDateTime::FixedOffset(f) => ParsedDateTime::FixedOffset(f.checked_add_signed(delta)?),
+            ParsedDateTime::Tz(t) => ParsedDateTime::Tz(t.checked_add_signed(delta)?),
         };
+        if !is_valid_year_range(&end_dt) {
+            return None;
+        }
         return Some((start_dt, end_dt));
     }
     if r.len() >= 10 && r.as_bytes()[0..4].iter().all(|b| b.is_ascii_digit()) && r.as_bytes()[4] == b'-' {
@@ -222,13 +225,15 @@ fn try_tight_time_range(s: &str, settings: &Settings) -> Option<(ParsedDateTime,
                 let base = settings.effective_base();
                 let d1 = base.date().and_time(t1);
                 let d2_date = if t2 < t1 {
-                    base.date().succ_opt().unwrap_or(base.date())
+                    base.date()
+                        .succ_opt()
+                        .filter(|d| (1..=9999).contains(&d.year()))?
                 } else {
                     base.date()
                 };
                 return Some((
-                    finalize_datetime(d1, None, settings),
-                    finalize_datetime(d2_date.and_time(t2), None, settings),
+                    finalize_datetime_checked(d1, None, settings)?,
+                    finalize_datetime_checked(d2_date.and_time(t2), None, settings)?,
                 ));
             }
         }
@@ -263,14 +268,16 @@ fn try_split_connector_range(
             let base = settings.effective_base();
             let d1 = base.date().and_time(t1);
             let d2_date = if t2 < t1 {
-                base.date().succ_opt().unwrap_or(base.date())
+                base.date()
+                    .succ_opt()
+                    .filter(|d| (1..=9999).contains(&d.year()))?
             } else {
                 base.date()
             };
             let d2 = d2_date.and_time(t2);
             return Some((
-                finalize_datetime(d1, None, settings),
-                finalize_datetime(d2, None, settings),
+                finalize_datetime_checked(d1, None, settings)?,
+                finalize_datetime_checked(d2, None, settings)?,
             ));
         }
 
@@ -279,12 +286,15 @@ fn try_split_connector_range(
             if let Some(start_dt) = parse_with_settings(left, settings) {
                 let sn = start_dt.naive_local();
                 let d2_date = if t2 < sn.time() {
-                    sn.date().succ_opt().unwrap_or(sn.date())
+                    sn.date()
+                        .succ_opt()
+                        .filter(|d| (1..=9999).contains(&d.year()))?
                 } else {
                     sn.date()
                 };
                 let end_naive = d2_date.and_time(t2);
-                return Some((start_dt, finalize_datetime(end_naive, None, settings)));
+                let end_dt = finalize_datetime_checked(end_naive, None, settings)?;
+                return Some((start_dt, end_dt));
             }
         }
 
@@ -316,8 +326,9 @@ fn try_split_connector_range(
             if let Ok(d) = left.parse::<u32>() {
                 let en = end_dt.naive_local();
                 if let Some(sd) = NaiveDate::from_ymd_opt(en.year(), en.month(), d) {
-                    let start_dt = finalize_datetime(sd.and_time(en.time()), None, settings);
-                    return Some((start_dt, end_dt));
+                    if let Some(start_dt) = finalize_datetime_checked(sd.and_time(en.time()), None, settings) {
+                        return Some((start_dt, end_dt));
+                    }
                 }
             }
         }

@@ -574,7 +574,10 @@ fn try_compound_tod_idiom(
         "this afternoon" | "today afternoon" => (0, 15, "en"),
         "this evening" | "today evening" => (0, 18, "en"),
         "day before yesterday" => {
-            let dt = base - Duration::days(2);
+            let dt = base.checked_sub_signed(Duration::days(2))?;
+            if !(1..=9999).contains(&dt.year()) {
+                return None;
+            }
             return Some(RelativeMatch {
                 naive: dt,
                 period: Period::Day,
@@ -585,7 +588,10 @@ fn try_compound_tod_idiom(
             });
         }
         "day after tomorrow" => {
-            let dt = base + Duration::days(2);
+            let dt = base.checked_add_signed(Duration::days(2))?;
+            if !(1..=9999).contains(&dt.year()) {
+                return None;
+            }
             return Some(RelativeMatch {
                 naive: dt,
                 period: Period::Day,
@@ -631,7 +637,11 @@ fn try_compound_tod_idiom(
         }
     }
 
-    let target_date = (base + Duration::days(day_offset)).date();
+    let shifted = base.checked_add_signed(Duration::days(day_offset))?;
+    if !(1..=9999).contains(&shifted.year()) {
+        return None;
+    }
+    let target_date = shifted.date();
     let (nt, pod) = time_for_hour_anchor(hour, settings);
     Some(RelativeMatch {
         naive: target_date.and_time(nt),
@@ -1972,7 +1982,7 @@ pub fn extract_trailing_or_leading_time(s: &str) -> (&str, Option<NaiveTime>) {
         }
         let mut prev_non_ascii = false;
         for (idx, ch) in s.char_indices() {
-            if idx > 0 && ch.is_ascii_digit() && prev_non_ascii {
+            if idx > 0 && ch.is_ascii_digit() && prev_non_ascii && s.len() - idx <= 32 {
                 if let Some(t) = parse_time_str(&s[idx..]) {
                     let prefix = s[..idx].trim_end_matches(|c: char| c.is_whitespace() || c == 'の');
                     if !prefix.is_empty() {

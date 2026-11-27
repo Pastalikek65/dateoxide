@@ -1,7 +1,7 @@
 use crate::fast_path::parse_time_str;
 use crate::locale::{fold_diacritics, normalize_digits_and_lower};
 use crate::settings::{DateData, Period, Settings};
-use crate::timezone::{extract_trailing_timezone_with_abbrevs, finalize_datetime};
+use crate::timezone::{extract_trailing_timezone_with_abbrevs, finalize_datetime_checked};
 use chrono::{Duration, NaiveDate, NaiveTime};
 
 fn is_jalali_leap(jy: i32) -> bool {
@@ -375,8 +375,11 @@ pub fn parse_jalali(input: &str, settings: &Settings) -> DateData {
     if has_time {
         parts.push("time");
     }
+    let Some(dt) = finalize_datetime_checked(nd.and_time(time), tz, settings) else {
+        return DateData::empty();
+    };
     DateData {
-        date_obj: Some(finalize_datetime(nd.and_time(time), tz, settings)),
+        date_obj: Some(dt),
         period: if settings.return_time_as_period && has_time {
             Period::Time
         } else if is_month_only {
@@ -469,8 +472,11 @@ pub fn parse_hijri(input: &str, settings: &Settings) -> DateData {
     if has_time {
         parts.push("time");
     }
+    let Some(dt) = finalize_datetime_checked(nd.and_time(time), tz, settings) else {
+        return DateData::empty();
+    };
     DateData {
-        date_obj: Some(finalize_datetime(nd.and_time(time), tz, settings)),
+        date_obj: Some(dt),
         period: if settings.return_time_as_period && has_time {
             Period::Time
         } else if is_month_only {
@@ -543,8 +549,11 @@ pub fn parse_minguo(input: &str, settings: &Settings) -> DateData {
     if has_time {
         parts.push("time");
     }
+    let Some(dt) = finalize_datetime_checked(nd.and_time(time), tz, settings) else {
+        return DateData::empty();
+    };
     DateData {
-        date_obj: Some(finalize_datetime(nd.and_time(time), tz, settings)),
+        date_obj: Some(dt),
         period: if settings.return_time_as_period && has_time {
             Period::Time
         } else {
@@ -603,8 +612,11 @@ pub fn parse_french_republican(input: &str, settings: &Settings) -> DateData {
         return DateData::empty();
     };
     let time = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+    let Some(dt) = finalize_datetime_checked(nd.and_time(time), None, settings) else {
+        return DateData::empty();
+    };
     DateData {
-        date_obj: Some(finalize_datetime(nd.and_time(time), None, settings)),
+        date_obj: Some(dt),
         period: Period::Day,
         locale: Some("fr".to_string()),
         parts: vec!["year", "month", "day"],

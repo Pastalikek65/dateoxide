@@ -2,7 +2,7 @@ use crate::get_date_data;
 use crate::locale::{fold_diacritics, normalize_digits_and_lower, LocaleRegistry};
 use crate::settings::{ParsedDateTime, Period, Settings};
 use crate::time_spans;
-use crate::timezone::finalize_datetime;
+use crate::timezone::finalize_datetime_checked;
 
 #[derive(Debug, Clone)]
 pub struct SearchMatch {
@@ -65,28 +65,34 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                     "month" | "months" => Period::Month,
                     _ => Period::Day,
                 };
-                return vec![
-                    SearchMatch {
-                        text: format!("{} (start)", span.matched_text),
-                        date_obj: finalize_datetime(start_dt, None, parse_settings),
-                        period,
-                        locale: Some("en".to_string()),
-                        parts: vec!["year", "month", "day"],
-                        part_of_day: None,
-                        start_byte: span.start_pos,
-                        end_byte: span.end_pos,
-                    },
-                    SearchMatch {
-                        text: format!("{} (end)", span.matched_text),
-                        date_obj: finalize_datetime(end_dt, None, parse_settings),
-                        period,
-                        locale: Some("en".to_string()),
-                        parts: vec!["year", "month", "day"],
-                        part_of_day: None,
-                        start_byte: span.start_pos,
-                        end_byte: span.end_pos,
-                    },
-                ];
+                if let (Some(s_dt), Some(e_dt)) = (
+                    finalize_datetime_checked(start_dt, None, parse_settings),
+                    finalize_datetime_checked(end_dt, None, parse_settings),
+                ) {
+                    return vec![
+                        SearchMatch {
+                            text: format!("{} (start)", span.matched_text),
+                            date_obj: s_dt,
+                            period,
+                            locale: Some("en".to_string()),
+                            parts: vec!["year", "month", "day"],
+                            part_of_day: None,
+                            start_byte: span.start_pos,
+                            end_byte: span.end_pos,
+                        },
+                        SearchMatch {
+                            text: format!("{} (end)", span.matched_text),
+                            date_obj: e_dt,
+                            period,
+                            locale: Some("en".to_string()),
+                            parts: vec!["year", "month", "day"],
+                            part_of_day: None,
+                            start_byte: span.start_pos,
+                            end_byte: span.end_pos,
+                        },
+                    ];
+                }
+                return Vec::new();
             }
         }
     }
@@ -133,18 +139,20 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                     continue;
                 }
                 if let Some(m) = crate::fast_path::try_custom_formats(raw_sub, parse_settings) {
-                    let raw_start = raw_sub.as_ptr() as usize - text.as_ptr() as usize;
-                    let raw_end = raw_start + raw_sub.len();
-                    results.push(SearchMatch {
-                        text: raw_sub.to_string(),
-                        date_obj: finalize_datetime(m.naive, m.tz, parse_settings),
-                        period: m.period,
-                        locale: m.locale,
-                        parts: m.parts,
-                        part_of_day: None,
-                        start_byte: raw_start,
-                        end_byte: raw_end,
-                    });
+                    if let Some(dt) = finalize_datetime_checked(m.naive, m.tz, parse_settings) {
+                        let raw_start = raw_sub.as_ptr() as usize - text.as_ptr() as usize;
+                        let raw_end = raw_start + raw_sub.len();
+                        results.push(SearchMatch {
+                            text: raw_sub.to_string(),
+                            date_obj: dt,
+                            period: m.period,
+                            locale: m.locale,
+                            parts: m.parts,
+                            part_of_day: None,
+                            start_byte: raw_start,
+                            end_byte: raw_end,
+                        });
+                    }
                     i = end_idx + 1;
                     custom_matched = true;
                     break;
@@ -717,27 +725,50 @@ fn extract_se_asian_date_subspans<'a>(s: &'a str, registry: &LocaleRegistry) -> 
     {
         return Vec::new();
     }
+    #[derive(Clone, Copy)]
+    enum HitState {
+        Unsearched,
+        Found(usize),
+        Exhausted,
+    }
+    let mut patterns: Vec<(&str, HitState)> = Vec::new();
+    for code in ["th", "km", "lo", "my"] {
+        if let Some(lid) = registry.resolve_lang_id(code) {
+            for month_name in registry.locales[lid].months.keys() {
+                if !month_name.is_ascii() && month_name.chars().count() >= 2 {
+                    patterns.push((month_name.as_str(), HitState::Unsearched));
+                }
+            }
+        }
+    }
+    if patterns.is_empty() {
+        return Vec::new();
+    }
+
     let mut out = Vec::new();
     let mut scan_from = 0usize;
     while scan_from < s.len() {
-        let rem = &s[scan_from..];
         let mut best_match: Option<(usize, usize)> = None;
-        for code in ["th", "km", "lo", "my"] {
-            let Some(lid) = registry.resolve_lang_id(code) else {
-                continue;
-            };
-            let loc = &registry.locales[lid];
-            for month_name in loc.months.keys() {
-                if month_name.is_ascii() || month_name.chars().count() < 2 {
-                    continue;
-                }
-                if let Some(rel_idx) = rem.find(month_name.as_str()) {
-                    let abs_start = scan_from + rel_idx;
-                    let abs_end = abs_start + month_name.len();
-                    if best_match.is_none_or(|(bs, be)| abs_start < bs || (abs_start == bs && abs_end > be)) {
-                        best_match = Some((abs_start, abs_end));
+        for (pat, state) in &mut patterns {
+            let abs_start = match *state {
+                HitState::Exhausted => continue,
+                HitState::Found(p) if p >= scan_from => p,
+                HitState::Unsearched | HitState::Found(_) => {
+                    if let Some(rel) = s[scan_from..].find(*pat) {
+                        let p = scan_from + rel;
+                        *state = HitState::Found(p);
+                        p
+                    } else {
+                        *state = HitState::Exhausted;
+                        continue;
                     }
                 }
+            };
+            let abs_end = abs_start + pat.len();
+            if best_match
+                .is_none_or(|(bs, be)| abs_start < bs || (abs_start == bs && abs_end > be))
+            {
+                best_match = Some((abs_start, abs_end));
             }
         }
         let Some((m_start, m_end)) = best_match else {

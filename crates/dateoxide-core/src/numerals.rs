@@ -230,34 +230,47 @@ pub fn normalize_non_decimal_numerals(input: &str) -> Cow<'_, str> {
             continue;
         }
 
-        if tamil_malayalam_mult(ch).is_some()
-            || (chars[i].is_ascii_digit()
-                && chars
-                    .get(i + 1..)
-                    .is_some_and(|rest| {
-                        rest.iter()
-                            .take_while(|c| c.is_ascii_digit() || tamil_malayalam_mult(**c).is_some())
-                            .any(|c| tamil_malayalam_mult(*c).is_some())
-                    }))
-        {
+        if tamil_malayalam_mult(ch).is_some() {
             let start = i;
-            let mut saw_mult = false;
             while i < chars.len()
                 && (chars[i].is_ascii_digit() || tamil_malayalam_mult(chars[i]).is_some())
             {
-                if tamil_malayalam_mult(chars[i]).is_some() {
-                    saw_mult = true;
-                }
                 i += 1;
             }
             let run: String = chars[start..i].iter().collect();
-            if saw_mult {
+            if let Some(val) = parse_tamil_malayalam_numeral(&run) {
+                out.push_str(&val.to_string());
+                continue;
+            }
+            out.push_str(&run);
+            continue;
+        }
+
+        if chars[i].is_ascii_digit() {
+            let start = i;
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            if chars
+                .get(i)
+                .is_some_and(|c| tamil_malayalam_mult(*c).is_some())
+            {
+                while i < chars.len()
+                    && (chars[i].is_ascii_digit() || tamil_malayalam_mult(chars[i]).is_some())
+                {
+                    i += 1;
+                }
+                let run: String = chars[start..i].iter().collect();
                 if let Some(val) = parse_tamil_malayalam_numeral(&run) {
                     out.push_str(&val.to_string());
                     continue;
                 }
+                out.push_str(&run);
+                continue;
             }
-            out.push_str(&run);
+            for &c in &chars[start..i] {
+                out.push(c);
+            }
             continue;
         }
 
