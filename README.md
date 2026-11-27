@@ -16,18 +16,16 @@ cargo add dateoxide-core     # Pure Rust crate
 
 `dateoxide` replaces runtime Python regex compilation and 205 dynamically imported locale modules with a compiled zero-backtracking Rust engine (`dateoxide-core`) exposed to Python via **PyO3 + maturin**.
 
-- **108x – 7,210x faster** single-threaded parsing (`977x – 36,034x` with GIL-free parallel `parse_batch`)
-- **7.4x lower memory footprint** (`+6.93 MB` vs `+51.56 MB` RSS delta across 205 languages)
-- **17.3x faster cold import** (`5.21 ms` vs `90.22 ms`) via PEP 562 lazy submodules
+- **79.4x – 3,775.9x faster** single-threaded `parse()` (`773.8x – 43,960.5x` with GIL-free parallel `parse_batch`)
+- **5.3x lower memory footprint** (`+9.61 MB` vs `+51.21 MB` RSS delta across 205 languages)
+- **9.8x faster cold import** (`11.32 ms` vs `110.85 ms`) via PEP 562 lazy submodules
 - **Zero ReDoS** — linear-time parsing with zero catastrophic backtracking
-- **3,218+ automated tests passing in <4s** — including 1,010 upstream `scrapinghub/dateparser` test vectors, exact `datetime` assertions across 205 languages, 87 extreme multilingual/non-Latin tests, `dateparser` compatibility & fuzzing matrices, known `dateparser` bug regressions, and 3,792 official Saudi Umm al-Qura Hijri dates
-- **Official Saudi Umm al-Qura Hijri Calendar (1343–1500 AH)** embedded directly in pure Rust (3,792/3,792 month-start & month-end dates verified against `hijridate`, with zero runtime dependencies), plus Jalali, Minguo, and French Republican calendars
-- **Complete `dateparser` feature parity**:
-  - `parse()`, `DateDataParser` (`get_date_data`, `get_date_tuple`, `parts`, `part_of_day`), `search_dates(..., add_period=..., add_detected_language=...)`
-  - `Settings`, `SettingValidationError`, `PartOfDay`, `PartsOfDay`, `apply_settings`, `conf`
-  - `FreshnessDateDataParser` (`freshness_date_parser`) & `timezone_parser.pop_tz_offset_from_string`
-  - `utils.time_spans` (`detect_time_span`, `generate_time_span`, `RETURN_TIME_SPAN`, `DEFAULT_START_OF_WEEK`, `DEFAULT_DAYS_IN_MONTH`)
-  - `IGNORE_SURROUNDING_TEXT`, `STRICT_DATE_ORDER`, `NORMALIZE`, `PARSERS`, `SKIP_TOKENS`, `RETURN_TIME_AS_PERIOD`, `TIMEZONE_ABBREVIATIONS`, `region`, and `detect_languages_function`
+- **3,643 Python tests + 18 Rust tests passing cleanly** — including 1,010 upstream `scrapinghub/dateparser` test vectors, exact assertions across all 205 languages and 68 Unicode `Nd` numeral scripts, 87 extreme multilingual/non-Latin tests, conversational NLP & ISO-8601 ranges, seeded Unicode fuzzing & differential checks, and 3,792 official Saudi Umm al-Qura Hijri dates
+- **Official Saudi Umm al-Qura Hijri Calendar (1343–1500 AH)** embedded directly in pure Rust (3,792/3,792 month-start & month-end dates verified against `hijridate`, with zero runtime dependencies), plus partial/full Jalali, Minguo, Thai Buddhist Era (`พ.ศ.`), and French Republican support
+- **Complete `dateparser` parity & beyond**:
+  - `parse()`, `DateDataParser`, `parse_batch()` (any iterable/generator), `parse_batch_timestamps()`
+  - `search_dates(..., add_period=..., add_detected_language=..., return_spans=...)` & `parse_date_range()` (ISO-8601 `start/end`, `start/P14D`, shared-month multilingual ranges)
+  - `Settings`, `SettingValidationError`, `PartOfDay`, `PartsOfDay`, `apply_settings`, `conf`, `freshness_date_parser`, `timezone_parser`, `utils.time_spans`
 
 ---
 
@@ -37,19 +35,19 @@ Measured with [`benchmarks/bench_vs_dateparser.py`](benchmarks/bench_vs_datepars
 
 ### Cold Import & Memory Footprint (Isolated Subprocesses)
 
-| Metric | `dateparser` (Python) | `dateoxide` (Rust) | Improvement |
+| Metric | `dateparser 1.5.1` (Python) | `dateoxide 0.7.0` (Rust) | Improvement |
 | :--- | ---: | ---: | ---: |
-| **Cold import time** | 90.22 ms | **5.21 ms** | **17.3x faster** |
-| **RSS after import** | +8.06 MB | **+0.76 MB** | **10.6x smaller** |
-| **RSS delta after parsing** | +51.56 MB | **+6.93 MB** | **7.4x less RAM** |
+| **Cold import time** | 110.85 ms | **11.32 ms** | **9.8x faster** |
+| **RSS after import** | +8.07 MB *(25.02 MB total)* | **+0.78 MB** *(17.81 MB total)* | **10.3x smaller delta** |
+| **RSS delta after parsing** | +51.21 MB *(68.16 MB total)* | **+9.61 MB** *(26.63 MB total)* | **5.3x less RAM** |
 
 ### Parsing Throughput (Operations / Second)
 
 | Workload | `dateparser.parse` | `dateoxide.parse` | `dateoxide.DateDataParser` | `dateoxide.parse_batch` *(Rayon)* |
 | :--- | ---: | ---: | ---: | ---: |
-| **ISO / RFC / Numeric** | 440 /s | **672,789 /s** *(1,531x)* | **3,168,819 /s** *(7,210x)* | **5,364,615 /s** *(12,206x)* |
-| **Multilingual Natural Language (Auto)** | 1,239 /s | **133,916 /s** *(108x)* | **160,849 /s** *(130x)* | **1,211,446 /s** *(977x)* |
-| **Invalid / Non-Date Text (Worst Case)** | 60 /s | **196,333 /s** *(3,279x)* | **262,130 /s** *(4,378x)* | **2,157,386 /s** *(36,034x)* |
+| **ISO / RFC / Numeric** | 247.5 /s | **223,862.2 /s** *(904.4x)* | **1,035,920.5 /s** *(4,185.0x)* | **1,390,852.8 /s** *(5,618.9x)* |
+| **Multilingual Natural Language (Auto)** | 656.6 /s | **52,167.4 /s** *(79.4x)* | **1,893,096.8 /s** *(2,883.0x)* | **508,124.1 /s** *(773.8x)* |
+| **Invalid / Non-Date Text (Worst Case)** | 35.1 /s | **132,518.8 /s** *(3,775.9x)* | **6,505,334.4 /s** *(185,356.6x)* | **1,542,852.7 /s** *(43,960.5x)* |
 
 Reproduce locally (or run the accuracy-checked torture suite):
 ```bash
@@ -59,17 +57,20 @@ python benchmarks/torture_benchmark.py --json
 
 ### Independent Torture Benchmark (Accuracy, ReDoS & Known Differences)
 
-Measured with [`benchmarks/torture_benchmark.py`](benchmarks/torture_benchmark.py) across 79 adversarial cases (multilingual casing/scripts, fractional/conversational phrases, month-end clamping, leap/ISO-week traps, RFC/CLF/DST, false-positive traps), dirty `search_dates`, and 6 ReDoS stress bombs (`dateoxide 0.2.0` vs `dateparser 1.5.1` on Python 3.12.10):
+Measured with [`benchmarks/torture_benchmark.py`](benchmarks/torture_benchmark.py) across 79 adversarial cases (multilingual casing/scripts, fractional/conversational phrases, month-end clamping, leap/ISO-week traps, RFC/CLF/DST, false-positive traps), dirty `search_dates`, and 6 ReDoS stress bombs (`dateoxide 0.7.0` vs `dateparser 1.5.1` on Windows 11, Python 3.12.10):
 
-| Metric | `dateparser 1.5.1` | `dateoxide 0.2.0` |
+| Metric | `dateparser 1.5.1` | `dateoxide 0.7.0` |
 | :--- | ---: | ---: |
-| **Torture accuracy (79 hard cases)** | 66 / 79 (`4,243.30 ms`) | **78 / 79 (`1.60 ms`)** |
-| **Dirty `search_dates` (6 docs)** | 4 / 6 (`1,885.91 ms`) | **6 / 6 (`0.48 ms`)** |
-| **6 ReDoS stress bombs (3k–5k chars)** | `20,111.62 ms` | **`5.46 ms`** |
-| **Full 79-case isolated throughput & RSS** | `57.4 /s` (`+64.52 MB`) | **`20,629.9 /s` (`+10.24 MB`)** *(359.4x)* |
+| **Torture accuracy (79 hard cases)** | 66 / 79 (`1,866.23 ms`) | **78 / 79 (`1.08 ms`)** *(median `7.8us` / p95 `57.3us`)* |
+| **Dirty `search_dates` (6 docs)** | 4 / 6 (`778.65 ms`) | **6 / 6 (`0.36 ms`)** |
+| **6 ReDoS stress bombs (3k–5k chars)** | `10,206.26 ms` | **`6.51 ms`** |
+| **Full 79-case isolated throughput & RSS** | `116.6 /s` (`+64.39 MB`) | **`37,204.0 /s` (`+12.85 MB`)** *(319.1x faster, 5.0x less RAM)* |
 
-**Transparently noted difference (`1 / 79`):**
-- `"2026-13-01"` swaps to `2026-01-13` under default `STRICT_DATE_ORDER="none"` in **both** `dateoxide` and `dateparser` (set `STRICT_DATE_ORDER="all"` to reject invalid month indices strictly).
+**Transparently noted differences & compatibility notes:**
+- **`2026-13-01` (`1 / 79`):** Swaps to `2026-01-13` under default `STRICT_DATE_ORDER="none"` in **both** `dateoxide` and `dateparser` (set `STRICT_DATE_ORDER="all"` to reject invalid month indices strictly).
+- **Unix timestamps:** Numeric epoch strings parse in UTC rather than host local time.
+- **Roman numerals:** Intentionally restricted to canonical uppercase Roman tokens inside multi-token date expressions to eliminate lowercase prose false positives.
+- **`Settings().DATE_ORDER`:** Kept as `"MDY"` for attribute compatibility, while `as_effective_dict()` leaves `DATE_ORDER` unset unless passed explicitly so `PREFER_LOCALE_DATE_ORDER=True` applies native locale ordering.
 
 ---
 
@@ -183,9 +184,9 @@ start, end = dateoxide.parse_date_range("from 2026-11-01 to 2026-11-15")
 | :--- | :---: | :--- | :--- |
 | **Tier 1 (Full NLP)** | **73** | 12 months, 7 weekdays, `relative_exact`, `relative_affix`, `word_numbers`, `time_of_day` | 40 core (`en`, `tr`, `de`, `fr`, `es`, `pt`, `it`, `nl`, `ru`, `pl`, `uk`, `cs`, `sk`, `sv`, `da`, `nb`/`no`, `fi`, `ro`, `hu`, `el`, `he`, `ar`, `fa`, `ur`, `hi`, `bn`, `id`, `ms`, `vi`, `th`, `zh`, `ja`, `ko`, `az`, `uz`, `kk`, `bg`, `hr`, `sr`, `ca`) + 33 (`sl`, `lt`, `lv`, `et`, `ka`, `hy`, `sq`, `mk`, `bs`, `be`, `is`, `ga`, `cy`, `eu`, `gl`, `af`, `sw`, `ta`, `te`, `ml`, `kn`, `mr`, `gu`, `pa`, `ne`, `fil`, `nn`, `my`, `km`, `si`, `mn`, `ky`, `am`) |
 | **Tier 2 (Full Calendar + Relative)** | **121** | 12 months, 7 weekdays, `relative_exact`, dynamic `relative_affix` (`N units ago/in`) | Tier 1 + 48 additional regional languages |
-| **Tier 3 (CLDR Calendar + Exact Relatives)** | **205** | 12 months, 7 weekdays, `units`, 204 `relative_exact` phrases, all 18 Unicode numeral systems | All 205 Unicode CLDR / `dateparser` locales |
+| **Universal CLDR Tier (Full NLP + Numerals)** | **205** | `months`, `weekdays`, `am`/`pm`, `units`, `ago`/`in_words`, `relative_exact`, `relative_affix`, `word_numbers`, `ordinals`, `time_of_day`, all **68 Unicode `Nd` scripts** + CJK/Ge'ez/Tamil/Malayalam | All 205 Unicode CLDR / `dateparser` locales |
 
-- **Extreme Multilingual Benchmark (`benchmarks/multilingual_torture.py`, 87 cases across 30+ languages & 10+ Unicode scripts):** `dateoxide` **87/87** auto-detect (`0.63 ms`) & **87/87** explicit (`0.41 ms`) vs `dateparser 1.5.1` **48/87** (`400.83 ms`).
+- **Extreme Multilingual Benchmark (`benchmarks/multilingual_torture.py`, 87 cases across 30+ languages & 10+ Unicode scripts):** `dateoxide 0.7.0` **87/87** auto-detect (`0.97 ms`) & **87/87** explicit (`0.68 ms`) vs `dateparser 1.5.1` **48/87** (`473.73 ms`).
 - **Multilingual `time_spans`** supports 13 languages: EN, TR, DE, FR, ES, IT, PT, NL, PL, RU, JA, ZH, KO.
 
 ### Real-World Examples (`examples/`)

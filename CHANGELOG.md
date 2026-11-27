@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2026-11-27
+
+### Security & Correctness (P0)
+- **Zero UTF-8 panics across all entry points:** Fixed non-ASCII whitespace byte slicing in `timezone.rs` (`\u{00A0}`, `\u{202F}`, `\u{3000}`) and CJK/NBSP dash range slicing in `ranges.rs` (`"2月-5日"`, `"3月10-14日"`, `"March\u00A010-14, 2026"`).
+- **Turkish `'İ'` range drift fixed:** `ranges.rs` now uses ASCII-only lowercasing for connector search so Turkish uppercase `'İ'` never shifts byte offsets (`"12 NİSAN - 15 MAYIS 2026"` → `2026-04-12 .. 2026-05-15`).
+- **$O(N^2)$ DoS prevention in `search_dates`:** Fixed linear advancement across long non-date digit runs in CJK extraction (`"1"*20000 + "a年"` completes in <1ms).
+- **Locale detection & disambiguation:** Rebalanced exact vs diacritic-folded token scoring and widened candidate top-k to 12 in `locale/mod.rs` so major European/Asian locales (`it`, `et`, `id`, `en`) are never evicted by rare folded collisions.
+- **Calendar & overflow hardening:** Fixed $i32$ arithmetic overflow and Gregorian `1..=9999` boundary checks in `calendars.rs`, `fast_path.rs`, and `time_spans.rs`; replaced the French Republican $O(Y)$ leap loop with $O(1)$ arithmetic.
+- **`Settings()`, `IGNORE_SURROUNDING_TEXT`, `detect_time_span` offsets:** Aligned bare `Settings()` defaults (`DATE_ORDER="MDY"`, `SKIP_TOKENS=[]` with `as_effective_dict()` preserving internal `"DATE_ORDER": None` unless explicitly configured), honored `IGNORE_SURROUNDING_TEXT=True`, and converted `detect_time_span` `start_pos`/`end_pos` to Python character indices.
+- **Japanese/Chinese clocks & `<2-digit> <weekday>`:** Fixed `午後2時30分`/`午前12時30分` 12-hour resolution and stopped `25 Sun` from turning `25` into year `2025`.
+
+### Universal 205-Language Number Engine & Unicode Parity (P1 + Numerals)
+- **All 68 Unicode `Nd` decimal scripts (`numerals.rs`):** Replaced the 18-script table with binary search over `UNICODE_ND_ZEROS: [u32; 67]` covering all 68 Unicode `Nd` numeral systems, wired into both normalization and `search_dates`.
+- **Non-decimal numeral systems:** Algorithmic parsing for CJK Kanji & Financial numerals (`二零二四`, `三百六十五`, `壹貳參`), Ethiopic/Ge'ez (`፩..፼`), Tamil/Malayalam (`௰௱௲`/`൰൱൲`), and strictly gated uppercase Roman numerals (`I..MMMCMXCIX`).
+- **205-locale enrichment & validation:** Repaired all 11 incomplete/duplicate locales (`sv`, `da`, `hu`, `ca`, `bg`, `ka`, `mzn`, `bas`, `nmg`, `shi-Latn`, `tzm`) and expanded all 205 locales with `0`, teens, tens, hundreds, thousands, connectors, ordinals, and gender/oblique variants.
+- **Compositional word numbers & ordinals (`0..9999+`):** Germanic/Romance/Korean/Spaceless composition, inverted German (`einundzwanzig`), French vigesimal (`quatre-vingts`), extended numeric ordinals (`15'inci`, `2e`, `1°`, `1ste`, `1-го`), `"second of June 2024"` ordinal priority over `TimeUnit::Second`, plural bare-unit guard (`"days ago"`), and `TokenKind::Numeral` in `search_dates` (`205/205` with zero bare-prose false positives).
+- **Python API, GIL & Settings parity:** Enforced `languages=[...]` across all fast/CJK/clock paths, accepted timezone-aware `RELATIVE_BASE`, added `ISO-4217` currency and short-token false-positive guards, `folded_am`/`folded_pm` Arabic support, Feb 29 leap resolution, `STRICT_DATE_ORDER="all"` year-position checks, BOM/Bidi/ZWSP/fullwidth/emoji cleaning, `DateData` `__eq__`/`__reduce__`, `OnceLock` `PartOfDay`, `PyTypeError`-only `detect_languages_function` fallback, `py.allow_threads` GIL release, and complete `.pyi` stubs.
+
+### Conversational NLP, Ranges v2, Calendars & Performance (P2)
+- **Conversational NLP (`nlp.rs`):** Period boundaries (`end of month`, `mid-July`, `ay sonu`, `Monatsende`, `fin du mois`, `月末`), quarters & seasons (`Q1 2026`, `2026-Q4`, `2026 3. çeyrek`, `3. Quartal 2026`, `2026年第2四半期`, `2026년 2분기`, `summer 2026`), chained/ordinal relatives (`first Monday of May 2026`, `two weeks from Tuesday`, `haftaya salı`, `übernächsten Freitag`), business days (`3 business days ago`, `3 iş günü önce`, `in 5 Werktagen`, `dans 5 jours ouvrés`, `3営業日前`), indefinite & CJK/RU fractionals (`birkaç gün önce`, `полтора часа назад`, `1時間半前`, `3点半`, `3시 반`), and conversational clocks (`10 past 8`, `5 to 4`, `dörde çeyrek kala`, `üçü yirmi geçe`, `halb acht`, `Viertel vor drei`, `Yesterday morning at 10am`).
+- **Ranges v2 (`ranges.rs`):** ISO-8601 intervals (`2026-05-01/2026-05-15`, `2026-05-01/P14D`), shared-month multilingual word ranges (`10 to 15 May 2026`, `du 10 au 15 mai 2026`, `del 10 al 15 de mayo de 2026`, `10 bis 15 Mai 2026`, `с 10 по 15 мая 2026`, `5月10日到5月15日`), tight time ranges (`14:00-16:30`), and period-boundary snapping (`May 2026 - July 2026` → `2026-05-01 .. 2026-07-31`).
+- **Calendars, Spans & Batch APIs:** Thai Buddhist Era (`พ.ศ. 2567`, `15 พฤษภาคม 2567`), partial Jalali/Hijri month-year parsing (`"آذر ۱۴۰۴"`, `"رمضان 1446"` with `period="month"`), spaceless SE Asian `search_dates` (`"พบกัน15พฤษภาคม2024ที่ทำงาน"`), `search_dates(..., return_spans=True)` exact Python char spans, iterable/generator `parse_batch`, `parse_batch_timestamps`, and top-level re-exports (`parse_jalali`, `parse_hijri`, `parse_minguo`, `parse_french_republican`).
+- **Rust optimizations & CI:** Pre-sorted `ago`/`in_words` tables in `CompiledLocale`, zero-alloc `Cow<str>` `fold_diacritics` on ASCII, reused bigram scratch buffer in `detect_candidates`, removed unused `aho-corasick` dependency and dead stubs, and enabled `cargo clippy -D warnings` + `--no-default-features` in CI.
+
+### Documented Intentional Differences vs `dateparser 1.5.1`
+- **Unix timestamps & DST:** `dateoxide` evaluates plain numeric Unix timestamps in UTC; `dateparser` uses the host local timezone for naive timestamp parsing.
+- **Roman numerals:** `dateoxide` intentionally requires uppercase canonical Roman numerals (`XV May MMXXIV`, `15 V 2024`) inside multi-token date contexts to avoid false positives on everyday lowercase prose (`"i"`, `"v"`, `"mi"`).
+- **`Settings().DATE_ORDER`:** `Settings().DATE_ORDER` preserves `"MDY"` for attribute compatibility, while `as_effective_dict()` keeps `DATE_ORDER` unset unless explicitly passed so `PREFER_LOCALE_DATE_ORDER=True` still selects the locale's native order cleanly.
+
 ## [0.6.1] - 2026-11-27
 
 ### Fixed
