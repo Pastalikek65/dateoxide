@@ -1085,12 +1085,17 @@ fn is_valid_single_token_date(tok: &str, registry: &LocaleRegistry, normalize: b
     }) {
         return true;
     }
-    // Single spaceless Thai token starting with a numeral word (e.g. "ห้านาทีที่แล้ว")
+    // Single spaceless Thai token starting with a numeral word or digit (e.g. "ห้านาทีที่แล้ว", "เมื่อ10นาทีที่แล้ว")
     if let Some(th_id) = registry.resolve_lang_id("th") {
         let th = &registry.locales[th_id];
+        let th_body = tok.strip_prefix("เมื่อ").unwrap_or(tok);
         if !tok.is_ascii()
-            && th.word_numbers.keys().any(|w| !w.is_ascii() && tok.starts_with(w.as_str()))
-            && th.units.keys().any(|u| !u.is_ascii() && tok.contains(u.as_str()))
+            && (th.word_numbers.keys().any(|w| !w.is_ascii() && th_body.starts_with(w.as_str()))
+                || th_body
+                    .chars()
+                    .next()
+                    .is_some_and(crate::numerals::is_unicode_decimal_digit))
+            && th.units.keys().any(|u| !u.is_ascii() && th_body.contains(u.as_str()))
         {
             return true;
         }

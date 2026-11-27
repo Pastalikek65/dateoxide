@@ -562,11 +562,12 @@ pub fn parse_single_word_cardinal(tok: &str, loc: &CompiledLocale, normalize: bo
             ("아흔", 90),
         ] {
             if let Some(rest) = tok.strip_prefix(ten_p) {
-                if !rest.is_empty() {
-                    if let Some(ones) = lookup_word_num(rest, loc, normalize) {
-                        if (1..=9).contains(&ones) {
-                            return Some(ten_v + ones);
-                        }
+                if rest.is_empty() {
+                    return Some(ten_v);
+                }
+                if let Some(ones) = lookup_word_num(rest, loc, normalize) {
+                    if (1..=9).contains(&ones) {
+                        return Some(ten_v + ones);
                     }
                 }
             }
@@ -647,14 +648,18 @@ pub fn parse_single_word_cardinal(tok: &str, loc: &CompiledLocale, normalize: bo
     if tok.contains('-') {
         if loc.code == "fr" {
             if let Some(rest) = tok.strip_prefix("quatre-vingt-") {
-                if let Some(tail) = lookup_word_num(rest, loc, normalize) {
+                if let Some(tail) = lookup_word_num(rest, loc, normalize)
+                    .or_else(|| parse_single_word_cardinal(rest, loc, normalize))
+                {
                     if (1..=19).contains(&tail) {
                         return Some(80 + tail);
                     }
                 }
             }
             if let Some(rest) = tok.strip_prefix("soixante-") {
-                if let Some(tail) = lookup_word_num(rest, loc, normalize) {
+                if let Some(tail) = lookup_word_num(rest, loc, normalize)
+                    .or_else(|| parse_single_word_cardinal(rest, loc, normalize))
+                {
                     if (1..=19).contains(&tail) {
                         return Some(60 + tail);
                     }
@@ -728,15 +733,29 @@ pub fn parse_cardinal_slice(
             break;
         }
 
-        // Vietnamese tens multiplier: "hai mươi một" -> 2 * 10 + 1 = 21
-        if loc.code == "vi"
-            && (2..=9).contains(&current)
-            && matches!(fold_diacritics(tok).as_ref(), "muoi" | "mươi")
-        {
-            current = current.checked_mul(10)?;
-            expect_after_conn = false;
-            consumed += 1;
-            continue;
+        // Vietnamese tens multiplier: "hai mươi một" -> 2 * 10 + 1 = 21, and *1 mốt / *4 tư / *5 lăm
+        if loc.code == "vi" {
+            let folded_tok = fold_diacritics(tok);
+            if (2..=9).contains(&current) && matches!(folded_tok.as_ref(), "muoi" | "mươi") {
+                current = current.checked_mul(10)?;
+                expect_after_conn = false;
+                consumed += 1;
+                continue;
+            }
+            if current >= 10 && current % 10 == 0 {
+                let vi_unit = match folded_tok.as_ref() {
+                    "mot" if current >= 20 => Some(1),
+                    "tu" if current >= 20 => Some(4),
+                    "lam" => Some(5),
+                    _ => None,
+                };
+                if let Some(u) = vi_unit {
+                    current = current.checked_add(u)?;
+                    expect_after_conn = false;
+                    consumed += 1;
+                    continue;
+                }
+            }
         }
 
         let Some(v) = parse_single_word_cardinal(tok, loc, normalize) else {
@@ -755,6 +774,7 @@ pub fn parse_cardinal_slice(
         } else if (current >= 20 && current % 10 == 0 && v < 10)
             || (loc.code == "tr" && current == 10 && (1..=9).contains(&v))
             || (expect_after_conn && v < 10)
+            || (loc.code == "fr" && current == 10 && (7..=9).contains(&v))
             || (loc.code == "fr" && current == 60 && (10..=19).contains(&v))
             || (loc.code == "fr" && current == 80 && (1..=19).contains(&v))
             || (matches!(loc.code.as_str(), "ar" | "he")
@@ -783,9 +803,23 @@ pub fn collapse_word_numbers(s: &str, loc: &CompiledLocale, normalize: bool) -> 
         return None;
     }
 
-    // Spaceless Thai leading numeral extraction (e.g. "ห้านาทีที่แล้ว" / "เมื่อห้านาทีที่แล้ว" -> "5 นาทีที่แล้ว")
+    // Spaceless Thai leading numeral extraction (e.g. "ห้านาทีที่แล้ว" / "เมื่อห้านาทีที่แล้ว" / "เมื่อ10นาทีที่แล้ว")
     if loc.code == "th" {
         let th_body = s.strip_prefix("เมื่อ").unwrap_or(s).trim_start();
+        let mut d_end = 0usize;
+        for (idx, ch) in th_body.char_indices() {
+            if is_unicode_decimal_digit(ch) {
+                d_end = idx + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if d_end > 0 {
+            let rem = th_body[d_end..].trim_start();
+            if !rem.is_empty() && (!th_body.starts_with(s) || !rem.starts_with(|c: char| c.is_ascii())) {
+                return Some(format!("{} {}", &th_body[..d_end], rem));
+            }
+        }
         let mut best: Option<(&str, u32)> = None;
         for (word, &val) in &loc.word_numbers {
             if !word.is_ascii() && th_body.starts_with(word.as_str()) {

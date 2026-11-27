@@ -1117,6 +1117,7 @@ fn try_conversational_clocks_ext(
         if (2..=5).contains(&toks.len()) {
             let parse_tr_hour = |tok: &str| -> Option<u32> {
                 match tok {
+                    "sifira" | "sifiri" => Some(0),
                     "bire" | "biri" => Some(1),
                     "ikiye" | "ikiyi" => Some(2),
                     "uce" | "ucu" => Some(3),
@@ -1129,6 +1130,17 @@ fn try_conversational_clocks_ext(
                     "ona" | "onu" => Some(10),
                     "onbire" | "onbiri" => Some(11),
                     "onikiye" | "onikiyi" => Some(12),
+                    "onuce" | "onucu" => Some(13),
+                    "ondorde" | "ondordu" => Some(14),
+                    "onbese" | "onbesi" => Some(15),
+                    "onaltiya" | "onaltiyi" => Some(16),
+                    "onyediye" | "onyediyi" => Some(17),
+                    "onsekize" | "onsekizi" => Some(18),
+                    "ondokuza" | "ondokuzu" => Some(19),
+                    "yirmiye" | "yirmiyi" => Some(20),
+                    "yirmibire" | "yirmibiri" => Some(21),
+                    "yirmiikiye" | "yirmiikiyi" => Some(22),
+                    "yirmiuce" | "yirmiucu" => Some(23),
                     other => {
                         let base_h = other.split(['\'', '’']).next().unwrap_or("");
                         base_h.parse::<u32>().ok().filter(|&h| h <= 23)
@@ -1136,9 +1148,13 @@ fn try_conversational_clocks_ext(
                 }
             };
             let (hr_opt, min_toks): (Option<u32>, &[&str]) = if toks.len() >= 3 && toks[0] == "on" {
-                match toks[1] {
-                    "bire" | "biri" => (Some(11), &toks[2..]),
-                    "ikiye" | "ikiyi" => (Some(12), &toks[2..]),
+                match parse_tr_hour(toks[1]) {
+                    Some(u) if (1..=9).contains(&u) => (Some(10 + u), &toks[2..]),
+                    _ => (parse_tr_hour(toks[0]), &toks[1..]),
+                }
+            } else if toks.len() >= 3 && toks[0] == "yirmi" {
+                match parse_tr_hour(toks[1]) {
+                    Some(u) if (1..=3).contains(&u) => (Some(20 + u), &toks[2..]),
                     _ => (parse_tr_hour(toks[0]), &toks[1..]),
                 }
             } else {
