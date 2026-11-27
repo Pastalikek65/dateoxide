@@ -73,6 +73,8 @@ pub struct CompiledLocale {
     pub units: FxHashMap<String, TimeUnit>,
     pub ago: FxHashSet<String>,
     pub in_words: FxHashSet<String>,
+    pub ago_sorted: Vec<String>,
+    pub in_words_sorted: Vec<String>,
     pub skip: FxHashSet<String>,
     pub relative_exact: FxHashMap<String, Vec<RelativeSpec>>,
     pub relative_affix: Vec<RelativeAffix>,
@@ -85,6 +87,8 @@ pub struct CompiledLocale {
     pub folded_units: FxHashMap<String, TimeUnit>,
     pub folded_ago: FxHashSet<String>,
     pub folded_in_words: FxHashSet<String>,
+    pub folded_ago_sorted: Vec<String>,
+    pub folded_in_words_sorted: Vec<String>,
     pub folded_ordinals: FxHashMap<String, u32>,
     pub folded_relative_exact: FxHashMap<String, Vec<RelativeSpec>>,
     pub folded_relative_affix: Vec<RelativeAffix>,
@@ -147,13 +151,14 @@ impl LocaleRegistry {
                 }
             }
             let folded = fold_diacritics(tok);
-            if folded != tok && !folded.is_empty() {
-                let fentry = folded_token_to_langs.entry(folded.clone()).or_default();
+            if folded.as_ref() != tok && !folded.is_empty() {
+                let folded_s = folded.into_owned();
+                let fentry = folded_token_to_langs.entry(folded_s.clone()).or_default();
                 if fentry.last().copied() != Some(lang_id) && !fentry.contains(&lang_id) {
                     fentry.push(lang_id);
                 }
                 if is_search_token {
-                    known_date_tokens.insert(folded);
+                    known_date_tokens.insert(folded_s);
                 }
             }
         };
@@ -178,14 +183,14 @@ impl LocaleRegistry {
                     if norm_name != name {
                         register_token(&norm_name, lang_id, true);
                         let nf = fold_diacritics(&norm_name);
-                        if nf != norm_name {
-                            folded_months.entry(nf).or_insert(month_num);
+                        if nf.as_ref() != norm_name {
+                            folded_months.entry(nf.into_owned()).or_insert(month_num);
                         }
                         months.insert(norm_name, month_num);
                     }
                     let f = fold_diacritics(&name);
-                    if f != name {
-                        folded_months.entry(f).or_insert(month_num);
+                    if f.as_ref() != name {
+                        folded_months.entry(f.into_owned()).or_insert(month_num);
                     }
                     months.insert(name, month_num);
                 }
@@ -206,14 +211,14 @@ impl LocaleRegistry {
                     if norm_name != name {
                         register_token(&norm_name, lang_id, true);
                         let nf = fold_diacritics(&norm_name);
-                        if nf != norm_name {
-                            folded_weekdays.entry(nf).or_insert(wd_num);
+                        if nf.as_ref() != norm_name {
+                            folded_weekdays.entry(nf.into_owned()).or_insert(wd_num);
                         }
                         weekdays.insert(norm_name, wd_num);
                     }
                     let f = fold_diacritics(&name);
-                    if f != name {
-                        folded_weekdays.entry(f).or_insert(wd_num);
+                    if f.as_ref() != name {
+                        folded_weekdays.entry(f.into_owned()).or_insert(wd_num);
                     }
                     weekdays.insert(name, wd_num);
                 }
@@ -224,8 +229,8 @@ impl LocaleRegistry {
             for s in raw.am {
                 register_token(&s, lang_id, true);
                 let f = fold_diacritics(&s);
-                if f != s {
-                    folded_am.insert(f);
+                if f.as_ref() != s {
+                    folded_am.insert(f.into_owned());
                 }
                 am.insert(s);
             }
@@ -234,8 +239,8 @@ impl LocaleRegistry {
             for s in raw.pm {
                 register_token(&s, lang_id, true);
                 let f = fold_diacritics(&s);
-                if f != s {
-                    folded_pm.insert(f);
+                if f.as_ref() != s {
+                    folded_pm.insert(f.into_owned());
                 }
                 pm.insert(s);
             }
@@ -246,8 +251,8 @@ impl LocaleRegistry {
                 if let Some(u) = TimeUnit::from_u8(u_id) {
                     register_token(&tok, lang_id, true);
                     let f = fold_diacritics(&tok);
-                    if f != tok {
-                        folded_units.entry(f).or_insert(u);
+                    if f.as_ref() != tok {
+                        folded_units.entry(f.into_owned()).or_insert(u);
                     }
                     units.insert(tok, u);
                 }
@@ -261,8 +266,8 @@ impl LocaleRegistry {
                 }
                 register_token(&s, lang_id, true);
                 let f = fold_diacritics(&s);
-                if f != s {
-                    folded_ago.insert(f);
+                if f.as_ref() != s {
+                    folded_ago.insert(f.into_owned());
                 }
                 ago.insert(s);
             }
@@ -275,8 +280,8 @@ impl LocaleRegistry {
                 }
                 register_token(&s, lang_id, true);
                 let f = fold_diacritics(&s);
-                if f != s {
-                    folded_in_words.insert(f);
+                if f.as_ref() != s {
+                    folded_in_words.insert(f.into_owned());
                 }
                 in_words.insert(s);
             }
@@ -301,12 +306,13 @@ impl LocaleRegistry {
                         .or_default()
                         .push((lang_id, spec));
                     let f = fold_diacritics(&phrase);
-                    if f != phrase {
+                    if f.as_ref() != phrase {
+                        let fs = f.into_owned();
                         folded_exact_phrase_index
-                            .entry(f.clone())
+                            .entry(fs.clone())
                             .or_default()
                             .push((lang_id, spec));
-                        folded_relative_exact.entry(f).or_default().push(spec);
+                        folded_relative_exact.entry(fs).or_default().push(spec);
                     }
                     relative_exact.entry(phrase).or_default().push(spec);
                 }
@@ -323,10 +329,10 @@ impl LocaleRegistry {
                     }
                     let fp = fold_diacritics(&prefix);
                     let fs = fold_diacritics(&suffix);
-                    if fp != prefix || fs != suffix {
+                    if fp.as_ref() != prefix || fs.as_ref() != suffix {
                         folded_relative_affix.push(RelativeAffix {
-                            prefix: fp,
-                            suffix: fs,
+                            prefix: fp.into_owned(),
+                            suffix: fs.into_owned(),
                             sign,
                             unit,
                         });
@@ -353,15 +359,16 @@ impl LocaleRegistry {
             let mut word_numbers = FxHashMap::default();
             for (w, n) in raw.word_numbers {
                 let f = fold_diacritics(&w);
-                if f != w {
-                    word_numbers.entry(f.clone()).or_insert(n);
-                    known_numeral_tokens.insert(f);
+                if f.as_ref() != w {
+                    let fs = f.into_owned();
+                    word_numbers.entry(fs.clone()).or_insert(n);
+                    known_numeral_tokens.insert(fs);
                 }
                 for part in w.split_whitespace() {
                     known_numeral_tokens.insert(part.to_string());
                     let pf = fold_diacritics(part);
-                    if pf != part {
-                        known_numeral_tokens.insert(pf);
+                    if pf.as_ref() != part {
+                        known_numeral_tokens.insert(pf.into_owned());
                     }
                     if part.chars().count() >= 3 || !part.is_ascii() {
                         register_token(part, lang_id, false);
@@ -374,9 +381,10 @@ impl LocaleRegistry {
             let mut folded_ordinals = FxHashMap::default();
             for (w, n) in raw.ordinals {
                 let f = fold_diacritics(&w);
-                if f != w {
-                    folded_ordinals.entry(f.clone()).or_insert(n);
-                    known_numeral_tokens.insert(f);
+                if f.as_ref() != w {
+                    let fs = f.into_owned();
+                    folded_ordinals.entry(fs.clone()).or_insert(n);
+                    known_numeral_tokens.insert(fs);
                 }
                 known_numeral_tokens.insert(w.clone());
                 if w.chars().count() >= 3 || !w.is_ascii() {
@@ -393,8 +401,8 @@ impl LocaleRegistry {
                 }
                 register_token(&phrase, lang_id, true);
                 let f = fold_diacritics(&phrase);
-                if f != phrase {
-                    folded_time_of_day.entry(f).or_insert(hour);
+                if f.as_ref() != phrase {
+                    folded_time_of_day.entry(f.into_owned()).or_insert(hour);
                 }
                 time_of_day.insert(phrase, hour);
             }
@@ -407,6 +415,16 @@ impl LocaleRegistry {
             } else if raw.code == "tr" {
                 register_token("saat", lang_id, true);
             }
+
+            let sort_desc = |set: &FxHashSet<String>| -> Vec<String> {
+                let mut v: Vec<String> = set.iter().cloned().collect();
+                v.sort_unstable_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+                v
+            };
+            let ago_sorted = sort_desc(&ago);
+            let in_words_sorted = sort_desc(&in_words);
+            let folded_ago_sorted = sort_desc(&folded_ago);
+            let folded_in_words_sorted = sort_desc(&folded_in_words);
 
             locales.push(CompiledLocale {
                 id: lang_id,
@@ -421,6 +439,8 @@ impl LocaleRegistry {
                 units,
                 ago,
                 in_words,
+                ago_sorted,
+                in_words_sorted,
                 skip,
                 relative_exact,
                 relative_affix,
@@ -432,6 +452,8 @@ impl LocaleRegistry {
                 folded_units,
                 folded_ago,
                 folded_in_words,
+                folded_ago_sorted,
+                folded_in_words_sorted,
                 folded_ordinals,
                 folded_relative_exact,
                 folded_relative_affix,
@@ -575,7 +597,7 @@ impl LocaleRegistry {
                 .is_some_and(|en| en.months.contains_key(normalized) || en.weekdays.contains_key(normalized))
         {
             let f = fold_diacritics(normalized);
-            if let Some(matches) = self.folded_exact_phrase_index.get(&f) {
+            if let Some(matches) = self.folded_exact_phrase_index.get(f.as_ref()) {
                 let mut out: Vec<usize> = matches.iter().map(|(id, _)| *id as usize).collect();
                 out.sort_unstable();
                 out.dedup();
@@ -611,8 +633,8 @@ impl LocaleRegistry {
                 let ft = fold_diacritics(tok);
                 // Only award meaningful folded points when input wasn't already an exact token
                 // (prevents diacritic-stripped rare locales like "jûn"/"nóv"/"ápr" from outscoring "jun"/"nov"/"apr")
-                if let Some(langs) = self.folded_token_to_langs.get(&ft) {
-                    let weight = if !exact_matched || ft != tok {
+                if let Some(langs) = self.folded_token_to_langs.get(ft.as_ref()) {
+                    let weight = if !exact_matched || ft.as_ref() != tok {
                         if langs.len() <= 3 {
                             5
                         } else if langs.len() <= 12 {
@@ -638,9 +660,13 @@ impl LocaleRegistry {
             }
         }
 
-        // Also check 2-word phrases (e.g. "il y a", "geçen hafta", "next week", "hace 2")
+        // Also check 2-word phrases (e.g. "il y a", "geçen hafta", "next week", "hace 2") using a single reused scratch buffer
+        let mut bigram = String::with_capacity(32);
         for w in tokens.windows(2) {
-            let bigram = format!("{} {}", w[0], w[1]);
+            bigram.clear();
+            bigram.push_str(w[0]);
+            bigram.push(' ');
+            bigram.push_str(w[1]);
             if let Some(langs) = self.token_to_langs.get(&bigram) {
                 for &lid in langs {
                     *scores.entry(lid).or_insert(0) += 6;
@@ -648,8 +674,8 @@ impl LocaleRegistry {
             }
             if normalize {
                 let fb = fold_diacritics(&bigram);
-                if fb != bigram {
-                    if let Some(langs) = self.folded_token_to_langs.get(&fb) {
+                if fb.as_ref() != bigram {
+                    if let Some(langs) = self.folded_token_to_langs.get(fb.as_ref()) {
                         for &lid in langs {
                             *scores.entry(lid).or_insert(0) += 4;
                         }
@@ -689,8 +715,11 @@ impl LocaleRegistry {
     }
 }
 
-/// Fold common Latin and Arabic diacritics for accent-tolerant matching (`NORMALIZE=True`).
-pub fn fold_diacritics(s: &str) -> String {
+/// Fold common Latin and Arabic diacritics for accent-tolerant matching (`NORMALIZE=True`), zero-alloc on ASCII.
+pub fn fold_diacritics(s: &str) -> Cow<'_, str> {
+    if s.is_ascii() {
+        return Cow::Borrowed(s);
+    }
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         let mapped = match ch {
@@ -720,7 +749,7 @@ pub fn fold_diacritics(s: &str) -> String {
         };
         out.push(mapped);
     }
-    out
+    Cow::Owned(out)
 }
 
 fn detect_script_hint(s: &str) -> Option<&'static [&'static str]> {

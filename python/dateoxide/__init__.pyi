@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, time, tzinfo
-from typing import Any, Callable, Literal, Mapping, Sequence, overload
+from typing import Any, Callable, Iterable, Literal, Mapping, Sequence, overload
 
 from . import custom_language_detection as custom_language_detection
 from .conf import PartOfDay, PartsOfDay, SettingValidationError, Settings, apply_settings
@@ -54,7 +54,7 @@ class DateDataParser:
         date_string: str,
         date_formats: Sequence[str] | None = None,
     ) -> datetime | None: ...
-    def parse_batch(self, date_strings: Sequence[str | None]) -> list[datetime | None]: ...
+    def parse_batch(self, date_strings: Iterable[str | None]) -> list[datetime | None]: ...
     def parse_date_range(self, date_range_string: str) -> tuple[datetime, datetime] | None: ...
 
 def parse(
@@ -68,13 +68,22 @@ def parse(
 ) -> datetime | None: ...
 
 def parse_batch(
-    date_strings: Sequence[str | None],
+    date_strings: Iterable[str | None],
     date_formats: Sequence[str] | None = None,
     languages: Sequence[str] | None = None,
     locales: Sequence[str] | None = None,
     region: str | None = None,
     settings: Settings | Mapping[str, Any] | None = None,
 ) -> list[datetime | None]: ...
+
+def parse_batch_timestamps(
+    date_strings: Iterable[str | None],
+    date_formats: Sequence[str] | None = None,
+    languages: Sequence[str] | None = None,
+    locales: Sequence[str] | None = None,
+    region: str | None = None,
+    settings: Settings | Mapping[str, Any] | None = None,
+) -> list[float | None]: ...
 
 def parse_date_range(
     date_range_string: str,
@@ -141,6 +150,7 @@ def search_dates(
     strategy: str = "split",
     date_formats: Sequence[str] | None = None,
     add_period: bool = False,
+    return_spans: bool = False,
 ) -> list[Any] | None: ...
 
 def supported_languages() -> list[str]: ...

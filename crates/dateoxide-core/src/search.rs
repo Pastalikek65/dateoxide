@@ -12,6 +12,8 @@ pub struct SearchMatch {
     pub locale: Option<String>,
     pub parts: Vec<&'static str>,
     pub part_of_day: Option<crate::settings::PartOfDay>,
+    pub start_byte: usize,
+    pub end_byte: usize,
 }
 
 /// Linear-time date finder across free-form text (compatible with `dateparser.search.search_dates`).
@@ -71,6 +73,8 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                         locale: Some("en".to_string()),
                         parts: vec!["year", "month", "day"],
                         part_of_day: None,
+                        start_byte: span.start_pos,
+                        end_byte: span.end_pos,
                     },
                     SearchMatch {
                         text: format!("{} (end)", span.matched_text),
@@ -79,6 +83,8 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                         locale: Some("en".to_string()),
                         parts: vec!["year", "month", "day"],
                         part_of_day: None,
+                        start_byte: span.start_pos,
+                        end_byte: span.end_pos,
                     },
                 ];
             }
@@ -127,6 +133,8 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                     continue;
                 }
                 if let Some(m) = crate::fast_path::try_custom_formats(raw_sub, parse_settings) {
+                    let raw_start = raw_sub.as_ptr() as usize - text.as_ptr() as usize;
+                    let raw_end = raw_start + raw_sub.len();
                     results.push(SearchMatch {
                         text: raw_sub.to_string(),
                         date_obj: finalize_datetime(m.naive, m.tz, parse_settings),
@@ -134,6 +142,8 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                         locale: m.locale,
                         parts: m.parts,
                         part_of_day: None,
+                        start_byte: raw_start,
+                        end_byte: raw_end,
                     });
                     i = end_idx + 1;
                     custom_matched = true;
@@ -156,6 +166,32 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
             if !has_following_signal {
                 i += 1;
                 continue;
+            }
+        }
+        // Do not absorb a standalone leading time-of-day word (e.g. Turkish "Öğle" = noon) into a following ISO date ("2026-05-15")
+        if i + 1 < spans.len() {
+            let next_raw = &text[spans[i + 1].0..spans[i + 1].1];
+            let nb = next_raw.as_bytes();
+            let next_is_iso = nb.len() >= 10 && nb[0..4].iter().all(|b| b.is_ascii_digit()) && nb[4] == b'-';
+            if next_is_iso {
+                let first_lower = normalize_digits_and_lower(
+                    text[spans[i].0..spans[i].1].trim_matches(|c: char| !c.is_alphanumeric()),
+                );
+                let first_folded = fold_diacritics(&first_lower);
+                let is_tod_word = registry.locales.iter().any(|l| {
+                    l.time_of_day.contains_key(first_lower.as_str())
+                        || l.folded_time_of_day.contains_key(first_folded.as_ref())
+                });
+                let is_date_anchor = registry.exact_phrase_index.contains_key(&first_lower)
+                    || registry.folded_exact_phrase_index.contains_key(first_folded.as_ref())
+                    || registry.locales.iter().any(|l| {
+                        l.months.contains_key(first_lower.as_str())
+                            || l.weekdays.contains_key(first_lower.as_str())
+                    });
+                if is_tod_word && !is_date_anchor {
+                    i += 1;
+                    continue;
+                }
             }
         }
 
@@ -268,6 +304,8 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                     for sub in cjk_subs {
                         let dd = get_date_data(sub, parse_settings);
                         if let Some(dt) = dd.date_obj {
+                            let sb = sub.as_ptr() as usize - text.as_ptr() as usize;
+                            let eb = sb + sub.len();
                             results.push(SearchMatch {
                                 text: sub.to_string(),
                                 date_obj: dt,
@@ -275,11 +313,40 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                                 locale: dd.locale,
                                 parts: dd.parts,
                                 part_of_day: dd.part_of_day,
+                                start_byte: sb,
+                                end_byte: eb,
                             });
                             any_cjk = true;
                         }
                     }
                     if any_cjk {
+                        i = end_idx + 1;
+                        matched = true;
+                        break;
+                    }
+                }
+                let se_subs = extract_se_asian_date_subspans(raw_sub, registry);
+                if !se_subs.is_empty() {
+                    let mut any_se = false;
+                    for sub in se_subs {
+                        let dd = get_date_data(sub, parse_settings);
+                        if let Some(dt) = dd.date_obj {
+                            let sb = sub.as_ptr() as usize - text.as_ptr() as usize;
+                            let eb = sb + sub.len();
+                            results.push(SearchMatch {
+                                text: sub.to_string(),
+                                date_obj: dt,
+                                period: dd.period,
+                                locale: dd.locale,
+                                parts: dd.parts,
+                                part_of_day: dd.part_of_day,
+                                start_byte: sb,
+                                end_byte: eb,
+                            });
+                            any_se = true;
+                        }
+                    }
+                    if any_se {
                         i = end_idx + 1;
                         matched = true;
                         break;
@@ -304,6 +371,8 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                 {
                     continue;
                 }
+                let raw_start = raw_sub.as_ptr() as usize - text.as_ptr() as usize;
+                let raw_end = raw_start + raw_sub.len();
                 results.push(SearchMatch {
                     text: raw_sub.to_string(),
                     date_obj: dt,
@@ -311,6 +380,8 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                     locale: dd.locale,
                     parts: dd.parts,
                     part_of_day: dd.part_of_day,
+                    start_byte: raw_start,
+                    end_byte: raw_end,
                 });
                 i = end_idx + 1;
                 matched = true;
@@ -429,10 +500,10 @@ fn classify_token(tok: &str, registry: &LocaleRegistry, normalize: bool) -> Toke
     }
     if normalize {
         let folded = fold_diacritics(&lower);
-        if registry.known_date_tokens.contains(&folded) {
+        if registry.known_date_tokens.contains(folded.as_ref()) {
             return TokenKind::Signal;
         }
-        if registry.known_numeral_tokens.contains(&folded) {
+        if registry.known_numeral_tokens.contains(folded.as_ref()) {
             return TokenKind::Numeral;
         }
         if folded.contains('-')
@@ -633,6 +704,84 @@ fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
     out
 }
 
+#[inline]
+fn is_se_asian_char(ch: char) -> bool {
+    matches!(ch as u32, 0x0E00..=0x0E7F | 0x0E80..=0x0EFF | 0x1000..=0x109F | 0x1780..=0x17FF)
+}
+
+/// Extract spaceless date subspans containing a month name surrounded by digits inside Thai/Khmer/Lao/Myanmar prose.
+fn extract_se_asian_date_subspans<'a>(s: &'a str, registry: &LocaleRegistry) -> Vec<&'a str> {
+    if s.is_ascii()
+        || !s.chars().any(is_se_asian_char)
+        || !s.chars().any(crate::numerals::is_unicode_decimal_digit)
+    {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut scan_from = 0usize;
+    while scan_from < s.len() {
+        let rem = &s[scan_from..];
+        let mut best_match: Option<(usize, usize)> = None;
+        for code in ["th", "km", "lo", "my"] {
+            let Some(lid) = registry.resolve_lang_id(code) else {
+                continue;
+            };
+            let loc = &registry.locales[lid];
+            for month_name in loc.months.keys() {
+                if month_name.is_ascii() || month_name.chars().count() < 2 {
+                    continue;
+                }
+                if let Some(rel_idx) = rem.find(month_name.as_str()) {
+                    let abs_start = scan_from + rel_idx;
+                    let abs_end = abs_start + month_name.len();
+                    if best_match.is_none_or(|(bs, be)| abs_start < bs || (abs_start == bs && abs_end > be)) {
+                        best_match = Some((abs_start, abs_end));
+                    }
+                }
+            }
+        }
+        let Some((m_start, m_end)) = best_match else {
+            break;
+        };
+        // Expand left over whitespace and up to 2 digits (day)
+        let mut span_start = m_start;
+        let mut digit_left = 0usize;
+        for (idx, ch) in s[..m_start].char_indices().rev() {
+            if crate::numerals::is_unicode_decimal_digit(ch) && digit_left < 4 {
+                span_start = idx;
+                digit_left += 1;
+            } else if ch.is_whitespace() && digit_left == 0 {
+                span_start = idx;
+            } else {
+                break;
+            }
+        }
+        // Expand right over whitespace and up to 4 digits (year)
+        let mut span_end = m_end;
+        let mut digit_right = 0usize;
+        for (rel_idx, ch) in s[m_end..].char_indices() {
+            if crate::numerals::is_unicode_decimal_digit(ch) && digit_right < 4 {
+                span_end = m_end + rel_idx + ch.len_utf8();
+                digit_right += 1;
+            } else if ch.is_whitespace() && digit_right == 0 {
+                span_end = m_end + rel_idx + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if digit_left > 0 || digit_right > 0 {
+            let cand = s[span_start..span_end].trim();
+            if !cand.is_empty() && cand.len() < s.len() {
+                out.push(cand);
+                scan_from = span_end.max(m_end);
+                continue;
+            }
+        }
+        scan_from = m_end;
+    }
+    out
+}
+
 fn is_valid_single_token_date(tok: &str, registry: &LocaleRegistry, normalize: bool) -> bool {
     if tok.contains([
         '-', '/', '－', '／', '.', ':', '：', '年', '月', '日', '년', '월', '일', '天', '前', '後',
@@ -665,7 +814,7 @@ fn is_valid_single_token_date(tok: &str, registry: &LocaleRegistry, normalize: b
     }
     if normalize {
         let folded = fold_diacritics(&lower);
-        if registry.folded_exact_phrase_index.contains_key(&folded) {
+        if registry.folded_exact_phrase_index.contains_key(folded.as_ref()) {
             return true;
         }
     }

@@ -396,7 +396,7 @@ fn lookup_month(s: &str, loc: &CompiledLocale, normalize: bool) -> Option<u8> {
     }
     if normalize {
         let f = fold_diacritics(s);
-        if let Some(&m) = loc.folded_months.get(&f) {
+        if let Some(&m) = loc.folded_months.get(f.as_ref()) {
             return Some(m);
         }
     }
@@ -409,7 +409,7 @@ fn lookup_weekday(s: &str, loc: &CompiledLocale, normalize: bool) -> Option<u8> 
     }
     if normalize {
         let f = fold_diacritics(s);
-        if let Some(&w) = loc.folded_weekdays.get(&f) {
+        if let Some(&w) = loc.folded_weekdays.get(f.as_ref()) {
             return Some(w);
         }
     }
@@ -422,7 +422,11 @@ fn lookup_tod_hour(s: &str, loc: &CompiledLocale, normalize: bool) -> Option<u8>
     }
     if normalize {
         let f = fold_diacritics(s);
-        if let Some(&h) = loc.folded_time_of_day.get(&f).or_else(|| loc.time_of_day.get(&f)) {
+        if let Some(&h) = loc
+            .folded_time_of_day
+            .get(f.as_ref())
+            .or_else(|| loc.time_of_day.get(f.as_ref()))
+        {
             return Some(h);
         }
     }
@@ -487,6 +491,7 @@ fn try_parse_in_locale(
     let mut free_nums: Vec<(u32, usize, usize)> = Vec::new();
     let mut roman_cands: Vec<(u32, usize)> = Vec::new();
     let mut matched_locale_signal = false;
+    let mut is_thai_be = false;
     let mut ambiguous_month_weekday: Option<u8> = None;
 
     let mut i = 0;
@@ -747,6 +752,12 @@ fn try_parse_in_locale(
         }
 
         // 8. Skip / connector words (including localized "year" markers & locale-gated European connectors)
+        if loc.code == "th" && matches!(clean, "พ.ศ" | "พศ") {
+            is_thai_be = true;
+            matched_locale_signal = true;
+            i += 1;
+            continue;
+        }
         if loc.skip.contains(clean)
             || loc.units.contains_key(clean)
             || is_locale_connector(loc.code.as_str(), clean)
@@ -808,6 +819,14 @@ fn try_parse_in_locale(
 
     if !matched_locale_signal && year.is_none() {
         return None;
+    }
+
+    if loc.code == "th" {
+        if let Some(y) = year {
+            if (is_thai_be && y > 543) || (2400..=2700).contains(&y) {
+                year = Some(y - 543);
+            }
+        }
     }
 
     let has_time = time.is_some();
@@ -1129,8 +1148,9 @@ fn split_date_tokens<'a>(s: &'a str, loc: &CompiledLocale, normalize: bool) -> V
         if chunk.is_empty() {
             continue;
         }
-        // Split dot-separated month expressions like "08.Haziran.2014" or "2005г.", but keep fractional times like "13:11:23.678" intact
+        // Split dot-separated month expressions like "08.Haziran.2014" or "2005г.", but keep fractional times like "13:11:23.678" and Thai BE "พ.ศ." intact
         if chunk.contains('.')
+            && chunk.trim_end_matches('.') != "พ.ศ"
             && !chunk.contains(':')
             && !chunk.ends_with("a.m.")
             && !chunk.ends_with("p.m.")

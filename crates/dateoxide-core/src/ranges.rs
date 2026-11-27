@@ -1,11 +1,13 @@
-use crate::fast_path::parse_time_str;
-use crate::parse_with_settings;
-use crate::settings::{ParsedDateTime, Settings};
+use crate::fast_path::{days_in_month, parse_time_str};
+use crate::locale::TimeUnit;
+use crate::relative::apply_relative_offset;
+use crate::settings::{ParsedDateTime, Period, Settings};
 use crate::timezone::finalize_datetime;
-use chrono::Datelike;
+use crate::{get_date_data, parse_with_settings};
+use chrono::{Datelike, Duration, NaiveDate};
 
 const RANGE_INTRODUCERS: &[&str] = &[
-    "between ", "from ", "von ", "zwischen ", "du ", "entre ", "desde ", "de ",
+    "between ", "from ", "von ", "zwischen ", "du ", "entre ", "desde ", "del ", "de ",
 ];
 
 const RANGE_CONNECTORS: &[&str] = &[
@@ -19,6 +21,7 @@ const RANGE_CONNECTORS: &[&str] = &[
     " and ",
     " bis ",
     " ile ",
+    " по ",
     " to ",
     " au ",
     " al ",
@@ -32,11 +35,12 @@ const RANGE_CONNECTORS: &[&str] = &[
     "..",
     "〜",
     "～",
+    "到",
 ];
 
 /// Parse natural-language or numeric date/time ranges such as:
 /// `"12-15 Ocak 2026"`, `"March 10-14, 2026"`, `"12 Ocak - 15 Şubat 2026"`,
-/// `"from 2026-11-01 to 2026-11-15"`, or `"10:00 - 12:30"`.
+/// `"from 2026-11-01 to 2026-11-15"`, `"2026-05-01/P14D"`, or `"14:00-16:30"`.
 pub fn parse_date_range(
     input: &str,
     settings: &Settings,
@@ -46,16 +50,36 @@ pub fn parse_date_range(
         return None;
     }
 
+    // 0. ISO-8601 intervals ("2026-05-01/2026-05-15", "2026-05-01/P14D")
+    if let Some(pair) = try_iso_interval(s, settings) {
+        return Some(pair);
+    }
+
     // Never treat a plain ISO-8601 date or timestamp (e.g. "2026-11-26") as a range.
     if is_single_iso_like(s) {
         return None;
     }
 
-    let ascii_lower = s.to_ascii_lowercase();
-    for prefix in RANGE_INTRODUCERS {
-        if ascii_lower.starts_with(prefix) && s.len() > prefix.len() {
-            s = s[prefix.len()..].trim_start();
+    // 0b. Tight time ranges without spaces ("14:00-16:30")
+    if let Some(pair) = try_tight_time_range(s, settings) {
+        return Some(pair);
+    }
+
+    let mut stripped_intro = false;
+    for prefix in ["с ", "С ", "от ", "От "] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest.trim_start();
+            stripped_intro = true;
             break;
+        }
+    }
+    if !stripped_intro {
+        let ascii_lower = s.to_ascii_lowercase();
+        for prefix in RANGE_INTRODUCERS {
+            if ascii_lower.starts_with(prefix) && s.len() > prefix.len() {
+                s = s[prefix.len()..].trim_start();
+                break;
+            }
         }
     }
 
@@ -77,8 +101,139 @@ fn is_single_iso_like(s: &str) -> bool {
     b.len() >= 10
         && b[0..4].iter().all(|c| c.is_ascii_digit())
         && b[4] == b'-'
-        && !s.contains([' ', '–', '—', '~'])
+        && !s.contains([' ', '–', '—', '~', '/'])
         && !s.contains("..")
+}
+
+fn shift_parsed_days(dt: &ParsedDateTime, delta_days: i64) -> Option<ParsedDateTime> {
+    if delta_days == 0 {
+        return Some(dt.clone());
+    }
+    let delta = Duration::days(delta_days);
+    Some(match dt {
+        ParsedDateTime::Naive(ndt) => ParsedDateTime::Naive(ndt.checked_add_signed(delta)?),
+        ParsedDateTime::FixedOffset(fdt) => {
+            ParsedDateTime::FixedOffset(fdt.checked_add_signed(delta)?)
+        }
+        ParsedDateTime::Tz(tdt) => ParsedDateTime::Tz(tdt.checked_add_signed(delta)?),
+    })
+}
+
+fn snap_range_endpoint(
+    dt: ParsedDateTime,
+    period: Period,
+    parts: &[&'static str],
+    is_end: bool,
+) -> ParsedDateTime {
+    let naive = dt.naive_local();
+    if period == Period::Month && !parts.contains(&"day") {
+        let target_day = if is_end {
+            days_in_month(naive.year(), naive.month())
+        } else {
+            1
+        };
+        let delta = target_day as i64 - naive.day() as i64;
+        return shift_parsed_days(&dt, delta).unwrap_or(dt);
+    }
+    if period == Period::Year && !parts.contains(&"month") {
+        let target = if is_end {
+            NaiveDate::from_ymd_opt(naive.year(), 12, 31)
+        } else {
+            NaiveDate::from_ymd_opt(naive.year(), 1, 1)
+        };
+        if let Some(td) = target {
+            let delta = (td - naive.date()).num_days();
+            return shift_parsed_days(&dt, delta).unwrap_or(dt);
+        }
+    }
+    dt
+}
+
+fn try_iso_interval(s: &str, settings: &Settings) -> Option<(ParsedDateTime, ParsedDateTime)> {
+    let (left, right) = s.split_once('/')?;
+    let lb = left.as_bytes();
+    if right.contains('/') || lb.len() < 10 || !lb[0..4].iter().all(|b| b.is_ascii_digit()) || lb[4] != b'-' {
+        return None;
+    }
+    let start_dt = parse_with_settings(left.trim(), settings)?;
+    let r = right.trim();
+    if r.starts_with('P') || r.starts_with('p') {
+        let end_naive = apply_iso_duration(start_dt.naive_local(), r)?;
+        let delta = end_naive - start_dt.naive_local();
+        let end_dt = match start_dt {
+            ParsedDateTime::Naive(_) => ParsedDateTime::Naive(end_naive),
+            ParsedDateTime::FixedOffset(f) => ParsedDateTime::FixedOffset(f + delta),
+            ParsedDateTime::Tz(t) => ParsedDateTime::Tz(t + delta),
+        };
+        return Some((start_dt, end_dt));
+    }
+    if r.len() >= 10 && r.as_bytes()[0..4].iter().all(|b| b.is_ascii_digit()) && r.as_bytes()[4] == b'-' {
+        let end_dt = parse_with_settings(r, settings)?;
+        return Some((start_dt, end_dt));
+    }
+    None
+}
+
+fn apply_iso_duration(mut cur: chrono::NaiveDateTime, dur: &str) -> Option<chrono::NaiveDateTime> {
+    let body = dur.strip_prefix('P').or_else(|| dur.strip_prefix('p'))?;
+    if body.is_empty() {
+        return None;
+    }
+    let mut in_time = false;
+    let mut num_buf = String::new();
+    let mut applied = false;
+    for ch in body.chars() {
+        if ch == 'T' || ch == 't' {
+            if !num_buf.is_empty() {
+                return None;
+            }
+            in_time = true;
+            continue;
+        }
+        if ch.is_ascii_digit() {
+            num_buf.push(ch);
+            continue;
+        }
+        let val: f64 = num_buf.parse().ok()?;
+        num_buf.clear();
+        let unit = match (in_time, ch.to_ascii_uppercase()) {
+            (false, 'Y') => TimeUnit::Year,
+            (false, 'M') => TimeUnit::Month,
+            (false, 'W') => TimeUnit::Week,
+            (false, 'D') => TimeUnit::Day,
+            (true, 'H') => TimeUnit::Hour,
+            (true, 'M') => TimeUnit::Minute,
+            (true, 'S') => TimeUnit::Second,
+            _ => return None,
+        };
+        cur = apply_relative_offset(cur, 1, val, unit)?;
+        applied = true;
+    }
+    if !num_buf.is_empty() || !applied {
+        return None;
+    }
+    Some(cur)
+}
+
+fn try_tight_time_range(s: &str, settings: &Settings) -> Option<(ParsedDateTime, ParsedDateTime)> {
+    for sep in ['-', '–', '—'] {
+        if let Some((l, r)) = s.split_once(sep) {
+            if let (Some(t1), Some(t2)) = (parse_time_str(l.trim()), parse_time_str(r.trim())) {
+                let base = settings.effective_base();
+                let d1 = base.date().and_time(t1);
+                let d2_date = if t2 < t1 {
+                    base.date().succ_opt().unwrap_or(base.date())
+                } else {
+                    base.date()
+                };
+                return Some((
+                    finalize_datetime(d1, None, settings),
+                    finalize_datetime(d2_date.and_time(t2), None, settings),
+                ));
+            }
+        }
+    }
+    None
 }
 
 fn try_split_connector_range(
@@ -101,9 +256,6 @@ fn try_split_connector_range(
         let right = s[end..].trim();
         if left.is_empty() || right.is_empty() {
             continue;
-        }
-        if conn == " and " && !ascii_lower.starts_with("between ") && !input_had_between(s) {
-            // Only parse "A and B" if left looks date-like; check right and left cleanly
         }
 
         // Fast handling for standalone time ranges like "10:00 - 12:30"
@@ -137,8 +289,10 @@ fn try_split_connector_range(
         }
 
         // Left is full CJK/Korean date, right is bare day ("2026年5月10日〜15日", "2026년 5월 10일 - 15일")
-        let end_dt_opt = parse_with_settings(right, settings);
-        if end_dt_opt.is_none() && (right.ends_with('日') || right.ends_with('号') || right.ends_with('일')) {
+        let end_dd = get_date_data(right, settings);
+        if end_dd.date_obj.is_none()
+            && (right.ends_with('日') || right.ends_with('号') || right.ends_with('일'))
+        {
             if let Some(start_dt) = parse_with_settings(left, settings) {
                 let sn = start_dt.naive_local();
                 let inherited = if right.ends_with('일') {
@@ -152,43 +306,61 @@ fn try_split_connector_range(
             }
         }
 
-        let Some(end_dt) = end_dt_opt else {
+        let Some(raw_end_dt) = end_dd.date_obj else {
             continue;
         };
+        let end_dt = snap_range_endpoint(raw_end_dt, end_dd.period, &end_dd.parts, true);
+
+        // Shared-month bare day on left ("10 to 15 May 2026", "du 10 au 15 mai 2026", "с 10 по 15 мая 2026")
+        if is_day_num(left) {
+            if let Ok(d) = left.parse::<u32>() {
+                let en = end_dt.naive_local();
+                if let Some(sd) = NaiveDate::from_ymd_opt(en.year(), en.month(), d) {
+                    let start_dt = finalize_datetime(sd.and_time(en.time()), None, settings);
+                    return Some((start_dt, end_dt));
+                }
+            }
+        }
 
         // Inherit year from right endpoint only when needed (preserve direct weekday/word parses like "from Monday to Friday")
         let left_has_year = has_four_digit_year(left);
         if !left_has_year {
             let end_year = end_dt.naive_local().year();
             if !left.chars().any(|c| c.is_ascii_digit()) {
-                if let Some(direct_start) = parse_with_settings(left, settings) {
-                    if direct_start.naive_local().year() == end_year {
-                        return Some((direct_start, end_dt));
+                let direct_dd = get_date_data(left, settings);
+                if let Some(raw_direct) = direct_dd.date_obj {
+                    if raw_direct.naive_local().year() == end_year {
+                        let start_dt =
+                            snap_range_endpoint(raw_direct, direct_dd.period, &direct_dd.parts, false);
+                        return Some((start_dt, end_dt));
                     }
                 }
             }
             let left_with_year = format!("{} {}", left.trim_end_matches(','), end_year);
-            if let Some(mut start_dt) = parse_with_settings(&left_with_year, settings) {
+            let left_dd = get_date_data(&left_with_year, settings);
+            if let Some(raw_start) = left_dd.date_obj {
+                let mut start_dt =
+                    snap_range_endpoint(raw_start, left_dd.period, &left_dd.parts, false);
                 if start_dt.naive_local() > end_dt.naive_local() {
                     let prev_year = format!("{} {}", left.trim_end_matches(','), end_year - 1);
-                    if let Some(earlier) = parse_with_settings(&prev_year, settings) {
-                        start_dt = earlier;
+                    let prev_dd = get_date_data(&prev_year, settings);
+                    if let Some(raw_prev) = prev_dd.date_obj {
+                        start_dt =
+                            snap_range_endpoint(raw_prev, prev_dd.period, &prev_dd.parts, false);
                     }
                 }
                 return Some((start_dt, end_dt));
             }
         }
 
-        if let Some(start_dt) = parse_with_settings(left, settings) {
+        let start_dd = get_date_data(left, settings);
+        if let Some(raw_start) = start_dd.date_obj {
+            let start_dt =
+                snap_range_endpoint(raw_start, start_dd.period, &start_dd.parts, false);
             return Some((start_dt, end_dt));
         }
     }
     None
-}
-
-#[inline]
-fn input_had_between(_s: &str) -> bool {
-    false
 }
 
 fn has_four_digit_year(s: &str) -> bool {

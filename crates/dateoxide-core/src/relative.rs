@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::fast_path::{days_in_month, parse_time_str, resolve_time_only_date};
 use crate::locale::{
     fold_diacritics, CompiledLocale, LocaleRegistry, RelativeAffix, RelativeSpec, TimeUnit,
@@ -180,7 +182,7 @@ fn lookup_exact_in_locale(
     }
     if normalize {
         let f = fold_diacritics(phrase);
-        if let Some(specs) = loc.folded_relative_exact.get(&f) {
+        if let Some(specs) = loc.folded_relative_exact.get(f.as_ref()) {
             return Some(select_relative_spec(specs, pref));
         }
     }
@@ -288,14 +290,16 @@ pub fn try_parse_relative_outcome(
     let folded_full = if settings.normalize {
         fold_diacritics(eff)
     } else {
-        eff.to_string()
+        Cow::Borrowed(eff)
     };
 
     // 0. Special compound day + time-of-day idioms, half/fractional durations & conversational clocks
     if let Some(m) = try_conversational_clock_or_fraction(eff, settings) {
         return RelativeOutcome::Matched(m);
     }
-    if let Some(m) = try_compound_tod_idiom(eff, &folded_full, candidate_ids, registry, base, settings) {
+    if let Some(m) =
+        try_compound_tod_idiom(eff, folded_full.as_ref(), candidate_ids, registry, base, settings)
+    {
         return RelativeOutcome::Matched(m);
     }
 
@@ -351,7 +355,7 @@ pub fn try_parse_relative_outcome(
     }
 
     if settings.normalize {
-        if let Some(matches) = registry.folded_exact_phrase_index.get(&folded_full) {
+        if let Some(matches) = registry.folded_exact_phrase_index.get(folded_full.as_ref()) {
             let mut matched_specs: Vec<(usize, RelativeSpec)> = Vec::new();
             if settings.use_given_language_order && !candidate_ids.is_empty() {
                 for &cid in candidate_ids {
@@ -744,11 +748,11 @@ fn try_affix_match(
     }
     if normalize {
         let fs = fold_diacritics(s);
-        if fs != s {
-            if let Some(r) = replace_word_numbers_once(&fs, loc, true) {
+        if fs.as_ref() != s {
+            if let Some(r) = replace_word_numbers_once(fs.as_ref(), loc, true) {
                 candidates.push(r);
             }
-            candidates.push(fs);
+            candidates.push(fs.into_owned());
         }
     }
 
@@ -871,10 +875,9 @@ fn try_compound_relative(
     let mut sign: Option<i8> = None;
     let mut rest = s.trim().to_string();
 
-    let strip_marker = |text: &str, markers: &rustc_hash::FxHashSet<String>| -> Option<String> {
-        let mut sorted: Vec<&str> = markers.iter().map(|s| s.as_str()).collect();
-        sorted.sort_unstable_by_key(|a| std::cmp::Reverse(a.len()));
-        for w in sorted {
+    let strip_marker = |text: &str, markers: &[String]| -> Option<String> {
+        for w in markers {
+            let w = w.as_str();
             if let Some(stripped) = text.strip_suffix(w) {
                 if stripped.is_empty() || stripped.ends_with(' ') || !w.is_ascii() {
                     return Some(stripped.trim().to_string());
@@ -889,30 +892,30 @@ fn try_compound_relative(
         None
     };
 
-    if let Some(r) = strip_marker(&rest, &loc.ago) {
+    if let Some(r) = strip_marker(&rest, &loc.ago_sorted) {
         sign = Some(-1);
         rest = r;
     } else if normalize {
         let f_rest = fold_diacritics(&rest);
-        if let Some(r) = strip_marker(&f_rest, &loc.folded_ago) {
+        if let Some(r) = strip_marker(f_rest.as_ref(), &loc.folded_ago_sorted) {
             sign = Some(-1);
             rest = r;
-        } else if let Some(r) = strip_marker(&f_rest, &loc.ago) {
+        } else if let Some(r) = strip_marker(f_rest.as_ref(), &loc.ago_sorted) {
             sign = Some(-1);
             rest = r;
         }
     }
 
     if sign.is_none() {
-        if let Some(r) = strip_marker(&rest, &loc.in_words) {
+        if let Some(r) = strip_marker(&rest, &loc.in_words_sorted) {
             sign = Some(1);
             rest = r;
         } else if normalize {
             let f_rest = fold_diacritics(&rest);
-            if let Some(r) = strip_marker(&f_rest, &loc.folded_in_words) {
+            if let Some(r) = strip_marker(f_rest.as_ref(), &loc.folded_in_words_sorted) {
                 sign = Some(1);
                 rest = r;
-            } else if let Some(r) = strip_marker(&f_rest, &loc.in_words) {
+            } else if let Some(r) = strip_marker(f_rest.as_ref(), &loc.in_words_sorted) {
                 sign = Some(1);
                 rest = r;
             }
@@ -964,7 +967,11 @@ fn apply_token_duration_pairs(
         }
         if normalize {
             let ft = fold_diacritics(tok);
-            if let Some(&u) = loc.units.get(&ft).or_else(|| loc.folded_units.get(&ft)) {
+            if let Some(&u) = loc
+                .units
+                .get(ft.as_ref())
+                .or_else(|| loc.folded_units.get(ft.as_ref()))
+            {
                 return Some(u);
             }
         }
@@ -1243,7 +1250,7 @@ fn try_relative_period_or_weekday(
     let fs = if normalize {
         fold_diacritics(s)
     } else {
-        s.to_string()
+        Cow::Borrowed(s)
     };
     let mut tokens: Vec<&str> = fs.split_whitespace().collect();
     if tokens.len() == 3 && matches!(tokens[0], "el" | "la" | "le" | "w" | "в" | "am") {
@@ -1321,7 +1328,7 @@ fn try_conversational_clock_or_fraction_inner(
     let s = if settings.normalize {
         fold_diacritics(normalized)
     } else {
-        normalized.to_string()
+        Cow::Borrowed(normalized)
     };
     let s = s.trim();
 
@@ -2008,6 +2015,3 @@ fn strip_connector_words<'a>(s: &'a str, loc: &CompiledLocale) -> &'a str {
     }
     cur
 }
-
-#[allow(dead_code)]
-fn _spec_unused(_s: RelativeSpec) {}

@@ -374,7 +374,7 @@ pub fn try_custom_formats(input: &str, settings: &Settings) -> Option<FastPathMa
     );
 
     let folded_norm = if settings.normalize {
-        Some(fold_diacritics(&norm))
+        Some(fold_diacritics(&norm).into_owned())
     } else {
         None
     };

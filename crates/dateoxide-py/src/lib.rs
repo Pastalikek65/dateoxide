@@ -1,4 +1,4 @@
-use chrono::{NaiveDateTime, NaiveTime};
+use chrono::{NaiveDateTime, NaiveTime, TimeZone};
 use dateoxide_core::settings::{
     DateData, DateOrder, DatePart, ParsedDateTime, ParserKind, PreferDatesFrom, PreferDayOfMonth,
     PreferMonthOfYear, Settings, StartOfWeek, StrictDateOrder,
@@ -50,6 +50,35 @@ fn parsed_to_py(py: Python<'_>, dt: ParsedDateTime) -> PyResult<PyObject> {
         ParsedDateTime::FixedOffset(fdt) => Ok(fdt.into_pyobject(py)?.into_any().unbind()),
         ParsedDateTime::Tz(tdt) => Ok(tdt.into_pyobject(py)?.into_any().unbind()),
     }
+}
+
+fn parsed_to_timestamp(dt: &ParsedDateTime) -> f64 {
+    match dt {
+        ParsedDateTime::Naive(ndt) => {
+            if let Some(ldt) = chrono::Local.from_local_datetime(ndt).earliest() {
+                ldt.timestamp() as f64 + (ldt.timestamp_subsec_nanos() as f64 / 1e9)
+            } else {
+                let u = ndt.and_utc();
+                u.timestamp() as f64 + (u.timestamp_subsec_nanos() as f64 / 1e9)
+            }
+        }
+        ParsedDateTime::FixedOffset(fdt) => {
+            fdt.timestamp() as f64 + (fdt.timestamp_subsec_nanos() as f64 / 1e9)
+        }
+        ParsedDateTime::Tz(tdt) => {
+            tdt.timestamp() as f64 + (tdt.timestamp_subsec_nanos() as f64 / 1e9)
+        }
+    }
+}
+
+fn extract_optional_strings(date_strings: &Bound<'_, PyAny>) -> PyResult<Vec<Option<String>>> {
+    let iter = date_strings.try_iter()?;
+    let mut out = Vec::with_capacity(date_strings.len().unwrap_or(0));
+    for item in iter {
+        let obj = item?;
+        out.push(obj.extract::<Option<String>>()?);
+    }
+    Ok(out)
 }
 
 fn tzspec_to_py(py: Python<'_>, tz: TzSpec) -> PyResult<PyObject> {
@@ -845,8 +874,9 @@ impl PyDateDataParser {
     fn parse_batch(
         &self,
         py: Python<'_>,
-        date_strings: Vec<Option<String>>,
+        date_strings: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyList>> {
+        let date_strings = extract_optional_strings(date_strings)?;
         let results = match (&self.settings.languages, &self.detect_languages_function) {
             (None, Some(func)) => {
             let mut out = Vec::with_capacity(date_strings.len());
@@ -948,24 +978,55 @@ fn parse(
     }
 }
 
-/// High-throughput, GIL-free parallel batch parser powered by Rayon (supports nullable strings).
+/// High-throughput, GIL-free parallel batch parser powered by Rayon (supports iterables and nullable strings).
 #[pyfunction]
 #[pyo3(signature = (date_strings, date_formats=None, languages=None, locales=None, region=None, settings=None))]
 fn parse_batch(
     py: Python<'_>,
-    date_strings: Vec<Option<String>>,
+    date_strings: &Bound<'_, PyAny>,
     date_formats: Option<Vec<String>>,
     languages: Option<Vec<String>>,
     locales: Option<Vec<String>>,
     region: Option<String>,
     settings: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyList>> {
+    let date_strings = extract_optional_strings(date_strings)?;
     let cfg = extract_settings(date_formats, languages, locales, region, false, settings)?;
     let results = py.allow_threads(|| dateoxide_core::parse_batch_opt(&date_strings, &cfg));
     let py_items: Vec<PyObject> = results
         .into_iter()
         .map(|opt| match opt {
             Some(dt) => parsed_to_py(py, dt),
+            None => Ok(py.None()),
+        })
+        .collect::<PyResult<_>>()?;
+    Ok(PyList::new(py, py_items)?.unbind())
+}
+
+/// High-throughput batch parser returning Unix epoch float timestamps (or `None`).
+#[pyfunction]
+#[pyo3(signature = (date_strings, date_formats=None, languages=None, locales=None, region=None, settings=None))]
+fn parse_batch_timestamps(
+    py: Python<'_>,
+    date_strings: &Bound<'_, PyAny>,
+    date_formats: Option<Vec<String>>,
+    languages: Option<Vec<String>>,
+    locales: Option<Vec<String>>,
+    region: Option<String>,
+    settings: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyList>> {
+    let date_strings = extract_optional_strings(date_strings)?;
+    let cfg = extract_settings(date_formats, languages, locales, region, false, settings)?;
+    let results: Vec<Option<f64>> = py.allow_threads(|| {
+        dateoxide_core::parse_batch_opt(&date_strings, &cfg)
+            .into_iter()
+            .map(|opt| opt.as_ref().map(parsed_to_timestamp))
+            .collect()
+    });
+    let py_items: Vec<PyObject> = results
+        .into_iter()
+        .map(|opt| match opt {
+            Some(ts) => Ok(ts.into_pyobject(py)?.into_any().unbind()),
             None => Ok(py.None()),
         })
         .collect::<PyResult<_>>()?;
@@ -993,7 +1054,7 @@ fn parse_date_range(
 /// Drop-in replacement for `dateparser.search.search_dates(...)`.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
-#[pyo3(signature = (text, languages=None, settings=None, add_detected_language=false, detect_languages_function=None, strategy="split", date_formats=None, add_period=false))]
+#[pyo3(signature = (text, languages=None, settings=None, add_detected_language=false, detect_languages_function=None, strategy="split", date_formats=None, add_period=false, return_spans=false))]
 fn search_dates(
     py: Python<'_>,
     text: &str,
@@ -1004,6 +1065,7 @@ fn search_dates(
     strategy: &str,
     date_formats: Option<Vec<String>>,
     add_period: bool,
+    return_spans: bool,
 ) -> PyResult<Option<Py<PyList>>> {
     if !matches!(strategy, "split" | "ngram") {
         return Err(PyValueError::new_err(format!(
@@ -1033,12 +1095,31 @@ fn search_dates(
         .map(|m| {
             let py_dt = parsed_to_py(py, m.date_obj)?;
             let period_s = m.period.as_str().to_string();
-            match (add_period, add_detected_language) {
-                (false, false) => Ok((m.text, py_dt).into_pyobject(py)?.into_any().unbind()),
-                (false, true) => Ok((m.text, py_dt, m.locale).into_pyobject(py)?.into_any().unbind()),
-                (true, false) => Ok((m.text, py_dt, period_s).into_pyobject(py)?.into_any().unbind()),
-                (true, true) => {
+            let span = if return_spans {
+                let end_b = m.end_byte.min(text.len());
+                let start_b = m.start_byte.min(end_b);
+                let sc = text[..start_b].chars().count();
+                let ec = sc + text[start_b..end_b].chars().count();
+                Some((sc, ec))
+            } else {
+                None
+            };
+            match (add_period, add_detected_language, span) {
+                (false, false, None) => Ok((m.text, py_dt).into_pyobject(py)?.into_any().unbind()),
+                (false, true, None) => Ok((m.text, py_dt, m.locale).into_pyobject(py)?.into_any().unbind()),
+                (true, false, None) => Ok((m.text, py_dt, period_s).into_pyobject(py)?.into_any().unbind()),
+                (true, true, None) => {
                     Ok((m.text, py_dt, period_s, m.locale).into_pyobject(py)?.into_any().unbind())
+                }
+                (false, false, Some(sp)) => Ok((m.text, py_dt, sp).into_pyobject(py)?.into_any().unbind()),
+                (false, true, Some(sp)) => {
+                    Ok((m.text, py_dt, m.locale, sp).into_pyobject(py)?.into_any().unbind())
+                }
+                (true, false, Some(sp)) => {
+                    Ok((m.text, py_dt, period_s, sp).into_pyobject(py)?.into_any().unbind())
+                }
+                (true, true, Some(sp)) => {
+                    Ok((m.text, py_dt, period_s, m.locale, sp).into_pyobject(py)?.into_any().unbind())
                 }
             }
         })
@@ -1197,6 +1278,7 @@ fn _dateoxide(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SettingValidationError", py.get_type::<SettingValidationError>())?;
     m.add_function(wrap_pyfunction!(parse, m)?)?;
     m.add_function(wrap_pyfunction!(parse_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_batch_timestamps, m)?)?;
     m.add_function(wrap_pyfunction!(parse_date_range, m)?)?;
     m.add_function(wrap_pyfunction!(search_dates, m)?)?;
     m.add_function(wrap_pyfunction!(parse_freshness, m)?)?;

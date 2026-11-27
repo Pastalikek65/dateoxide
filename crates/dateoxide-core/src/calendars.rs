@@ -195,7 +195,7 @@ pub fn french_republican_to_gregorian(ry: i32, rm: u32, rd: u32) -> Option<Naive
 
 fn jalali_month_from_token(tok: &str) -> Option<u32> {
     let f = fold_diacritics(tok);
-    match f.as_str() {
+    match f.as_ref() {
         "فروردین" | "farvardin" => Some(1),
         "اردیبهشت" | "ordibehesht" => Some(2),
         "خرداد" | "khordad" => Some(3),
@@ -214,7 +214,7 @@ fn jalali_month_from_token(tok: &str) -> Option<u32> {
 
 fn hijri_month_from_phrase(tok: &str) -> Option<u32> {
     let f = fold_diacritics(tok);
-    match f.as_str() {
+    match f.as_ref() {
         "محرم" | "muharram" => Some(1),
         "صفر" | "safar" => Some(2),
         "ربيع الاول" | "rabi al-awwal" | "rabi al awwal" | "rabi i" => Some(3),
@@ -234,7 +234,7 @@ fn hijri_month_from_phrase(tok: &str) -> Option<u32> {
 
 fn french_republican_month(tok: &str) -> Option<u32> {
     let f = fold_diacritics(tok);
-    match f.as_str() {
+    match f.as_ref() {
         "vendemiaire" => Some(1),
         "brumaire" => Some(2),
         "frimaire" => Some(3),
@@ -333,6 +333,7 @@ pub fn parse_jalali(input: &str, settings: &Settings) -> DateData {
     let has_time = opt_time.is_some();
     let time = opt_time.unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
 
+    let mut is_month_only = false;
     let ymd = if let Some(triple) = parse_numeric_ymd_or_dmy(core) {
         Some(triple)
     } else {
@@ -352,6 +353,10 @@ pub fn parse_jalali(input: &str, settings: &Settings) -> DateData {
         match (month, nums.as_slice()) {
             (Some(m), [(d, l1), (y, l2)]) if *l2 >= 3 && *l1 <= 2 => Some((*y, m, *d as u32)),
             (Some(m), [(y, l1), (d, l2)]) if *l1 >= 3 && *l2 <= 2 => Some((*y, m, *d as u32)),
+            (Some(m), [(y, l1)]) if *l1 >= 3 => {
+                is_month_only = true;
+                Some((*y, m, 1))
+            }
             _ => None,
         }
     };
@@ -362,7 +367,11 @@ pub fn parse_jalali(input: &str, settings: &Settings) -> DateData {
     let Some(nd) = jalali_to_gregorian(jy, jm, jd) else {
         return DateData::empty();
     };
-    let mut parts = vec!["year", "month", "day"];
+    let mut parts = if is_month_only {
+        vec!["year", "month"]
+    } else {
+        vec!["year", "month", "day"]
+    };
     if has_time {
         parts.push("time");
     }
@@ -370,6 +379,8 @@ pub fn parse_jalali(input: &str, settings: &Settings) -> DateData {
         date_obj: Some(finalize_datetime(nd.and_time(time), tz, settings)),
         period: if settings.return_time_as_period && has_time {
             Period::Time
+        } else if is_month_only {
+            Period::Month
         } else {
             Period::Day
         },
@@ -390,6 +401,7 @@ pub fn parse_hijri(input: &str, settings: &Settings) -> DateData {
     let has_time = opt_time.is_some();
     let time = opt_time.unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
 
+    let mut is_month_only = false;
     let ymd = if let Some(triple) = parse_numeric_ymd_or_dmy(core) {
         Some(triple)
     } else {
@@ -435,6 +447,10 @@ pub fn parse_hijri(input: &str, settings: &Settings) -> DateData {
         match (month, nums.as_slice()) {
             (Some(m), [(d, l1), (y, l2)]) if *l2 >= 3 && *l1 <= 2 => Some((*y, m, *d as u32)),
             (Some(m), [(y, l1), (d, l2)]) if *l1 >= 3 && *l2 <= 2 => Some((*y, m, *d as u32)),
+            (Some(m), [(y, l1)]) if *l1 >= 3 => {
+                is_month_only = true;
+                Some((*y, m, 1))
+            }
             _ => None,
         }
     };
@@ -445,7 +461,11 @@ pub fn parse_hijri(input: &str, settings: &Settings) -> DateData {
     let Some(nd) = hijri_to_gregorian(hy, hm, hd) else {
         return DateData::empty();
     };
-    let mut parts = vec!["year", "month", "day"];
+    let mut parts = if is_month_only {
+        vec!["year", "month"]
+    } else {
+        vec!["year", "month", "day"]
+    };
     if has_time {
         parts.push("time");
     }
@@ -453,6 +473,8 @@ pub fn parse_hijri(input: &str, settings: &Settings) -> DateData {
         date_obj: Some(finalize_datetime(nd.and_time(time), tz, settings)),
         period: if settings.return_time_as_period && has_time {
             Period::Time
+        } else if is_month_only {
+            Period::Month
         } else {
             Period::Day
         },

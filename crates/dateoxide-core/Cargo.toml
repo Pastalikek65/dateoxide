@@ -17,7 +17,6 @@ rayon = ["dep:rayon"]
 calendars = []
 
 [dependencies]
-aho-corasick = "1.1"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 postcard = { version = "1.1", features = ["alloc"] }
