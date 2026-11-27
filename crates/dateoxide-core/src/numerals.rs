@@ -37,7 +37,7 @@ pub fn unicode_nd_digit(ch: char) -> Option<u8> {
     None
 }
 
-/// Returns `true` if `ch` is a decimal digit in any of the 68 Unicode `Nd` numeral scripts.
+/// Returns `true` if `ch` is a decimal digit in any of the 76 Unicode `Nd` numeral scripts.
 #[inline]
 pub fn is_unicode_decimal_digit(ch: char) -> bool {
     unicode_nd_digit(ch).is_some()
@@ -542,6 +542,9 @@ fn ko_sino_digit(ch: char) -> Option<u32> {
 /// Parse single-token compound words (`"twenty-one"`, German `"einundzwanzig"`, Dutch `"eenentwintig"`,
 /// French `"quatre-vingts"`/`"quatre-vingt-un"`, Korean `"스물한"`/`"이십오"`, Japanese `"二十五"`).
 pub fn parse_single_word_cardinal(tok: &str, loc: &CompiledLocale, normalize: bool) -> Option<u32> {
+    if tok.is_empty() || tok.len() > 64 {
+        return None;
+    }
     if let Some(v) = lookup_word_num(tok, loc, normalize) {
         return Some(v);
     }

@@ -7,7 +7,7 @@
 //! # Quick Start
 //!
 //! ```
-//! use dateoxide_core::{calendars, parse, parse_batch, parse_with_settings, search::search_dates, settings::Settings};
+//! use dateoxide_core::{parse, parse_batch, parse_with_settings, search::search_dates, settings::Settings};
 //! use chrono::{Datelike, NaiveDate, NaiveDateTime};
 //!
 //! // Fast ISO-8601, RFC-2822/3339, and ISO week date parsing
@@ -32,9 +32,12 @@
 //! let batch = parse_batch(&["2026-11-26", "vor 2 Wochen", "not a date"], &settings);
 //! assert!(batch[0].is_some() && batch[1].is_some() && batch[2].is_none());
 //!
+//! # #[cfg(feature = "calendars")]
+//! # {
 //! // Non-Gregorian calendar conversion (official Umm al-Qura Hijri)
-//! let hijri = calendars::parse_hijri("1446/09/01", &settings);
+//! let hijri = dateoxide_core::calendars::parse_hijri("1446/09/01", &settings);
 //! assert_eq!(hijri.date_obj.unwrap().naive_local().date(), NaiveDate::from_ymd_opt(2025, 3, 1).unwrap());
+//! # }
 //! ```
 
 pub mod absolute;
@@ -200,15 +203,17 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
         return DateData::empty();
     }
 
-    // Currency-amount guard in auto-detect mode (e.g. "25 EUR", "100 SEK", "50 NGN")
+    // Currency-amount guard in auto-detect mode (e.g. "25 EUR", "EUR 2026", "100 SEK", "50 NGN")
     if settings.languages.is_none() {
         let mut parts = trimmed.split_whitespace();
-        if let (Some(n_tok), Some(c_tok), None) = (parts.next(), parts.next(), parts.next()) {
-            let n_clean = n_tok.trim_matches(|c: char| matches!(c, '+' | '-'));
-            if !n_clean.is_empty()
-                && n_clean.bytes().all(|b| b.is_ascii_digit() || b == b'.' || b == b',')
-                && locale::is_iso4217_currency(c_tok)
-            {
+        if let (Some(a_tok), Some(b_tok), None) = (parts.next(), parts.next(), parts.next()) {
+            let is_cur_num = |num_tok: &str, cur_tok: &str| {
+                let n_clean = num_tok.trim_matches(|c: char| matches!(c, '+' | '-'));
+                !n_clean.is_empty()
+                    && n_clean.bytes().all(|b| b.is_ascii_digit() || b == b'.' || b == b',')
+                    && locale::is_iso4217_currency(cur_tok)
+            };
+            if is_cur_num(a_tok, b_tok) || is_cur_num(b_tok, a_tok) {
                 return DateData::empty();
             }
         }
@@ -1300,9 +1305,12 @@ mod tests {
         assert!(get_date_data("15 jun 2026 pukul 14:30", &s).date_obj.is_some());
 
         // Calendar bounds & rollovers
-        assert!(calendars::jalali_to_gregorian(11767034, 1, 1).is_none());
-        assert!(calendars::hijri_to_gregorian(6066335, 1, 1).is_none());
-        assert!(calendars::french_republican_to_gregorian(50_000_000, 7, 14).is_none());
+        #[cfg(feature = "calendars")]
+        {
+            assert!(calendars::jalali_to_gregorian(11767034, 1, 1).is_none());
+            assert!(calendars::hijri_to_gregorian(6066335, 1, 1).is_none());
+            assert!(calendars::french_republican_to_gregorian(50_000_000, 7, 14).is_none());
+        }
         assert!(parse_with_settings("0000-W01-1", &s).is_none());
         let mut s_tz = s.clone();
         s_tz.to_timezone = Some("Asia/Tokyo".to_string());

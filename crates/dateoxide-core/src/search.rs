@@ -215,6 +215,9 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
             }
         }
 
+        let first_raw = &text[spans[i].0..spans[i].1];
+        let mut seen_year =
+            is_complete_standalone_date_token(first_raw) || is_four_digit_year_token(first_raw);
         let mut best_end = i;
         let mut j = i + 1;
         while j < spans.len() && (j - i) < 10 {
@@ -234,23 +237,51 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                 break;
             }
 
+            let tok_j = &text[spans[j].0..spans[j].1];
+            if is_complete_standalone_date_token(tok_j) {
+                break;
+            }
+            if tok_j.eq_ignore_ascii_case(prev_raw) && !tok_j.bytes().any(|b| b.is_ascii_digit()) {
+                break;
+            }
+            if seen_year {
+                let tok_j_year = is_four_digit_year_token(tok_j);
+                let is_time_or_offset = tok_j.contains(':')
+                    || kinds[j] == TokenKind::Tz
+                    || (tok_j.starts_with(['+', '-'])
+                        && tok_j[1..].bytes().all(|b| b.is_ascii_digit() || b == b':'))
+                    || matches!(
+                        tok_j.trim_end_matches('.').to_ascii_lowercase().as_str(),
+                        "am" | "pm" | "a.m" | "p.m" | "at" | "um" | "à" | "saat"
+                    );
+                if tok_j_year || (!is_time_or_offset && ((j - i) >= 3 || tok_j.contains('-'))) {
+                    break;
+                }
+            }
+
             match kinds[j] {
-                TokenKind::Signal => {
+                TokenKind::Signal | TokenKind::Tz => {
+                    if is_four_digit_year_token(tok_j) {
+                        seen_year = true;
+                    }
                     best_end = j;
                     j += 1;
                 }
                 TokenKind::Numeral => {
+                    if is_four_digit_year_token(tok_j) {
+                        seen_year = true;
+                    }
                     best_end = j;
                     j += 1;
                 }
                 TokenKind::Connector => {
                     if j + 1 < spans.len()
-                        && matches!(kinds[j + 1], TokenKind::Signal | TokenKind::Numeral)
+                        && matches!(kinds[j + 1], TokenKind::Signal | TokenKind::Numeral | TokenKind::Tz)
                     {
                         j += 1;
                     } else if j + 2 < spans.len()
                         && kinds[j + 1] == TokenKind::Connector
-                        && matches!(kinds[j + 2], TokenKind::Signal | TokenKind::Numeral)
+                        && matches!(kinds[j + 2], TokenKind::Signal | TokenKind::Numeral | TokenKind::Tz)
                     {
                         j += 2;
                     } else {
@@ -308,14 +339,22 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                 continue;
             }
             if settings.languages.is_none()
-                && end_idx + 1 < spans.len()
                 && !raw_sub.is_empty()
                 && raw_sub.bytes().all(|b| b.is_ascii_digit() || b == b'.' || b == b',')
             {
-                let next_raw = text[spans[end_idx + 1].0..spans[end_idx + 1].1]
-                    .trim_matches(|c: char| matches!(c, ',' | '.' | ';' | '!' | '?' | '(' | ')'));
-                if crate::locale::is_iso4217_currency(next_raw) {
-                    continue;
+                if end_idx + 1 < spans.len() {
+                    let next_raw = text[spans[end_idx + 1].0..spans[end_idx + 1].1]
+                        .trim_matches(|c: char| matches!(c, ',' | '.' | ';' | '!' | '?' | '(' | ')'));
+                    if crate::locale::is_iso4217_currency(next_raw) {
+                        continue;
+                    }
+                }
+                if i > 0 {
+                    let prev_raw = text[spans[i - 1].0..spans[i - 1].1]
+                        .trim_matches(|c: char| matches!(c, ',' | '.' | ';' | '!' | '?' | '(' | ')'));
+                    if crate::locale::is_iso4217_currency(prev_raw) {
+                        continue;
+                    }
                 }
             }
             if is_version_like_dotted(raw_sub) {
@@ -376,6 +415,13 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                         break;
                     }
                 }
+                if i > 0
+                    && raw_sub.len() == 4
+                    && raw_sub.bytes().all(|b| b.is_ascii_digit())
+                    && is_identifier_or_code_prefix(&text[spans[i - 1].0..spans[i - 1].1])
+                {
+                    continue;
+                }
                 if !is_valid_single_token_date(raw_sub, registry, parse_settings.normalize) {
                     continue;
                 }
@@ -426,7 +472,54 @@ enum TokenKind {
     Signal,
     Numeral,
     Connector,
+    Tz,
     Other,
+}
+
+fn is_complete_standalone_date_token(tok: &str) -> bool {
+    let t = tok.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | '!' | '?' | '(' | ')' | '[' | ']'));
+    let b = t.as_bytes();
+    if b.len() >= 10 && b[0..4].iter().all(|c| c.is_ascii_digit()) && (b[4] == b'-' || b[4] == b'/') {
+        return true;
+    }
+    if t.contains('年') && t.contains('月') && t.contains('日') {
+        return true;
+    }
+    false
+}
+
+fn is_four_digit_year_token(tok: &str) -> bool {
+    let t = tok.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | '!' | '?' | '(' | ')' | '[' | ']'));
+    if t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()) {
+        if let Ok(y) = t.parse::<u32>() {
+            return (1900..=2100).contains(&y);
+        }
+    }
+    false
+}
+
+fn is_identifier_or_code_prefix(prev_tok: &str) -> bool {
+    if prev_tok.ends_with([',', ';', ':', '.', '!', '?', '(', '[', '-', '/']) {
+        return false;
+    }
+    let clean = prev_tok.trim_start_matches(['(', '[', '"', '\'']);
+    if (2..=4).contains(&clean.len())
+        && clean.bytes().all(|b| b.is_ascii_uppercase())
+        && !matches!(
+            clean,
+            "JAN" | "FEB" | "MAR" | "APR" | "MAY" | "JUN" | "JUL" | "AUG" | "SEP" | "OCT"
+                | "NOV" | "DEC" | "MON" | "TUE" | "WED" | "THU" | "FRI" | "SAT" | "SUN"
+                | "FY" | "AD" | "BC" | "CE" | "Q1" | "Q2" | "Q3" | "Q4"
+                | "IN" | "ON" | "OF" | "AT" | "BY" | "TO"
+        )
+    {
+        return true;
+    }
+    matches!(
+        clean.to_ascii_lowercase().as_str(),
+        "error" | "err" | "pid" | "port" | "code" | "issue" | "bug" | "ticket"
+            | "id" | "ref" | "flight" | "order" | "invoice" | "model" | "version" | "ver"
+    )
 }
 
 fn collect_word_spans(s: &str) -> Vec<(usize, usize)> {
@@ -640,7 +733,7 @@ fn classify_token(
         && tok.bytes().all(|b| b.is_ascii_uppercase())
         && crate::timezone::parse_tz_spec(tok).is_some()
     {
-        return TokenKind::Signal;
+        return TokenKind::Tz;
     }
 
     let trimmed_raw = tok.trim_matches(|c: char| matches!(c, ',' | '.' | '(' | ')' | '[' | ']'));

@@ -1003,13 +1003,13 @@ pub fn clean_unicode_surface(input: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Returns `true` if `ch` is an ASCII digit or a Unicode decimal digit across all 68 `Nd` scripts.
+/// Returns `true` if `ch` is an ASCII digit or a Unicode decimal digit across all 76 `Nd` scripts.
 #[inline]
 pub fn is_unicode_decimal_digit(ch: char) -> bool {
     crate::numerals::is_unicode_decimal_digit(ch)
 }
 
-/// Normalize all 68 Unicode `Nd` decimal numeral systems to ASCII 0-9, strip invisible Unicode
+/// Normalize all 76 Unicode `Nd` decimal numeral systems to ASCII 0-9, strip invisible Unicode
 /// format controls, normalize fullwidth punctuation, and lowercase cleanly for fast matching.
 pub fn normalize_digits_and_lower(input: &str) -> String {
     let keep_zwsp = has_khmer_chars(input);

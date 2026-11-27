@@ -45,7 +45,8 @@ pub fn parse_date_range(
     input: &str,
     settings: &Settings,
 ) -> Option<(ParsedDateTime, ParsedDateTime)> {
-    let mut s = input.trim();
+    let cleaned_surface = crate::locale::clean_unicode_surface(input);
+    let mut s = cleaned_surface.trim();
     if s.is_empty() || s.len() > 200 {
         return None;
     }
@@ -109,7 +110,7 @@ fn shift_parsed_days(dt: &ParsedDateTime, delta_days: i64) -> Option<ParsedDateT
     if delta_days == 0 {
         return Some(dt.clone());
     }
-    let delta = Duration::days(delta_days);
+    let delta = Duration::try_days(delta_days)?;
     Some(match dt {
         ParsedDateTime::Naive(ndt) => ParsedDateTime::Naive(ndt.checked_add_signed(delta)?),
         ParsedDateTime::FixedOffset(fdt) => {
@@ -163,7 +164,8 @@ fn try_iso_interval(s: &str, settings: &Settings) -> Option<(ParsedDateTime, Par
             ParsedDateTime::Naive(_) => ParsedDateTime::Naive(date_shifted.checked_add_signed(time_delta)?),
             ParsedDateTime::FixedOffset(f) => {
                 let d_delta = date_shifted - start_dt.naive_local();
-                ParsedDateTime::FixedOffset(f.checked_add_signed(d_delta + time_delta)?)
+                let total_delta = d_delta.checked_add(&time_delta)?;
+                ParsedDateTime::FixedOffset(f.checked_add_signed(total_delta)?)
             }
             ParsedDateTime::Tz(t) => {
                 let localized = resolve_iana_local(t.timezone(), date_shifted);
@@ -211,12 +213,12 @@ fn apply_iso_duration_split(
         num_buf.clear();
         if in_time {
             let add = match ch.to_ascii_uppercase() {
-                'H' => Duration::hours(val_i),
-                'M' => Duration::minutes(val_i),
-                'S' => Duration::seconds(val_i),
+                'H' => Duration::try_hours(val_i)?,
+                'M' => Duration::try_minutes(val_i)?,
+                'S' => Duration::try_seconds(val_i)?,
                 _ => return None,
             };
-            time_delta += add;
+            time_delta = time_delta.checked_add(&add)?;
         } else {
             let unit = match ch.to_ascii_uppercase() {
                 'Y' => TimeUnit::Year,

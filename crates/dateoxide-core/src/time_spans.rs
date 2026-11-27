@@ -364,7 +364,11 @@ pub fn generate_time_span(
     base_date: NaiveDateTime,
     settings: &Settings,
 ) -> Option<(NaiveDateTime, NaiveDateTime)> {
-    let past = direction == "past";
+    let past = match direction {
+        "past" => true,
+        "future" => false,
+        _ => return None,
+    };
     if span_type == "week" {
         let ws = week_start(base_date, settings.default_start_of_week);
         let (s_dt, e_dt) = if past {
@@ -387,9 +391,11 @@ pub fn generate_time_span(
             settings.default_days_in_month as f64,
             TimeUnit::Day,
         )?,
-        "days" => apply_relative_offset(base_date, sign, number as f64, TimeUnit::Day)?,
+        "months" => apply_relative_offset(base_date, sign, number as f64, TimeUnit::Month)?,
+        "day" | "days" => apply_relative_offset(base_date, sign, number as f64, TimeUnit::Day)?,
         "weeks" => apply_relative_offset(base_date, sign, number as f64, TimeUnit::Week)?,
-        _ => apply_relative_offset(base_date, sign, number as f64, TimeUnit::Month)?,
+        "year" | "years" => apply_relative_offset(base_date, sign, number as f64, TimeUnit::Year)?,
+        _ => return None,
     };
     if !(1..=9999).contains(&other.year()) || !(1..=9999).contains(&base_date.year()) {
         return None;

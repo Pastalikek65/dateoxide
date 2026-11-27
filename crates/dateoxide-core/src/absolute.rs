@@ -821,10 +821,22 @@ fn try_parse_in_locale(
         if settings.languages.is_none() && !crate::locale::is_major_auto_locale(&loc.code) {
             return None;
         }
+        // Require at least 3 date components (e.g. "XV V MMXXIV", "15 V 2024", or "XV May MMXXIV")
+        // unless an alphabetic calendar month name was already matched; blocks "I MIX" / "MIX I".
+        if month.is_none()
+            && roman_cands.len()
+                + free_nums.len()
+                + usize::from(day.is_some())
+                + usize::from(year.is_some())
+                < 3
+        {
+            return None;
+        }
         let mut used_roman_month = false;
+        let min_roman_year = if settings.languages.is_none() { 1400 } else { 100 };
         // Pass 1: 4-digit/century year Roman numerals (e.g. MMXXIV)
         for &(rv, rpos) in &roman_cands {
-            if year.is_none() && (100..=3999).contains(&rv) {
+            if year.is_none() && (min_roman_year..=3999).contains(&rv) {
                 year = Some(rv as i32);
                 year_pos = Some(rpos);
             }
@@ -995,10 +1007,11 @@ fn try_parse_in_locale(
     if settings.languages.is_none()
         && !crate::locale::is_major_auto_locale(&loc.code)
         && time.is_none()
-        && month.is_some()
-        && month_token_ascii
-        && month_token_len <= 3
-        && ((day.is_some() && year.is_none()) || year_expanded_from_two)
+        && ((month.is_some()
+            && month_token_ascii
+            && month_token_len <= 3
+            && ((day.is_some() && year.is_none()) || year_expanded_from_two || month_token_len <= 2))
+            || (weekday_seen.is_some() && month.is_none() && day.is_none() && year.is_some()))
     {
         return None;
     }
