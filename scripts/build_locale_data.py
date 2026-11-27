@@ -323,6 +323,9 @@ EXTRA_WORD_NUMBERS: dict[str, dict[str, int]] = {
 
 # Exact +/-2 day and colloquial relative idioms omitted by CLDR
 EXTRA_RELATIVE_EXACT: dict[str, list[tuple[str, int, int, int]]] = {
+    "zh": [("这一时间", -1, 0, 6), ("這一時間", -1, 0, 6), ("这一小时", -1, 0, 4), ("這一小時", -1, 0, 4), ("这一分钟", -1, 0, 5), ("這一分鐘", -1, 0, 5), ("这一秒", -1, 0, 6), ("這一秒", -1, 0, 6)],
+    "zh-Hans": [("这一时间", -1, 0, 6), ("这一小时", -1, 0, 4), ("这一分钟", -1, 0, 5), ("这一秒", -1, 0, 6)],
+    "zh-Hant": [("這一時間", -1, 0, 6), ("這一小時", -1, 0, 4), ("這一分鐘", -1, 0, 5), ("這一秒", -1, 0, 6)],
     "tr": [("evvelsi gün", -1, 2, 3), ("dünden önceki gün", -1, 2, 3), ("öbür gün", 1, 2, 3), ("öbürsü gün", 1, 2, 3)],
     "es": [("anteayer", -1, 2, 3), ("pasado mañana", 1, 2, 3)],
     "pt": [("anteontem", -1, 2, 3), ("depois de amanhã", 1, 2, 3)],
@@ -641,6 +644,14 @@ def main() -> None:
             if code != "en" and ((len(m) == 1 and m.isascii()) or m in ENGLISH_STOPWORDS):
                 return False
             return True
+
+        if code == "ti":
+            # dateparser's CLDR extraction mistakenly puts future "ኣብ X ..." under ago (-1); keep only +1
+            loc["relative_affix"] = [
+                a for a in loc["relative_affix"]
+                if not (a[0] == "ኣብ " and a[2] < 0)
+            ]
+            loc["ago"] = [a for a in loc["ago"] if a != "ኣብ"]
 
         ago_set = list(loc["ago"])
         in_set = list(loc["in_words"])

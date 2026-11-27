@@ -271,7 +271,7 @@ fn try_quarters_and_seasons(
                     "winter" if settings_allows_locale(settings, "en") => Some((12, "en")),
                     "ilkbahar" if settings_allows_locale(settings, "tr") => Some((3, "tr")),
                     "sonbahar" if settings_allows_locale(settings, "tr") => Some((9, "tr")),
-                    "kis" if orig.contains("kış") && settings_allows_locale(settings, "tr") => Some((12, "tr")),
+                    "kis" if (orig.contains("kış") || orig.contains("kiş")) && settings_allows_locale(settings, "tr") => Some((12, "tr")),
                     "fruhling" if settings_allows_locale(settings, "de") => Some((3, "de")),
                     "sommer" if settings_allows_locale(settings, "de") => Some((6, "de")),
                     "herbst" if settings_allows_locale(settings, "de") => Some((9, "de")),
@@ -1114,7 +1114,7 @@ fn try_conversational_clocks_ext(
             (false, r.trim())
         };
         let toks: Vec<&str> = rest.split_whitespace().collect();
-        if toks.len() >= 2 && toks.len() <= 3 {
+        if (2..=5).contains(&toks.len()) {
             let parse_tr_hour = |tok: &str| -> Option<u32> {
                 match tok {
                     "bire" | "biri" => Some(1),
@@ -1135,7 +1135,7 @@ fn try_conversational_clocks_ext(
                     }
                 }
             };
-            let (hr_opt, min_toks): (Option<u32>, &[&str]) = if toks.len() == 3 && toks[0] == "on" {
+            let (hr_opt, min_toks): (Option<u32>, &[&str]) = if toks.len() >= 3 && toks[0] == "on" {
                 match toks[1] {
                     "bire" | "biri" => (Some(11), &toks[2..]),
                     "ikiye" | "ikiyi" => (Some(12), &toks[2..]),
@@ -1145,6 +1145,7 @@ fn try_conversational_clocks_ext(
                 (parse_tr_hour(toks[0]), &toks[1..])
             };
             if let Some(hr) = hr_opt {
+                if !min_toks.is_empty() {
                 let min_joined = min_toks.join(" ");
                 let tr = &reg.locales[reg.resolve_lang_id("tr")?];
                 let min_opt: Option<u32> = match min_joined.as_str() {
@@ -1168,6 +1169,7 @@ fn try_conversational_clocks_ext(
                         let nd = resolve_time_only_date(nt, settings);
                         return Some(matched_day(nd.and_time(nt), "tr", true));
                     }
+                }
                 }
             }
         }

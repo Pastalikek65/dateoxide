@@ -643,6 +643,25 @@ fn classify_token(
         return TokenKind::Signal;
     }
 
+    let trimmed_raw = tok.trim_matches(|c: char| matches!(c, ',' | '.' | '(' | ')' | '[' | ']'));
+    if trimmed_raw.len() >= 2
+        && trimmed_raw.len() <= 15
+        && trimmed_raw.bytes().all(|b| matches!(b, b'I' | b'V' | b'X' | b'L' | b'C' | b'D' | b'M'))
+    {
+        if let Some(rv) = crate::numerals::parse_roman_numeral(trimmed_raw) {
+            if (1..=31).contains(&rv) || (1000..=2999).contains(&rv) {
+                return TokenKind::Numeral;
+            }
+        }
+    }
+
+    if !tok.is_ascii()
+        && tok.chars().any(is_se_asian_char)
+        && (tok.contains("ที่แล้ว") || tok.contains("ที่ผ่านมา") || !extract_se_asian_date_subspans(tok, registry).is_empty())
+    {
+        return TokenKind::Signal;
+    }
+
     if matches!(
         lower.as_str(),
         "last" | "next" | "this" | "geçen" | "gecen" | "gelecek" | "bu" | "bir" | "iki" | "üç"
@@ -811,11 +830,12 @@ fn is_se_asian_char(ch: char) -> bool {
     matches!(ch as u32, 0x0E00..=0x0E7F | 0x0E80..=0x0EFF | 0x1000..=0x109F | 0x1780..=0x17FF)
 }
 
-/// Extract spaceless date subspans containing a month name surrounded by digits inside Thai/Khmer/Lao/Myanmar prose.
+/// Extract spaceless date/relative subspans containing a month name or Thai relative unit inside Thai/Khmer/Lao/Myanmar prose.
 fn extract_se_asian_date_subspans<'a>(s: &'a str, registry: &LocaleRegistry) -> Vec<&'a str> {
+    let has_thai = s.chars().any(|c| ('\u{0E00}'..='\u{0E7F}').contains(&c));
     if s.is_ascii()
         || !s.chars().any(is_se_asian_char)
-        || !s.chars().any(crate::numerals::is_unicode_decimal_digit)
+        || (!s.chars().any(crate::numerals::is_unicode_decimal_digit) && !has_thai)
     {
         return Vec::new();
     }
@@ -835,74 +855,130 @@ fn extract_se_asian_date_subspans<'a>(s: &'a str, registry: &LocaleRegistry) -> 
             }
         }
     }
-    if patterns.is_empty() {
-        return Vec::new();
-    }
 
     let mut out = Vec::new();
-    let mut scan_from = 0usize;
-    while scan_from < s.len() {
-        let mut best_match: Option<(usize, usize)> = None;
-        for (pat, state) in &mut patterns {
-            let abs_start = match *state {
-                HitState::Exhausted => continue,
-                HitState::Found(p) if p >= scan_from => p,
-                HitState::Unsearched | HitState::Found(_) => {
-                    if let Some(rel) = s[scan_from..].find(*pat) {
-                        let p = scan_from + rel;
-                        *state = HitState::Found(p);
-                        p
+    if !patterns.is_empty() && s.chars().any(crate::numerals::is_unicode_decimal_digit) {
+        let mut scan_from = 0usize;
+        while scan_from < s.len() {
+            let mut best_match: Option<(usize, usize)> = None;
+            for (pat, state) in &mut patterns {
+                let abs_start = match *state {
+                    HitState::Exhausted => continue,
+                    HitState::Found(p) if p >= scan_from => p,
+                    HitState::Unsearched | HitState::Found(_) => {
+                        if let Some(rel) = s[scan_from..].find(*pat) {
+                            let p = scan_from + rel;
+                            *state = HitState::Found(p);
+                            p
+                        } else {
+                            *state = HitState::Exhausted;
+                            continue;
+                        }
+                    }
+                };
+                let abs_end = abs_start + pat.len();
+                if best_match
+                    .is_none_or(|(bs, be)| abs_start < bs || (abs_start == bs && abs_end > be))
+                {
+                    best_match = Some((abs_start, abs_end));
+                }
+            }
+            let Some((m_start, m_end)) = best_match else {
+                break;
+            };
+            // Expand left over whitespace and up to 2 digits (day)
+            let mut span_start = m_start;
+            let mut digit_left = 0usize;
+            for (idx, ch) in s[..m_start].char_indices().rev() {
+                if crate::numerals::is_unicode_decimal_digit(ch) && digit_left < 4 {
+                    span_start = idx;
+                    digit_left += 1;
+                } else if ch.is_whitespace() && digit_left == 0 {
+                    span_start = idx;
+                } else {
+                    break;
+                }
+            }
+            // Expand right over whitespace and up to 4 digits (year)
+            let mut span_end = m_end;
+            let mut digit_right = 0usize;
+            for (rel_idx, ch) in s[m_end..].char_indices() {
+                if crate::numerals::is_unicode_decimal_digit(ch) && digit_right < 4 {
+                    span_end = m_end + rel_idx + ch.len_utf8();
+                    digit_right += 1;
+                } else if ch.is_whitespace() && digit_right == 0 {
+                    span_end = m_end + rel_idx + ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            if digit_left > 0 || digit_right > 0 {
+                let cand = s[span_start..span_end].trim();
+                if !cand.is_empty() && cand.len() < s.len() {
+                    out.push(cand);
+                    scan_from = span_end.max(m_end);
+                    continue;
+                }
+            }
+            scan_from = m_end;
+        }
+    }
+
+    if out.is_empty() && has_thai {
+        if let Some(th_id) = registry.resolve_lang_id("th") {
+            let th = &registry.locales[th_id];
+            for sfx in [
+                "วันที่ผ่านมา",
+                "วันที่แล้ว",
+                "ชั่วโมงที่ผ่านมา",
+                "ชั่วโมงที่แล้ว",
+                "นาทีที่ผ่านมา",
+                "นาทีที่แล้ว",
+                "เดือนที่ผ่านมา",
+                "เดือนที่แล้ว",
+                "วินาทีที่ผ่านมา",
+                "วินาทีที่แล้ว",
+                "สัปดาห์ที่ผ่านมา",
+                "สัปดาห์ที่แล้ว",
+                "ปีที่แล้ว",
+            ] {
+                if let Some(pos) = s.find(sfx) {
+                    let prefix = &s[..pos];
+                    let trimmed_p = prefix.trim_end();
+                    // Check digits or Thai word number immediately before the unit+ago suffix
+                    let mut span_start = None;
+                    let mut d_start = trimmed_p.len();
+                    for (idx, ch) in trimmed_p.char_indices().rev() {
+                        if crate::numerals::is_unicode_decimal_digit(ch) {
+                            d_start = idx;
+                        } else {
+                            break;
+                        }
+                    }
+                    if d_start < trimmed_p.len() {
+                        span_start = Some(d_start);
                     } else {
-                        *state = HitState::Exhausted;
-                        continue;
+                        let mut best_w_len = 0usize;
+                        for w in th.word_numbers.keys() {
+                            if !w.is_ascii() && trimmed_p.ends_with(w.as_str()) && w.len() > best_w_len {
+                                best_w_len = w.len();
+                                span_start = Some(trimmed_p.len() - w.len());
+                            }
+                        }
+                    }
+                    if let Some(mut st) = span_start {
+                        if let Some(b_start) = s[..st].strip_suffix("เมื่อ") {
+                            st = b_start.len();
+                        }
+                        let cand = &s[st..pos + sfx.len()];
+                        if !cand.is_empty() && cand.len() < s.len() {
+                            out.push(cand);
+                            break;
+                        }
                     }
                 }
-            };
-            let abs_end = abs_start + pat.len();
-            if best_match
-                .is_none_or(|(bs, be)| abs_start < bs || (abs_start == bs && abs_end > be))
-            {
-                best_match = Some((abs_start, abs_end));
             }
         }
-        let Some((m_start, m_end)) = best_match else {
-            break;
-        };
-        // Expand left over whitespace and up to 2 digits (day)
-        let mut span_start = m_start;
-        let mut digit_left = 0usize;
-        for (idx, ch) in s[..m_start].char_indices().rev() {
-            if crate::numerals::is_unicode_decimal_digit(ch) && digit_left < 4 {
-                span_start = idx;
-                digit_left += 1;
-            } else if ch.is_whitespace() && digit_left == 0 {
-                span_start = idx;
-            } else {
-                break;
-            }
-        }
-        // Expand right over whitespace and up to 4 digits (year)
-        let mut span_end = m_end;
-        let mut digit_right = 0usize;
-        for (rel_idx, ch) in s[m_end..].char_indices() {
-            if crate::numerals::is_unicode_decimal_digit(ch) && digit_right < 4 {
-                span_end = m_end + rel_idx + ch.len_utf8();
-                digit_right += 1;
-            } else if ch.is_whitespace() && digit_right == 0 {
-                span_end = m_end + rel_idx + ch.len_utf8();
-            } else {
-                break;
-            }
-        }
-        if digit_left > 0 || digit_right > 0 {
-            let cand = s[span_start..span_end].trim();
-            if !cand.is_empty() && cand.len() < s.len() {
-                out.push(cand);
-                scan_from = span_end.max(m_end);
-                continue;
-            }
-        }
-        scan_from = m_end;
     }
     out
 }

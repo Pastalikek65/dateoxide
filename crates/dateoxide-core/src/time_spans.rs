@@ -156,16 +156,59 @@ fn patterns() -> &'static [CompiledSpanPattern] {
 
 /// Detect time span expressions such as `"last week"`, `"past 3 days"`, `"next 2 months"`.
 pub fn detect_time_span(text: &str) -> Option<TimeSpanMatch> {
-    if let Some(m) = detect_time_span_inner(text, text) {
+    if let Some(m) = detect_time_span_inner(text, text, None) {
         return Some(m);
     }
-    if let Some(norm) = replace_span_word_numbers(text) {
-        return detect_time_span_inner(&norm, text);
+    if let Some((norm, segs)) = replace_span_word_numbers(text) {
+        return detect_time_span_inner(&norm, text, Some(&segs));
     }
     None
 }
 
-fn detect_time_span_inner(scan: &str, orig: &str) -> Option<TimeSpanMatch> {
+struct SpanSeg {
+    scan_start: usize,
+    scan_end: usize,
+    orig_start: usize,
+    orig_end: usize,
+}
+
+fn map_scan_span_to_orig(full_start: usize, full_end: usize, orig: &str, segs: &[SpanSeg]) -> (usize, usize) {
+    let mut orig_start = None;
+    let mut orig_end = None;
+    for seg in segs {
+        if seg.scan_end > full_start && orig_start.is_none() {
+            orig_start = Some(if full_start <= seg.scan_start {
+                seg.orig_start
+            } else {
+                let delta = full_start - seg.scan_start;
+                let max_d = seg.orig_end - seg.orig_start;
+                if seg.orig_end - seg.orig_start == seg.scan_end - seg.scan_start && delta <= max_d {
+                    seg.orig_start + delta
+                } else {
+                    seg.orig_start
+                }
+            });
+        }
+        if seg.scan_start < full_end {
+            orig_end = Some(if full_end >= seg.scan_end {
+                seg.orig_end
+            } else {
+                let delta = full_end - seg.scan_start;
+                let max_d = seg.orig_end - seg.orig_start;
+                if seg.orig_end - seg.orig_start == seg.scan_end - seg.scan_start && delta <= max_d {
+                    seg.orig_start + delta
+                } else {
+                    seg.orig_end
+                }
+            });
+        }
+    }
+    let s = orig_start.unwrap_or(0).min(orig.len());
+    let e = orig_end.unwrap_or(orig.len()).clamp(s, orig.len());
+    (s, e)
+}
+
+fn detect_time_span_inner(scan: &str, orig: &str, segs: Option<&[SpanSeg]>) -> Option<TimeSpanMatch> {
     for pat in patterns() {
         if let Some(caps) = pat.regex.captures(scan) {
             let full = caps.get(0)?;
@@ -178,10 +221,13 @@ fn detect_time_span_inner(scan: &str, orig: &str) -> Option<TimeSpanMatch> {
             } else {
                 None
             };
-            let (start_pos, end_pos, matched_text) = if scan == orig {
-                (full.start(), full.end(), full.as_str().to_string())
-            } else {
-                (0, orig.len(), full.as_str().to_string())
+            let (start_pos, end_pos, matched_text) = match segs {
+                None => (full.start(), full.end(), full.as_str().to_string()),
+                Some(map) => {
+                    let (s, e) = map_scan_span_to_orig(full.start(), full.end(), orig, map);
+                    let mt = orig.get(s..e).unwrap_or(full.as_str()).to_string();
+                    (s, e, mt)
+                }
             };
             return Some(TimeSpanMatch {
                 span_type: pat.span_type,
@@ -196,35 +242,107 @@ fn detect_time_span_inner(scan: &str, orig: &str) -> Option<TimeSpanMatch> {
     None
 }
 
-fn replace_span_word_numbers(text: &str) -> Option<String> {
-    let mut changed = false;
-    let mut out = Vec::new();
-    for tok in text.split_whitespace() {
-        let lower = tok.to_ascii_lowercase();
-        let rep = match lower.as_str() {
-            "one" | "bir" | "eins" | "un" | "une" | "uno" => Some("1"),
-            "two" | "couple" | "iki" | "zwei" | "deux" | "dos" => Some("2"),
-            "three" | "üç" | "drei" | "trois" | "tres" => Some("3"),
-            "four" | "dört" | "vier" | "quatre" | "cuatro" => Some("4"),
-            "five" | "beş" | "fünf" | "cinq" | "cinco" => Some("5"),
-            "six" | "altı" | "sechs" | "seis" => Some("6"),
-            "seven" | "yedi" | "sieben" | "sept" | "siete" => Some("7"),
-            "eight" | "sekiz" | "acht" | "huit" | "ocho" => Some("8"),
-            "nine" | "dokuz" | "neun" | "neuf" | "nueve" => Some("9"),
-            "ten" | "on" | "zehn" | "dix" | "diez" => Some("10"),
-            "eleven" | "elf" | "onze" | "once" => Some("11"),
-            "twelve" | "zwölf" | "douze" | "doce" => Some("12"),
-            _ => None,
-        };
-        if let Some(d) = rep {
-            out.push(d.to_string());
-            changed = true;
-        } else {
-            out.push(tok.to_string());
+fn replace_span_word_numbers(text: &str) -> Option<(String, Vec<SpanSeg>)> {
+    let mut toks: Vec<(usize, usize, &str)> = Vec::new();
+    let mut start: Option<usize> = None;
+    for (idx, ch) in text.char_indices() {
+        if ch.is_whitespace() {
+            if let Some(s) = start.take() {
+                toks.push((s, idx, &text[s..idx]));
+            }
+        } else if start.is_none() {
+            start = Some(idx);
         }
     }
+    if let Some(s) = start {
+        toks.push((s, text.len(), &text[s..]));
+    }
+    if toks.is_empty() {
+        return None;
+    }
+
+    let reg = crate::locale::LocaleRegistry::global();
+    let cand_locs: Vec<&crate::locale::CompiledLocale> = ["en", "tr", "de", "fr", "es", "it", "pt", "nl", "pl", "ru"]
+        .iter()
+        .filter_map(|c| reg.resolve_lang_id(c).map(|id| &reg.locales[id]))
+        .collect();
+    let lowers: Vec<String> = toks
+        .iter()
+        .map(|(_, _, raw)| crate::locale::normalize_digits_and_lower(raw))
+        .collect();
+    let lower_refs: Vec<&str> = lowers.iter().map(String::as_str).collect();
+
+    let mut scan = String::with_capacity(text.len());
+    let mut segs: Vec<SpanSeg> = Vec::with_capacity(toks.len() * 2);
+    let mut changed = false;
+    let mut cursor = 0usize;
+    let mut ti = 0usize;
+
+    while ti < toks.len() {
+        let (tok_start, tok_end, _) = toks[ti];
+        if tok_start > cursor {
+            let ss = scan.len();
+            scan.push_str(&text[cursor..tok_start]);
+            segs.push(SpanSeg {
+                scan_start: ss,
+                scan_end: scan.len(),
+                orig_start: cursor,
+                orig_end: tok_start,
+            });
+        }
+
+        let mut best: Option<(u32, usize)> = None;
+        for loc in &cand_locs {
+            if let Some((val, used)) = crate::numerals::parse_cardinal_slice(&lower_refs[ti..], loc, true) {
+                // Skip bare indefinite article "a" unless "a couple of" (used == 3)
+                if lower_refs[ti] == "a" && used == 1 {
+                    continue;
+                }
+                if best.is_none_or(|(_, bu)| used > bu) {
+                    best = Some((val, used));
+                }
+            }
+        }
+
+        if let Some((val, used)) = best {
+            let group_end = toks[ti + used - 1].1;
+            let ss = scan.len();
+            scan.push_str(&val.to_string());
+            segs.push(SpanSeg {
+                scan_start: ss,
+                scan_end: scan.len(),
+                orig_start: tok_start,
+                orig_end: group_end,
+            });
+            cursor = group_end;
+            ti += used;
+            changed = true;
+        } else {
+            let ss = scan.len();
+            scan.push_str(&text[tok_start..tok_end]);
+            segs.push(SpanSeg {
+                scan_start: ss,
+                scan_end: scan.len(),
+                orig_start: tok_start,
+                orig_end: tok_end,
+            });
+            cursor = tok_end;
+            ti += 1;
+        }
+    }
+    if cursor < text.len() {
+        let ss = scan.len();
+        scan.push_str(&text[cursor..]);
+        segs.push(SpanSeg {
+            scan_start: ss,
+            scan_end: scan.len(),
+            orig_start: cursor,
+            orig_end: text.len(),
+        });
+    }
+
     if changed {
-        Some(out.join(" "))
+        Some((scan, segs))
     } else {
         None
     }

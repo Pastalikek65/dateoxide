@@ -54,7 +54,17 @@ pub fn try_parse_absolute_with_raw(
             && !settings.require_parts.contains(&DatePart::Month)
             && !settings.require_parts.contains(&DatePart::Day)
         {
-            if let Ok(year) = normalized.parse::<i32>() {
+            if let Ok(mut year) = normalized.parse::<i32>() {
+                let mut bare_locale = "en";
+                if settings
+                    .languages
+                    .as_deref()
+                    .is_some_and(|ls| ls.iter().any(|l| l.eq_ignore_ascii_case("th")))
+                    && (2400..=2700).contains(&year)
+                {
+                    year -= 543;
+                    bare_locale = "th";
+                }
                 if (1000..=2999).contains(&year) {
                     let base = settings.effective_base();
                     let month = match settings.prefer_month_of_year {
@@ -67,7 +77,7 @@ pub fn try_parse_absolute_with_raw(
                         return Some(AbsoluteMatch {
                             naive: nd.and_hms_opt(0, 0, 0)?,
                             period: Period::Year,
-                            locale: "en".to_string(),
+                            locale: bare_locale.to_string(),
                             has_time: false,
                             parts: vec!["year"],
                             part_of_day: None,
@@ -808,6 +818,9 @@ fn try_parse_in_locale(
     }
 
     if !roman_cands.is_empty() {
+        if settings.languages.is_none() && !crate::locale::is_major_auto_locale(&loc.code) {
+            return None;
+        }
         let mut used_roman_month = false;
         // Pass 1: 4-digit/century year Roman numerals (e.g. MMXXIV)
         for &(rv, rpos) in &roman_cands {
@@ -849,6 +862,10 @@ fn try_parse_in_locale(
     }
 
     if !matched_locale_signal && year.is_none() {
+        return None;
+    }
+
+    if ampm.is_some() && time.is_none() {
         return None;
     }
 

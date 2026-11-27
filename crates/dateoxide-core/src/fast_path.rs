@@ -1154,6 +1154,9 @@ fn try_numeric_datetime(
     if count != 3 {
         return None;
     }
+    if sep == '.' && lens[0] < 4 && lens[2] == 1 {
+        return None;
+    }
 
     let fallback_order = if lens[0] == 4 {
         DateOrder::YMD

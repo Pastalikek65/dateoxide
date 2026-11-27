@@ -253,33 +253,7 @@ fn french_republican_month(tok: &str) -> Option<u32> {
 }
 
 fn parse_roman_numeral(s: &str) -> Option<i32> {
-    if s.is_empty() {
-        return None;
-    }
-    let val = |c: char| -> Option<i32> {
-        match c {
-            'i' | 'I' => Some(1),
-            'v' | 'V' => Some(5),
-            'x' | 'X' => Some(10),
-            'l' | 'L' => Some(50),
-            'c' | 'C' => Some(100),
-            _ => None,
-        }
-    };
-    let chars: Vec<char> = s.chars().collect();
-    let mut total = 0i32;
-    for i in 0..chars.len() {
-        let cur = val(chars[i])?;
-        if i + 1 < chars.len() {
-            let next = val(chars[i + 1])?;
-            if cur < next {
-                total -= cur;
-                continue;
-            }
-        }
-        total += cur;
-    }
-    if total > 0 { Some(total) } else { None }
+    crate::numerals::parse_roman_numeral(&s.to_ascii_uppercase()).map(|v| v as i32)
 }
 
 fn split_optional_trailing_time(s: &str) -> (&str, Option<NaiveTime>) {
@@ -506,6 +480,8 @@ pub fn parse_minguo(input: &str, settings: &Settings) -> DateData {
     let has_time = opt_time.is_some();
     let time = opt_time.unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
 
+    let core = core.replace("元年", "1年");
+    let core = core.as_str();
     let ymd = if let Some((my, mm, md)) = parse_numeric_ymd_or_dmy(core) {
         my.checked_add(1911).map(|gy| (gy, mm, md))
     } else if core.contains('年') && core.contains('月') && core.contains('日') {

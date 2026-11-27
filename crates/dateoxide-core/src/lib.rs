@@ -371,11 +371,19 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
             || normalized.contains('년')
             || normalized.contains('월')
             || normalized.contains('일');
-        let has_roman_month_cand = trimmed.split_whitespace().count() >= 2
+        let roman_part_count = trimmed
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|t| !t.is_empty())
+            .count();
+        let has_roman_month_cand = roman_part_count >= 2
             && trimmed
                 .split(|c: char| !c.is_ascii_alphanumeric())
-                .any(|t| numerals::parse_roman_numeral(t).is_some())
-            && normalized.bytes().any(|b| b.is_ascii_digit());
+                .any(|t| {
+                    !t.is_empty()
+                        && t.len() <= 15
+                        && t.bytes().all(|b| b.is_ascii_uppercase())
+                        && numerals::parse_roman_numeral(t).is_some()
+                });
         if settings.allows_parser(ParserKind::AbsoluteTime) && (is_cjk_or_bare_year || has_roman_month_cand) {
             let fallback_cands: Vec<usize> = if has_roman_month_cand {
                 registry.resolve_lang_id("en").into_iter().collect()
