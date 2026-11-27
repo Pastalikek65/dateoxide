@@ -241,7 +241,12 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
             if is_complete_standalone_date_token(tok_j) {
                 break;
             }
-            if tok_j.eq_ignore_ascii_case(prev_raw) && !tok_j.bytes().any(|b| b.is_ascii_digit()) {
+            if tok_j.eq_ignore_ascii_case(prev_raw)
+                && !tok_j.bytes().any(|b| b.is_ascii_digit())
+                && (j == i + 1
+                    || (j >= i + 2
+                        && tok_j.eq_ignore_ascii_case(&text[spans[j - 2].0..spans[j - 2].1])))
+            {
                 break;
             }
             if seen_year {
@@ -603,6 +608,11 @@ fn classify_token_explicit(
             {
                 return Some(TokenKind::Numeral);
             }
+            if let Some(rest) = cand.strip_prefix('و').or_else(|| cand.strip_prefix('ו')) {
+                if !rest.is_empty() && loc.word_numbers.contains_key(rest) {
+                    return Some(TokenKind::Numeral);
+                }
+            }
         }
     }
     None
@@ -686,6 +696,17 @@ fn classify_token(
     }
     if registry.known_numeral_tokens.contains(&lower) {
         return TokenKind::Numeral;
+    }
+    if let Some(rest) = lower.strip_prefix('و').or_else(|| lower.strip_prefix('ו')) {
+        if !rest.is_empty()
+            && (registry.known_numeral_tokens.contains(rest)
+                || (normalize
+                    && registry
+                        .known_numeral_tokens
+                        .contains(fold_diacritics(rest).as_ref())))
+        {
+            return TokenKind::Numeral;
+        }
     }
     if lower.contains('-') {
         let hparts: Vec<&str> = lower.split('-').filter(|p| !p.is_empty()).collect();

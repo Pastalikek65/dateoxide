@@ -22,6 +22,18 @@ jobs:
           cargo package -p dateoxide-core --list | grep -qx "NOTICE"
           cargo package -p dateoxide-core --no-verify
 
+  msrv:
+    name: MSRV (Rust 1.88.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88.0"
+      - run: cargo test -p dateoxide-core --release
+      - run: cargo test -p dateoxide-core --no-default-features
+      - run: cargo check --workspace
+
   python-wheels:
     name: Build & Test (${{ matrix.os }}, Python ${{ matrix.python }})
     strategy:

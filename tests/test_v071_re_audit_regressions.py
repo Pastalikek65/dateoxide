@@ -192,3 +192,37 @@ def test_p1_python_api_validation_mapping_and_repr():
     r = repr(dd)
     assert "('2026',)" in r
     assert "part_of_day=" in r
+
+
+def test_p1_search_dates_nnh_repeated_month_token():
+    got = search_dates(
+        "alpha 19 saŋ tyɛ̀b tyɛ̀b mbʉ̀ŋ 2024 omega",
+        languages=["nnh"],
+        settings=BASE_SETTINGS,
+    )
+    assert got == [("19 saŋ tyɛ̀b tyɛ̀b mbʉ̀ŋ 2024", datetime(2024, 7, 19, 0, 0))]
+
+    t0 = pytime.perf_counter()
+    assert search_dates("Monday " * 2000, settings=BASE_SETTINGS) is None
+    assert (pytime.perf_counter() - t0) < 0.05
+
+
+def test_p1_search_dates_arabic_and_hebrew_attached_conjunction_numerals():
+    auto_ar = search_dates(
+        "نشر التقرير قبل ثلاثة وسبعين يوماً في القاهرة",
+        settings=BASE_SETTINGS,
+    )
+    assert auto_ar is not None and any(dt == datetime(2026, 9, 14, 15, 0) for _, dt in auto_ar)
+
+    exp_ar = search_dates(
+        "نشر التقرير قبل ثلاثة وسبعين يوماً في القاهرة",
+        languages=["ar"],
+        settings=BASE_SETTINGS,
+    )
+    assert exp_ar is not None and any(dt == datetime(2026, 9, 14, 15, 0) for _, dt in exp_ar)
+
+    nn_ar = search_dates("قبل تسعة وتسعين يوما", settings=BASE_SETTINGS)
+    assert nn_ar is not None and any(dt == datetime(2026, 8, 19, 15, 0) for _, dt in nn_ar)
+
+    # Non-date Arabic compound numeral prose must not produce a false positive
+    assert search_dates("اشترى ثلاثة وسبعين كتاباً في القاهرة", settings=BASE_SETTINGS) is None
