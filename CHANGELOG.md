@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.1] - 2026-11-27
+
+### Fixed
+- **Microsecond `%f` in `date_formats`**: normalized Python `.%f` to `chrono`'s `%.f` inside `try_strptime_any` so `"2024-05-15 14:30:00.123456"` with `["%Y-%m-%d %H:%M:%S.%f"]` preserves full `123456` µs precision instead of truncating to nanoseconds (`123` µs).
+- **`STRICT_PARSING=True` on relative expressions**: relative expressions (`"yesterday"`, `"2 days ago"`, `"in 3 hours"`) now resolve relative to `RELATIVE_BASE` under `STRICT_PARSING=True` consistently with `dateparser`.
+- **Attached shorthand hours (`in 3h`, `il y a 3h`, `dans 3h`)**: prevented trailing time extraction from mistaking duration suffixes like `"3h"` for clock time `03:00` when no relative-exact base precedes it, resolving 100% of `dateparser`'s 3,620 complex `relative-type-regex` patterns.
+- **European/Asian time connectors & CJK/Minguo eras**: added Romanian (`la`/`ora`), Slovak (`o`/`v`/`dňa`), Czech, Croatian/Serbian/Slovenian, Estonian, Lithuanian, Latvian, Ukrainian, Bulgarian, Greek, Indonesian/Malay, and Vietnamese time connectors; added Chinese `'点'`/`'點'` hour suffixes, direct Minguo (`民國`/`民国`) era parsing, and `"ja"` locale hint for Japanese-requested Han dates.
+- **`search_dates` multi-connector bridging, Arabic punctuation & CJK multi-date extraction**: bridged 2-word connectors (`a las`, `la ora`), trimmed Arabic/CJK punctuation (`،`, `。`, `，`), and extracted CJK relative subspans (`"3日前"`, `"2天前"`) cleanly alongside absolute dates.
+- **Strict language validation & `DateData.__module__`**: unknown codes in `languages`, `locales`, or `DEFAULT_LANGUAGES` now raise `ValueError: Unknown language(s): ...` consistently with `dateparser`, and `DateData` reports `module = "dateoxide.date"`.
+
 ## [0.6.0] - 2026-11-27
 
 ### Added

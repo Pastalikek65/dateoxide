@@ -248,10 +248,6 @@ pub fn try_parse_relative(
     registry: &LocaleRegistry,
     settings: &Settings,
 ) -> Option<RelativeMatch> {
-    if settings.strict_parsing {
-        return None;
-    }
-
     let base = settings.effective_base();
     let trimmed_article = normalized.strip_prefix("the ").unwrap_or(normalized);
     let approx_stripped = strip_approx_prefix(trimmed_article);
@@ -405,24 +401,34 @@ pub fn try_parse_relative(
             }
         }
 
-        // 2c. Zero-regex structured affix patterns (3,592 CLDR/dateparser patterns across 205 langs!)
+        // 2c. Zero-regex structured affix patterns (3,592+ CLDR/dateparser patterns across 205 langs!)
         let target_str = if extracted_time.is_some() {
             strip_connector_words(phrase_no_time, loc)
         } else {
             eff
         };
 
-        if let Some((spec_sign, amount, unit)) = try_affix_match(
+        let affix_hit = if let Some((spec_sign, amount, unit)) = try_affix_match(
             target_str,
             loc,
             settings.normalize,
             settings.prefer_dates_from,
         ) {
+            Some((spec_sign, amount, unit, extracted_time))
+        } else if extracted_time.is_some() {
+            // Re-check full phrase in case a shorthand duration ("in 3h", "dans 3h") looked like a trailing time
+            try_affix_match(eff, loc, settings.normalize, settings.prefer_dates_from)
+                .map(|(spec_sign, amount, unit)| (spec_sign, amount, unit, None))
+        } else {
+            None
+        };
+
+        if let Some((spec_sign, amount, unit, used_time)) = affix_hit {
             let mut dt = apply_relative_offset(base, spec_sign, amount, unit)?;
-            if let Some(t) = extracted_time {
+            if let Some(t) = used_time {
                 dt = dt.date().and_time(t);
             }
-            let explicit_t = extracted_time.is_some();
+            let explicit_t = used_time.is_some();
             let has_t = explicit_t || is_time_unit(unit);
             return Some(RelativeMatch {
                 naive: dt,

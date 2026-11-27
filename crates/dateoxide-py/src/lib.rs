@@ -76,6 +76,23 @@ fn extract_time_field(obj: &Bound<'_, PyAny>, attr: &str) -> PyResult<Option<Nai
     Ok(None)
 }
 
+fn validate_language_codes(codes: &[String]) -> PyResult<()> {
+    let reg = dateoxide_core::locale::LocaleRegistry::global();
+    let unknown: Vec<String> = codes
+        .iter()
+        .filter(|c| reg.resolve_lang_id(c).is_none())
+        .map(|c| format!("'{}'", c))
+        .collect();
+    if unknown.is_empty() {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err(format!(
+            "Unknown language(s): {}",
+            unknown.join(", ")
+        )))
+    }
+}
+
 fn extract_settings(
     date_formats: Option<Vec<String>>,
     languages: Option<Vec<String>>,
@@ -97,6 +114,7 @@ fn extract_settings(
         combined_langs.extend(locs);
     }
     if !combined_langs.is_empty() {
+        validate_language_codes(&combined_langs)?;
         cfg.languages = Some(combined_langs);
     }
 
@@ -240,7 +258,9 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("DEFAULT_LANGUAGES")? {
         if !v.is_none() {
-            cfg.default_languages = v.extract()?;
+            let def_langs: Vec<String> = v.extract()?;
+            validate_language_codes(&def_langs)?;
+            cfg.default_languages = def_langs;
         }
     }
     if let Some(v) = dict.get_item("USE_GIVEN_LANGUAGE_ORDER")? {
@@ -414,7 +434,7 @@ fn datedata_to_py(py: Python<'_>, data: DateData) -> PyResult<PyDateData> {
     })
 }
 
-#[pyclass(name = "DateData")]
+#[pyclass(name = "DateData", module = "dateoxide.date")]
 pub struct PyDateData {
     #[pyo3(get)]
     pub date_obj: Option<PyObject>,

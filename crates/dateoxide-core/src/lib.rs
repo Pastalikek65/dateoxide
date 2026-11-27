@@ -1075,4 +1075,67 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_v061_parity_fixes() {
+        // 1. %f microseconds in date_formats
+        let mut s_fmt = fixed_settings();
+        s_fmt.date_formats = Some(vec!["%Y-%m-%d %H:%M:%S.%f".to_string()]);
+        let dt_us = parse_with_settings("2024-05-15 14:30:00.123456", &s_fmt)
+            .unwrap()
+            .naive_local();
+        assert_eq!(dt_us.and_utc().timestamp_subsec_micros(), 123456);
+        let mut s_custom_only = s_fmt.clone();
+        s_custom_only.parsers = Some(vec![ParserKind::CustomFormats]);
+        assert!(parse_with_settings("2024-05-15 14:30:00", &s_custom_only).is_none());
+
+        // 2. STRICT_PARSING=True allows relative dates while rejecting incomplete absolutes
+        let mut s_strict = fixed_settings();
+        s_strict.strict_parsing = true;
+        assert_eq!(
+            parse_with_settings("yesterday", &s_strict).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2026-11-25 15:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        assert!(parse_with_settings("May 2024", &s_strict).is_none());
+
+        // 3. Attached short hour relatives (in 3h, il y a 3h, dans 3h)
+        let s = fixed_settings();
+        for (inp, exp) in [
+            ("in 3h", "2026-11-26 18:00:00"),
+            ("il y a 3h", "2026-11-26 12:00:00"),
+            ("dans 3h", "2026-11-26 18:00:00"),
+        ] {
+            assert_eq!(
+                parse_with_settings(inp, &s).unwrap().naive_local(),
+                NaiveDateTime::parse_from_str(exp, "%Y-%m-%d %H:%M:%S").unwrap(),
+                "failed {}",
+                inp
+            );
+        }
+
+        // 4. ro / sk connectors & Minguo direct era
+        assert_eq!(
+            parse_with_settings("15 mai 2024 la ora 15:30", &s).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2024-05-15 15:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("15. mája 2024 o 15:30", &s).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2024-05-15 15:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("民國113年5月15日", &s).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2024, 5, 15).unwrap()
+        );
+
+        // 5. search_dates CJK multi-date & Arabic/Spanish connectors
+        let ja_hits = crate::search::search_dates("会議は2024年5月15日14:30からです。3日前に通知済み。", &s);
+        assert_eq!(ja_hits.len(), 2);
+        assert_eq!(ja_hits[0].0, "2024年5月15日14:30");
+        assert_eq!(ja_hits[1].0, "3日前");
+
+        let zh_hits = crate::search::search_dates("会议定于2024年5月15日下午3点，2天前已发送邀请。", &s);
+        assert_eq!(zh_hits.len(), 2);
+        assert_eq!(zh_hits[0].0, "2024年5月15日下午3点");
+        assert_eq!(zh_hits[1].0, "2天前");
+    }
 }

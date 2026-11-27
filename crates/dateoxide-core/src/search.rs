@@ -81,6 +81,7 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
             matches!(
                 c,
                 ',' | '.' | ';' | '!' | '?' | '(' | ')' | '[' | ']' | '"' | '\'' | '«' | '»'
+                    | '،' | '؛' | '؟' | '。' | '，' | '、' | '；' | '！' | '？'
             )
         });
         kinds.push(classify_token(trimmed, registry, settings.normalize));
@@ -131,14 +132,15 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
 
         let mut best_end = i;
         let mut j = i + 1;
-        while j < spans.len() && (j - i) < 8 {
+        while j < spans.len() && (j - i) < 10 {
             let prev_raw = &text[spans[j - 1].0..spans[j - 1].1];
-            let prev_ends_sentence = prev_raw.ends_with([';', '!', '?'])
-                || (prev_raw.ends_with('.')
-                    && !prev_raw[..prev_raw.len() - 1]
-                        .bytes()
-                        .all(|b| b.is_ascii_digit())
-                    && prev_raw.len() > 4);
+            let prev_ends_sentence =
+                prev_raw.ends_with([';', '!', '?', '。', '！', '？', '؛', '؟'])
+                    || (prev_raw.ends_with('.')
+                        && !prev_raw[..prev_raw.len() - 1]
+                            .bytes()
+                            .all(|b| b.is_ascii_digit())
+                        && prev_raw.len() > 4);
             if prev_ends_sentence {
                 break;
             }
@@ -151,6 +153,11 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                 TokenKind::Connector => {
                     if j + 1 < spans.len() && kinds[j + 1] == TokenKind::Signal {
                         j += 1;
+                    } else if j + 2 < spans.len()
+                        && kinds[j + 1] == TokenKind::Connector
+                        && kinds[j + 2] == TokenKind::Signal
+                    {
+                        j += 2;
                     } else {
                         break;
                     }
@@ -162,14 +169,21 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
         let mut matched = false;
         for end_idx in (i..=best_end).rev() {
             let last_tok_lower = normalize_digits_and_lower(
-                text[spans[end_idx].0..spans[end_idx].1]
-                    .trim_matches(|c: char| matches!(c, ',' | '.' | ';' | '!' | '?' | '(' | ')')),
+                text[spans[end_idx].0..spans[end_idx].1].trim_matches(|c: char| {
+                    matches!(
+                        c,
+                        ',' | '.' | ';' | '!' | '?' | '(' | ')' | '،' | '؛' | '؟' | '。' | '，'
+                            | '、' | '；' | '！' | '？'
+                    )
+                }),
             );
             if matches!(
                 last_tok_lower.as_str(),
                 "in" | "at" | "on" | "of" | "the" | "de" | "del" | "el" | "la" | "le" | "à"
                     | "am" | "um" | "and" | "ve" | "und" | "et" | "for" | "to" | "a" | "an"
-                    | "vor" | "hace" | "dans" | "en" | "saat"
+                    | "vor" | "hace" | "dans" | "en" | "saat" | "las" | "los" | "ora" | "às"
+                    | "as" | "al" | "alle" | "kl" | "klo" | "o" | "v" | "u" | "в" | "о"
+                    | "الساعة" | "في"
             ) {
                 continue;
             }
@@ -179,7 +193,8 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
             let raw_sub = text[sub_start..sub_end].trim_matches(|c: char| {
                 matches!(
                     c,
-                    ',' | ';' | '!' | '?' | '(' | ')' | '[' | ']' | '"' | '\''
+                    ',' | ';' | '!' | '?' | '(' | ')' | '[' | ']' | '"' | '\'' | '،' | '؛' | '؟'
+                        | '。' | '，' | '、' | '；' | '！' | '？'
                 )
             });
             let raw_sub = raw_sub.trim_end_matches('.');
@@ -311,7 +326,9 @@ fn classify_token(tok: &str, registry: &LocaleRegistry, normalize: bool) -> Toke
         lower.as_str(),
         "of" | "the" | "at" | "on" | "de" | "del" | "el" | "la" | "le" | "à" | "am" | "um"
             | "saat" | "and" | "ve" | "und" | "et" | "il" | "y" | "a" | "an" | "in" | "en"
-            | "dans" | "vor" | "hace"
+            | "dans" | "vor" | "hace" | "las" | "los" | "ora" | "às" | "as" | "al" | "alle"
+            | "kl" | "klo" | "o" | "v" | "u" | "в" | "о" | "р" | "г" | "ч" | "الساعة" | "في"
+            | "lúc" | "pukul" | "στις"
     ) {
         if matches!(
             lower.as_str(),
@@ -353,7 +370,7 @@ fn classify_token(tok: &str, registry: &LocaleRegistry, normalize: bool) -> Toke
 }
 
 fn is_cjk_date_starter(s: &str) -> Option<usize> {
-    for era in ["令和", "平成", "昭和", "大正", "明治"] {
+    for era in ["令和", "平成", "昭和", "大正", "明治", "民國", "民国"] {
         if let Some(after) = s.strip_prefix(era) {
             if after.starts_with('元')
                 || after
@@ -370,9 +387,12 @@ fn is_cjk_date_starter(s: &str) -> Option<usize> {
 }
 
 /// Extract clean date/time subspans from spaceless CJK prose sentences
-/// (e.g. "締め切りは2026年11月26日です。" -> ["2026年11月26日"]).
+/// (e.g. "締め切りは2026年11月26日です。" -> ["2026年11月26日"], "3日前に通知" -> ["3日前"]).
 fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
-    if !s.contains(['年', '月', '日', '号', '년', '월', '일']) {
+    if !s.contains([
+        '年', '月', '日', '号', '년', '월', '일', '天', '前', '後', '后', '週', '周', '点',
+        '點', '時', '时',
+    ]) {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -413,13 +433,34 @@ fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
             if advanced_marker {
                 continue;
             }
+            let mut advanced_rel_unit = false;
+            for unit in [
+                "時間", "小时", "小時", "分間", "分钟", "分鐘", "週間", "星期", "个月", "個月",
+                "か月", "ヶ月",
+            ] {
+                if rem.starts_with(unit) {
+                    saw_date_unit = true;
+                    cur += unit.len();
+                    advanced_rel_unit = true;
+                    break;
+                }
+            }
+            if advanced_rel_unit {
+                continue;
+            }
             let ch = rem.chars().next().unwrap();
             if ch.is_ascii_digit()
                 || ('０'..='９').contains(&ch)
-                || matches!(ch, '元' | '時' | '时' | '分' | '秒' | '시' | '분' | '초' | ':')
+                || matches!(
+                    ch,
+                    '元' | '時' | '时' | '点' | '點' | '分' | '秒' | '시' | '분' | '초' | ':'
+                )
             {
                 cur += ch.len_utf8();
-            } else if matches!(ch, '年' | '月' | '日' | '号' | '년' | '월' | '일') {
+            } else if matches!(
+                ch,
+                '年' | '月' | '日' | '号' | '년' | '월' | '일' | '天' | '週' | '周'
+            ) {
                 saw_date_unit = true;
                 cur += ch.len_utf8();
                 // Optional parenthesized CJK weekday right after 日/일, e.g. 2026年11月26日(木)
@@ -434,6 +475,9 @@ fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
                         }
                     }
                 }
+            } else if matches!(ch, '前' | '後' | '后') && saw_date_unit {
+                cur += ch.len_utf8();
+                break;
             } else {
                 break;
             }
@@ -455,8 +499,10 @@ fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
 }
 
 fn is_valid_single_token_date(tok: &str, registry: &LocaleRegistry, normalize: bool) -> bool {
-    if tok.contains(['-', '/', '.', ':', '年', '月', '日', '년', '월', '일'])
-        && tok.chars().any(|c| c.is_ascii_digit())
+    if tok.contains([
+        '-', '/', '.', ':', '年', '月', '日', '년', '월', '일', '天', '前', '後', '后', '週',
+        '周', '点', '點', '時', '时',
+    ]) && tok.chars().any(|c| c.is_ascii_digit())
     {
         return true;
     }

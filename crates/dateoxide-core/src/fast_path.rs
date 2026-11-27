@@ -54,7 +54,18 @@ fn try_strptime_any(
     locale: Option<String>,
     settings: &Settings,
 ) -> Option<FastPathMatch> {
-    if let Ok(dt) = DateTime::parse_from_str(s, fmt) {
+    let eff_fmt_owned: String;
+    let eff_fmt: &str = if fmt.contains(".%f") {
+        if !s.contains('.') {
+            return None;
+        }
+        eff_fmt_owned = fmt.replace(".%f", "%.f");
+        &eff_fmt_owned
+    } else {
+        fmt
+    };
+
+    if let Ok(dt) = DateTime::parse_from_str(s, eff_fmt) {
         return Some(FastPathMatch {
             naive: dt.naive_local(),
             tz: Some(TzSpec::Fixed(*dt.offset())),
@@ -64,7 +75,7 @@ fn try_strptime_any(
             locale,
         });
     }
-    if let Ok(ndt) = NaiveDateTime::parse_from_str(s, fmt) {
+    if let Ok(ndt) = NaiveDateTime::parse_from_str(s, eff_fmt) {
         return Some(FastPathMatch {
             naive: ndt,
             tz: None,
@@ -74,7 +85,7 @@ fn try_strptime_any(
             locale,
         });
     }
-    if let Ok(nd) = NaiveDate::parse_from_str(s, fmt) {
+    if let Ok(nd) = NaiveDate::parse_from_str(s, eff_fmt) {
         return Some(FastPathMatch {
             naive: nd.and_hms_opt(0, 0, 0)?,
             tz: None,
@@ -87,7 +98,7 @@ fn try_strptime_any(
 
     // Partial strptime fallback via chrono::format::Parsed (e.g. "%B %Y", "%Y-%m", "%d %B", "%H:%M", "%Y-%j")
     let mut parsed = Parsed::new();
-    chrono_parse(&mut parsed, s, StrftimeItems::new(fmt)).ok()?;
+    chrono_parse(&mut parsed, s, StrftimeItems::new(eff_fmt)).ok()?;
 
     let has_year = parsed.year.is_some();
     let has_month = parsed.month.is_some();

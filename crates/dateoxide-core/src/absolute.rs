@@ -75,15 +75,17 @@ pub fn try_parse_absolute(
     None
 }
 
-fn extract_japanese_era_year(s: &str) -> Option<Result<(i32, String), ()>> {
-    const ERAS: [(&str, i32); 5] = [
-        ("令和", 2018),
-        ("平成", 1988),
-        ("昭和", 1925),
-        ("大正", 1911),
-        ("明治", 1867),
+fn extract_cjk_era_year(s: &str) -> Option<Result<(i32, String, bool), ()>> {
+    const ERAS: [(&str, i32, bool); 7] = [
+        ("令和", 2018, true),
+        ("平成", 1988, true),
+        ("昭和", 1925, true),
+        ("大正", 1911, true),
+        ("明治", 1867, true),
+        ("民國", 1911, false),
+        ("民国", 1911, false),
     ];
-    for &(era, base) in &ERAS {
+    for &(era, base, is_jp) in &ERAS {
         if let Some(pos) = s.find(era) {
             let after_era = &s[pos + era.len()..];
             let trimmed = after_era.trim_start();
@@ -107,11 +109,13 @@ fn extract_japanese_era_year(s: &str) -> Option<Result<(i32, String), ()>> {
                         break;
                     }
                 }
-                if d_end == 0 || d_end > 2 {
+                let max_digits = if is_jp { 2 } else { 3 };
+                let max_val = if is_jp { 99 } else { 999 };
+                if d_end == 0 || d_end > max_digits {
                     return Some(Err(()));
                 }
                 let val: i32 = match trimmed[..d_end].parse() {
-                    Ok(v) if (1..=99).contains(&v) => v,
+                    Ok(v) if (1..=max_val).contains(&v) => v,
                     _ => return Some(Err(())),
                 };
                 let after_digits = &trimmed[d_end..];
@@ -127,7 +131,7 @@ fn extract_japanese_era_year(s: &str) -> Option<Result<(i32, String), ()>> {
             let mut rem = String::with_capacity(s.len());
             rem.push_str(&s[..pos]);
             rem.push_str(&s[cursor..]);
-            return Some(Ok((base + era_num, rem)));
+            return Some(Ok((base + era_num, rem, is_jp)));
         }
     }
     None
@@ -143,10 +147,10 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
     let mut has_time = false;
     let mut is_japanese = false;
     let owned_rem;
-    let scan_s: &str = match extract_japanese_era_year(s) {
-        Some(Ok((gy, rem))) => {
+    let scan_s: &str = match extract_cjk_era_year(s) {
+        Some(Ok((gy, rem, era_is_jp))) => {
             year = Some(gy);
-            is_japanese = true;
+            is_japanese = era_is_jp;
             owned_rem = rem;
             &owned_rem
         }
@@ -180,7 +184,7 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
             if la < chars.len()
                 && matches!(
                     chars[la],
-                    '年' | '년' | '月' | '월' | '日' | '号' | '일' | '時' | '时' | '시' | '分' | '분' | '秒' | '초'
+                    '年' | '년' | '月' | '월' | '日' | '号' | '일' | '時' | '时' | '点' | '點' | '시' | '分' | '분' | '秒' | '초'
                 )
             {
                 idx += 1;
@@ -201,7 +205,7 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
                 }
                 '月' | '월' => month = Some(val),
                 '日' | '号' | '일' => day = Some(val),
-                '時' | '时' | '시' => {
+                '時' | '时' | '点' | '點' | '시' => {
                     hour = val;
                     has_time = true;
                 }
@@ -337,6 +341,14 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
         || scan_s.contains("夕方")
         || scan_s.contains("正午")
         || scan_s.contains("真夜中")
+        || settings
+            .languages
+            .as_deref()
+            .map(|ls| {
+                ls.iter().any(|l| l.eq_ignore_ascii_case("ja"))
+                    && !ls.iter().any(|l| l.to_ascii_lowercase().starts_with("zh"))
+            })
+            .unwrap_or(false)
     {
         "ja"
     } else {
@@ -941,6 +953,19 @@ fn is_locale_connector(lang: &str, clean: &str) -> bool {
         "nl" => matches!(clean, "op" | "om" | "uur"),
         "pl" => matches!(clean, "dnia" | "o" | "godz" | "roku" | "r"),
         "sv" | "nb" | "da" | "nn" => matches!(clean, "kl" | "klockan" | "klokken"),
+        "ro" => matches!(clean, "la" | "ora" | "orele" | "în" | "in" | "pe" | "din"),
+        "sk" => matches!(clean, "o" | "v" | "vo" | "dňa" | "dna" | "hod"),
+        "cs" => matches!(clean, "v" | "ve" | "hod" | "dne"),
+        "hr" | "bs" | "sr" | "sr-Latn" | "sl" => matches!(clean, "u" | "ob" | "sati" | "dana"),
+        "et" => matches!(clean, "kell" | "kl"),
+        "lt" => matches!(clean, "m" | "d" | "val"),
+        "lv" => matches!(clean, "gada" | "g" | "plkst"),
+        "uk" => matches!(clean, "р" | "о" | "об" | "року"),
+        "bg" => matches!(clean, "г" | "в" | "ч" | "часа"),
+        "el" => matches!(clean, "στις" | "την" | "τον"),
+        "id" | "ms" => matches!(clean, "pukul" | "jam" | "pada"),
+        "vi" => matches!(clean, "ngày" | "ngay" | "lúc" | "luc" | "vào" | "vao"),
+        "ar" => matches!(clean, "الساعة" | "ساعة" | "في" | "يوم" | "بتاريخ"),
         _ => false,
     }
 }
