@@ -8,6 +8,7 @@ from dateoxide.date import DateDataParser
 from dateoxide.search import search_dates
 
 FIXED_BASE = datetime(2026, 11, 26, 15, 0, 0)
+_DP_VER = tuple(int(p) for p in getattr(dateparser, "__version__", "0.0").split(".")[:2])
 
 
 @pytest.mark.parametrize(
@@ -83,8 +84,12 @@ def test_cross_validation_against_dateparser(text: str):
     settings = {"RELATIVE_BASE": FIXED_BASE}
     ref = dateparser.parse(text, settings=settings)
     got = dateoxide.parse(text, settings=settings)
-    assert ref is not None
     assert got is not None, f"dateoxide returned None for '{text}' (dateparser returned {ref})"
+    if ref is None and _DP_VER < (1, 3):
+        # dateparser < 1.3 (Python 3.9) fails to parse Korean "2026년 11월 26일"
+        assert (got.year, got.month, got.day) == (2026, 11, 26)
+        return
+    assert ref is not None
     assert (got.year, got.month, got.day) == (ref.year, ref.month, ref.day), (
         f"Mismatch for '{text}': dateoxide={got} vs dateparser={ref}"
     )

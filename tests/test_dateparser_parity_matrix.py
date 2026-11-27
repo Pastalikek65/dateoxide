@@ -13,6 +13,8 @@ dateparser = pytest.importorskip("dateparser")
 from dateparser.conf import SettingValidationError as DpSettingValidationError
 from dateparser.date import DateDataParser as DpDateDataParser
 
+_DP_VER = tuple(int(p) for p in getattr(dateparser, "__version__", "0.0").split(".")[:2])
+
 FIXED_BASE = datetime(2026, 11, 26, 15, 0, 0)
 
 
@@ -56,6 +58,11 @@ FIXED_BASE = datetime(2026, 11, 26, 15, 0, 0)
 def test_parity_same_inputs_and_settings(text: str, kwargs: dict):
     ox = dateoxide.parse(text, **kwargs)
     dp = dateparser.parse(text, **kwargs)
+    if kwargs.get("date_formats") == ["%Y-%j"] and _DP_VER < (1, 3):
+        # dateparser < 1.3 (Python 3.9) misparses ordinal %Y-%j on 2024-366 / 2025-366
+        expected = datetime(2024, 12, 31) if text == "2024-366" else None
+        assert ox == expected
+        return
     assert ox == dp, f"text={text!r}, kwargs={kwargs}: dateoxide={ox!r} vs dateparser={dp!r}"
 
 

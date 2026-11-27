@@ -76,7 +76,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             python: "3.9"
             artifact: wheels-ubuntu-latest-x86_64-auto
           - os: ubuntu-latest

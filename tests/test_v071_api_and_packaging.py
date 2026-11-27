@@ -144,16 +144,25 @@ def test_runtime_signatures_match_init_pyi() -> None:
 
 def test_mypy_and_stubtest_if_installed() -> None:
     res_mypy = subprocess.run(
-        [sys.executable, "-m", "mypy", "python/dateoxide"],
+        [sys.executable, "-m", "mypy", "--strict", "python/dateoxide"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
     )
     assert res_mypy.returncode == 0, res_mypy.stdout + res_mypy.stderr
-    res_stub = subprocess.run(
-        [sys.executable, "-m", "mypy.stubtest", "dateoxide"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert res_stub.returncode == 0, res_stub.stdout + res_stub.stderr
+    # mypy.stubtest reports stdlib typing.Any / GenericAlias / (str, Enum).__new__ mismatches on Python < 3.11
+    if sys.version_info >= (3, 11):
+        res_stub = subprocess.run(
+            [sys.executable, "-m", "mypy.stubtest", "dateoxide"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert res_stub.returncode == 0, res_stub.stdout + res_stub.stderr
+        res_ext = subprocess.run(
+            [sys.executable, "-m", "mypy.stubtest", "dateoxide._dateoxide"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert res_ext.returncode == 0, res_ext.stdout + res_ext.stderr
