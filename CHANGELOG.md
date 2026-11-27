@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.1] - 2026-11-27
+
+### Security, Algorithmic Complexity & Year-Boundary Safety (P0)
+- **Eliminated 4 $O(N^2)$ CPU DoS vectors:** Bound Tamil/Malayalam lookahead in `numerals.rs`, cached per-month match positions with `HitState` in `search.rs::extract_se_asian_date_subspans`, eliminated repeated char-offset O(N) scans and added `<= 32` byte digit:time slice caps in `absolute.rs::try_cjk_or_korean_date`, and guarded `fast_path.rs` / `relative.rs` time extraction on oversized strings.
+- **Post-TZ Gregorian year `1..=9999` overflow protection:** Added `timezone::finalize_datetime_checked` and enforced post-timezone bounds across `lib.rs`, `calendars.rs`, `ranges.rs`, `search.rs`, and `relative.rs` (including custom `date_formats` and `RETURN_TIME_SPAN` matches near years `0001`/`9999`).
+- **Silent date-corruption fixes (P0):**
+  - Prevented CJK multi-date overwrite in `parse` (splitting on `、`/`，`/`：`/non-digit `:`, rejecting duplicate units and CJK relative markers), while keeping `search_dates` extracting all embedded CJK dates cleanly.
+  - Fixed Japanese Kanji quarters `第一四半期..第四四半期` (`numerals.rs` now splits `'四'` + `"半期"` cleanly out of numeral runs).
+  - Fixed Hebrew word ordinals (`"ראשון במאי 2024"`..`"שישי במאי 2024"`) so overlapping weekday names never clobber day ordinals when a month is present.
+  - Added `NlpOutcome::{Matched, Invalid, NoMatch}` so impossible ordinal weekdays (`"fifth Wednesday of March 2026"`) return `None` cleanly instead of falling through.
+  - Fixed English evening/afternoon/tonight PM resolution (`"tomorrow evening at 7:00"` -> `19:00`, bare `"tomorrow evening at 7"` -> `19:00`).
+  - Added `classify_token_explicit` in `search.rs` for explicit `languages=[...]` (`da`, `nb`, `nn`, `mfe`, `eo`, `nmg`) while preserving article connectors (`"el"`, `"la"`, `"le"`), and filtered `"no"` out of unanchored prose false positives.
+  - Rejected invalid trailing tokens in `nlp.rs::try_period_boundaries` (`"end of July invalid"`, `"mid-February 99999"`).
+  - Fixed inverted weekday ranges in `ranges.rs` (`"from Friday to Monday"`) and IANA DST ISO interval drift (`"2026-03-07T10:00:00/P2D"` NY -> `10:00-04:00`).
+
+### Accuracy, 76 Unicode 16.0 Scripts, Numerals & Calendars (P1 + P2)
+- **Unicode 16.0 `Nd` parity (76 scripts):** Expanded `UNICODE_ND_ZEROS: [u32; 75]` with Garay, Myanmar Pa'O, Myanmar Eastern Pwo Karen, Sunuwar, Gurung Khema, Kirat Rai, Outlined, and Ol Onal decimal digits across `parse` and `search_dates`.
+- **Universal numeral compositions:** Fixed Chinese demonstrative `'这'/'這'+'一'` (`"这一时间"`, `"這一小時"`, `"這一分鐘"`), Arabic attached conjunctions (`"واحد وعشرون"`, `"خمسة وثلاثون"`), language-aware connectors (fixing Swedish/Danish `"tjugo en"` / `"tyve en"`), Dutch `"ën"`/`"en"` inverted compounds (`"eenentwintig"`, `"tweeëntwintig"`), Korean Pure & Sino-Korean glued compounds (`"스물한"`, `"이십오"`), Vietnamese `"hai mươi một"` tens composition, Turkish `"on beş"` teen composition, and `'o'`/`'a'` ordinals (`1..=31`).
+- **False-positive hardening & Roman dates:** Rejected dotted semver (`"2.4.1"`, `"1.2.3"`), `"TK 1923"` (AM/PM without clock time), and `"DID I MIX"` (minor-locale Roman overlap), while enabling `"15.V.2024"`, `"XV V MMXXIV"`, and `"Dated XV May MMXXIV in Rome."` in `search_dates`.
+- **Turkish NLP, Thai BE & Calendars:** Fixed uppercase Turkish `"KIŞ 2026"` season parsing and 4/5-token conversational clocks (`"on biri yirmi beş geçe"`, `"on ikiye on beş kala"`); added Thai Buddhist Era bare 4-digit year conversion under explicit `languages=["th"]` and spaceless Thai relative `search_dates` (`"เมื่อห้านาทีที่แล้วมีข้อความ"`); fixed `parse_minguo("民國元年1月1日")` -> `1912-01-01` and strict canonical Roman checks in `parse_french_republican`.
+- **Tigrinya `ti` & `detect_time_span` spans:** Removed conflicting past sign on `"ኣብ "` in `ti`; fixed `detect_time_span` exact UTF-8/character slice offsets and multi-word cardinal support (`"next three months"`, `"son üç gün"`, `"in the past twenty days"`).
+
+### Packaging, Windows `tzdata`, `.pyi` Stubs, API Validation & CI
+- **Windows IANA timezones & Dual Licensing:** Declared `"tzdata; sys_platform == 'win32'"` in `pyproject.toml`; added root & crate `LICENSE-APACHE`, `LICENSE`, and `NOTICE` verified in `cargo package -p dateoxide-core` and `maturin build`; bumped workspace version to `0.7.1` and MSRV to `rust-version = "1.82"`.
+- **Python API & `.pyi` 1:1 Parity:** Exposed `detect_time_span`, `generate_time_span`, `parse_freshness`, `pop_tz_offset_from_string`, and `__dir__()` at top-level `dateoxide`; fixed `DateDataParser.__module__ == "dateoxide.date"`; changed `get_local_tz_offset()` to return `datetime.timedelta`; added `as_offset` & `timezone_abbreviations` to `pop_tz_offset_from_string`; supported aware `base_date` in `generate_time_span` and `Settings.replace(mod_settings, **kw)`; expanded `check_settings` and mapped all invalid setting types/bools cleanly to `SettingValidationError`; rejected bare `str`/`bytes` in `parse_batch*` and `detect_languages_function` with `TypeError`; kept `FreshnessDateDataParser.parse(...) -> datetime | None` for drop-in compatibility.
+- **Type-Checking & CI Matrix:** Rewrote `__init__.pyi` and `_dateoxide.pyi` (valid PEP 484 `@overload` signatures, `@final`, `__new__`, `mypy` & `mypy.stubtest dateoxide` zero-error parity); expanded `.github/workflows/ci.yml` to `ubuntu/macos/windows` × Python `3.9–3.13` with clean wheel+`tzdata`, `mypy`, `stubtest`, and `cargo package` verification.
+- **Fair Benchmarks (`benchmarks/`):** Updated `bench_vs_dateparser.py`, `torture_benchmark.py`, and `multilingual_torture.py` with uncached `CACHE_SIZE_LIMIT=0` unique-input benchmarks, strict `tzinfo`/full-datetime verification, standalone corpora, and isolated RSS lifecycle checks.
+
 ## [0.7.0] - 2026-11-27
 
 ### Security & Correctness (P0)

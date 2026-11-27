@@ -107,8 +107,8 @@ def build_cases() -> list[TortureCase]:
         TortureCase("logs_rfc_tz_dst", "Nov 26 15:30:00", base_cfg, datetime(2026, 11, 26, 15, 30)),
         TortureCase("logs_rfc_tz_dst", "2026-07-15 12:00:00", {"TIMEZONE": "America/New_York", "TO_TIMEZONE": "Europe/Istanbul"}, datetime(2026, 7, 15, 19, 0)),
         TortureCase("logs_rfc_tz_dst", "2026-01-15 12:00:00", {"TIMEZONE": "America/New_York", "TO_TIMEZONE": "Europe/Istanbul"}, datetime(2026, 1, 15, 20, 0)),
-        TortureCase("logs_rfc_tz_dst", "2026-11-26 12:00:00 EST", {"TO_TIMEZONE": "UTC"}, datetime(2026, 11, 26, 17, 0)),
-        TortureCase("logs_rfc_tz_dst", "2026-11-26 12:00:00 +05:30", {"TO_TIMEZONE": "UTC"}, datetime(2026, 11, 26, 6, 30)),
+        TortureCase("logs_rfc_tz_dst", "2026-11-26 12:00:00 EST", {"TO_TIMEZONE": "UTC"}, datetime(2026, 11, 26, 17, 0, tzinfo=timezone.utc), compare_utc=True),
+        TortureCase("logs_rfc_tz_dst", "2026-11-26 12:00:00 +05:30", {"TO_TIMEZONE": "UTC"}, datetime(2026, 11, 26, 6, 30, tzinfo=timezone.utc), compare_utc=True),
         TortureCase("logs_rfc_tz_dst", "12:00 AM", base_cfg, datetime(2026, 11, 26, 0, 0)),
         TortureCase("logs_rfc_tz_dst", "12:00 PM", base_cfg, datetime(2026, 11, 26, 12, 0)),
         TortureCase("logs_rfc_tz_dst", "5:30 p.m.", base_cfg, datetime(2026, 11, 26, 17, 30)),
@@ -134,18 +134,18 @@ def build_cases() -> list[TortureCase]:
     ]
 
 
-SEARCH_TORTURE_CASES: list[tuple[str, list[tuple[int, int, int]]]] = [
+SEARCH_TORTURE_CASES: list[tuple[str, list[tuple[int, int, int, int, int]]]] = [
     (
         "[2026-11-26 15:30:00] ERROR db timeout, retry at 2026-11-26 15:35:00",
-        [(2026, 11, 26), (2026, 11, 26)],
+        [(2026, 11, 26, 15, 30), (2026, 11, 26, 15, 35)],
     ),
     (
         "Toplantı 15 Ocak 2026 tarihinde, önceki görüşme 3 gün önce bitti.",
-        [(2026, 1, 15), (2026, 11, 23)],
+        [(2026, 1, 15, 0, 0), (2026, 11, 23, 15, 0)],
     ),
     (
         "Let us meet tomorrow at 5pm or on 12 December 2025.",
-        [(2026, 11, 27), (2025, 12, 12)],
+        [(2026, 11, 27, 17, 0), (2025, 12, 12, 0, 0)],
     ),
     (
         "Python 3.12.1 on 192.168.1.1 costs $12.99 (100% ok)",
@@ -153,11 +153,11 @@ SEARCH_TORTURE_CASES: list[tuple[str, list[tuple[int, int, int]]]] = [
     ),
     (
         "Berlin: 12. Dezember 2025, Paris: hier à 14h30",
-        [(2025, 12, 12), (2026, 11, 25)],
+        [(2025, 12, 12, 0, 0), (2026, 11, 25, 14, 30)],
     ),
     (
         "Header Thu, 26 Nov 2026 15:30:00 +0300 received",
-        [(2026, 11, 26)],
+        [(2026, 11, 26, 15, 30)],
     ),
 ]
 
@@ -178,19 +178,27 @@ def _match_expected(got: datetime | None, expected: datetime | None, compare_utc
     if got is None:
         return False
     if compare_utc:
-        g_utc = got.astimezone(timezone.utc) if got.tzinfo else got.replace(tzinfo=timezone.utc)
-        e_utc = expected.astimezone(timezone.utc) if expected.tzinfo else expected.replace(tzinfo=timezone.utc)
-        return g_utc == e_utc
-    if got.tzinfo is not None and expected.tzinfo is None:
-        return got.replace(tzinfo=None) == expected
+        if got.tzinfo is None or expected.tzinfo is None:
+            return False
+        return got.astimezone(timezone.utc) == expected.astimezone(timezone.utc)
+    if (got.tzinfo is None) != (expected.tzinfo is None):
+        return False
     return got == expected
 
 
 def _eval_parser_cases(lib_name: str, mod: Any, cases: list[TortureCase]) -> dict[str, Any]:
-    # Warmup equally
-    for _ in range(5):
-        mod.parse("3 gün önce", settings={"RELATIVE_BASE": FIXED_BASE})
-        mod.parse("2026-11-26T15:30:00Z")
+    # Multi-language warmup across ISO, English, Turkish, German, French, Japanese, and Arabic
+    for _ in range(3):
+        for w in [
+            "2026-11-26T15:30:00Z",
+            "12 December 2025",
+            "3 gün önce",
+            "vor 2 Wochen",
+            "hier à 14h30",
+            "2026年11月26日",
+            "١٢ ديسمبر ٢٠٢٥",
+        ]:
+            mod.parse(w, settings={"RELATIVE_BASE": FIXED_BASE})
 
     by_cat: dict[str, dict[str, Any]] = {}
     latencies_us: list[float] = []
@@ -252,15 +260,15 @@ def _eval_search_cases(lib_name: str, search_fn: Any) -> dict[str, Any]:
     passed = 0
     details: list[dict[str, Any]] = []
     t0 = time.perf_counter()
-    for text, exp_ymds in SEARCH_TORTURE_CASES:
+    for text, exp_tuples in SEARCH_TORTURE_CASES:
         try:
             res = search_fn(text, settings={"RELATIVE_BASE": FIXED_BASE}) or []
-            got_ymds = [(dt.year, dt.month, dt.day) for _, dt in res]
-            ok = got_ymds == exp_ymds
+            got_tuples = [(dt.year, dt.month, dt.day, dt.hour, dt.minute) for _, dt in res]
+            ok = got_tuples == exp_tuples
             if ok:
                 passed += 1
             else:
-                details.append({"text": text, "expected": exp_ymds, "got": got_ymds, "raw": [(t, str(d)) for t, d in res]})
+                details.append({"text": text, "expected": exp_tuples, "got": got_tuples, "raw": [(t, str(d)) for t, d in res]})
         except Exception as exc:
             details.append({"text": text, "error": f"{type(exc).__name__}: {exc}"})
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -305,20 +313,22 @@ except Exception:
 mod = __import__({module_name!r})
 cfg = {{"RELATIVE_BASE": datetime(2026, 11, 26, 15, 0, 0)}}
 texts = {payload_json}
-for s in texts[:5]:
+for s in ["2026-11-26T15:30:00Z", "12 December 2025", "3 gün önce", "vor 2 Wochen"]:
     mod.parse(s, settings=cfg)
 t0 = time.perf_counter()
+n_err = 0
 for _ in range({reps}):
     for s in texts:
         try:
             mod.parse(s, settings=cfg)
         except Exception:
-            pass
+            n_err += 1
 elapsed = time.perf_counter() - t0
 rss1 = proc.memory_info().rss / 1048576 if proc else 0.0
 n_ops = len(texts) * {reps}
 print(json.dumps({{
     "ops": n_ops,
+    "exceptions": n_err,
     "elapsed_s": round(elapsed, 4),
     "ops_per_sec": round(n_ops / elapsed, 1),
     "rss_delta_mb": round(rss1 - rss0, 2),
