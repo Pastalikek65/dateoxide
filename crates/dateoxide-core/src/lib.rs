@@ -175,12 +175,12 @@ fn build_datedata(
 /// `DateData { date_obj, period, locale, parts, part_of_day }`.
 pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
     let trimmed_raw = input.trim();
-    if trimmed_raw.is_empty() {
+    if trimmed_raw.is_empty() || trimmed_raw.contains('\0') {
         return DateData::empty();
     }
 
     let owned_cleaned;
-    let trimmed: &str = if settings.skip_tokens.is_empty() {
+    let skip_trimmed: &str = if settings.skip_tokens.is_empty() {
         trimmed_raw
     } else {
         owned_cleaned = strip_user_skip_tokens(trimmed_raw, &settings.skip_tokens);
@@ -189,6 +189,26 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
         }
         owned_cleaned.trim()
     };
+
+    let unicode_cleaned = locale::clean_unicode_surface(skip_trimmed);
+    let trimmed = unicode_cleaned.as_ref();
+    if trimmed.is_empty() {
+        return DateData::empty();
+    }
+
+    // Currency-amount guard in auto-detect mode (e.g. "25 EUR", "100 SEK", "50 NGN")
+    if settings.languages.is_none() {
+        let mut parts = trimmed.split_whitespace();
+        if let (Some(n_tok), Some(c_tok), None) = (parts.next(), parts.next(), parts.next()) {
+            let n_clean = n_tok.trim_matches(|c: char| matches!(c, '+' | '-'));
+            if !n_clean.is_empty()
+                && n_clean.bytes().all(|b| b.is_ascii_digit() || b == b'.' || b == b',')
+                && locale::is_iso4217_currency(c_tok)
+            {
+                return DateData::empty();
+            }
+        }
+    }
 
     // 0. Custom user strptime formats (`date_formats`)
     if let Some(m) = fast_path::try_custom_formats(trimmed, settings) {
@@ -346,17 +366,21 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
 
     // 4. Multilingual Relative Date Engine
     if settings.allows_parser(ParserKind::RelativeTime) {
-        if let Some(m) = relative::try_parse_relative(&normalized, &candidates, registry, settings) {
-            return build_datedata(
-                m.naive,
-                tz,
-                m.period,
-                m.has_time,
-                m.locale,
-                m.parts,
-                m.part_of_day,
-                settings,
-            );
+        match relative::try_parse_relative_outcome(&normalized, &candidates, registry, settings) {
+            relative::RelativeOutcome::Matched(m) => {
+                return build_datedata(
+                    m.naive,
+                    tz,
+                    m.period,
+                    m.has_time,
+                    m.locale,
+                    m.parts,
+                    m.part_of_day,
+                    settings,
+                );
+            }
+            relative::RelativeOutcome::OutOfBounds => return DateData::empty(),
+            relative::RelativeOutcome::NoMatch => {}
         }
     }
 

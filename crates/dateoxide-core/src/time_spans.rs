@@ -52,14 +52,14 @@ fn patterns() -> &'static [CompiledSpanPattern] {
             // German
             (r"(?i)\b(?:letzten?|vergangenen?)\s+monat\b", "month", "past", false),
             (r"(?i)\bletzte\s+woche\b", "week", "past", false),
-            (r"(?i)\b(?:letzten?|vergangenen?)\s+(\d+)\s+tage?\b", "days", "past", true),
+            (r"(?i)\b(?:letzten?|vergangenen?)\s+(\d+)\s+tage?n?\b", "days", "past", true),
             (r"(?i)\b(?:letzten?|vergangenen?)\s+(\d+)\s+wochen?\b", "weeks", "past", true),
-            (r"(?i)\b(?:letzten?|vergangenen?)\s+(\d+)\s+monate?\b", "months", "past", true),
+            (r"(?i)\b(?:letzten?|vergangenen?)\s+(\d+)\s+monate?n?\b", "months", "past", true),
             (r"(?i)\b(?:nächsten?|naechsten?|kommenden?)\s+monat\b", "month", "future", false),
             (r"(?i)\b(?:nächste|naechste|kommende)\s+woche\b", "week", "future", false),
-            (r"(?i)\b(?:nächsten?|naechsten?|kommenden?)\s+(\d+)\s+tage?\b", "days", "future", true),
+            (r"(?i)\b(?:nächsten?|naechsten?|kommenden?)\s+(\d+)\s+tage?n?\b", "days", "future", true),
             (r"(?i)\b(?:nächsten?|naechsten?|kommenden?)\s+(\d+)\s+wochen?\b", "weeks", "future", true),
-            (r"(?i)\b(?:nächsten?|naechsten?|kommenden?)\s+(\d+)\s+monate?\b", "months", "future", true),
+            (r"(?i)\b(?:nächsten?|naechsten?|kommenden?)\s+(\d+)\s+monate?n?\b", "months", "future", true),
             // French
             (r"(?i)\b(?:mois\s+dernier|dernier\s+mois)\b", "month", "past", false),
             (r"(?i)\b(?:semaine\s+dernière|semaine\s+derniere|dernière\s+semaine)\b", "week", "past", false),

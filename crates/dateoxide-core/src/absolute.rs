@@ -23,12 +23,15 @@ pub fn try_parse_absolute(
     registry: &LocaleRegistry,
     settings: &Settings,
 ) -> Option<AbsoluteMatch> {
-    if normalized.contains('年')
+    if (normalized.contains('年')
         || normalized.contains('月')
         || normalized.contains('日')
         || normalized.contains('년')
         || normalized.contains('월')
-        || normalized.contains('일')
+        || normalized.contains('일'))
+        && (crate::locale::settings_allows_locale(settings, "zh")
+            || crate::locale::settings_allows_locale(settings, "ja")
+            || crate::locale::settings_allows_locale(settings, "ko"))
     {
         if let Some(m) = try_cjk_or_korean_date(normalized, settings) {
             return Some(m);
@@ -138,6 +141,9 @@ fn extract_cjk_era_year(s: &str) -> Option<Result<(i32, String, bool), ()>> {
 }
 
 fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch> {
+    if s.contains("四半期") || s.contains("季度") || s.contains("분기") {
+        return None;
+    }
     let mut year: Option<i32> = None;
     let mut month: Option<u32> = None;
     let mut day: Option<u32> = None;
@@ -436,13 +442,19 @@ fn try_parse_in_locale(
     }
 
     let mut year: Option<i32> = None;
+    let mut year_expanded_from_two = false;
+    let mut year_pos: Option<usize> = None;
     let mut month: Option<u32> = None;
+    let mut month_pos: Option<usize> = None;
+    let mut month_token_len: usize = 0;
+    let mut month_token_ascii: bool = false;
     let mut day: Option<u32> = None;
+    let mut day_pos: Option<usize> = None;
     let mut weekday_seen: Option<u8> = None;
     let mut time: Option<NaiveTime> = None;
     let mut part_of_day: Option<PartOfDay> = None;
     let mut ampm: Option<bool> = None;
-    let mut free_nums: Vec<(u32, usize)> = Vec::new();
+    let mut free_nums: Vec<(u32, usize, usize)> = Vec::new();
     let mut matched_locale_signal = false;
     let mut ambiguous_month_weekday: Option<u8> = None;
 
@@ -469,8 +481,9 @@ fn try_parse_in_locale(
             if let Some((y_part, t_part)) = clean.split_once(':') {
                 if y_part.len() == 4 && y_part.bytes().all(|b| b.is_ascii_digit()) {
                     if let (Ok(y_val), Some(t_val)) = (y_part.parse::<i32>(), parse_time_str(t_part)) {
-                        if (1000..=2999).contains(&y_val) {
+                        if (1..=9999).contains(&y_val) {
                             year = Some(y_val);
+                            year_pos = Some(i);
                             time = Some(t_val);
                             i += 1;
                             continue;
@@ -513,6 +526,9 @@ fn try_parse_in_locale(
                     || next_clean == "uhr"
                     || loc.am.contains(next_clean)
                     || loc.pm.contains(next_clean)
+                    || (settings.normalize
+                        && (loc.folded_am.contains(next_clean)
+                            || loc.folded_pm.contains(next_clean)))
                 {
                     let combined = format!("{} {}", time_cand, raw_tokens[i + 1].trim_matches(','));
                     if let Some(t) = parse_time_str(&combined) {
@@ -558,6 +574,9 @@ fn try_parse_in_locale(
                             weekday_seen = Some(prev_wd);
                         }
                         month = Some(m as u32);
+                        month_pos = Some(i);
+                        month_token_len = cand.chars().count();
+                        month_token_ascii = cand.is_ascii();
                         matched_locale_signal = true;
                         matched_span = span;
                         break;
@@ -570,13 +589,24 @@ fn try_parse_in_locale(
             }
         }
 
-        // 4. AM/PM markers
-        if clean == "pm" || clean == "p.m" || loc.pm.contains(clean) {
+        // 4. AM/PM markers (never mistake German preposition "am" = "on" for English a.m.)
+        if clean == "pm"
+            || clean == "p.m"
+            || loc.pm.contains(clean)
+            || (settings.normalize && loc.folded_pm.contains(clean))
+        {
             ampm = Some(true);
             i += 1;
             continue;
         }
-        if clean == "am" || clean == "a.m" || loc.am.contains(clean) {
+        let is_germanic_prep_am = clean == "am"
+            && matches!(loc.code.as_str(), "de" | "gsw" | "lb" | "ksh" | "nds");
+        if !is_germanic_prep_am
+            && (clean == "am"
+                || clean == "a.m"
+                || loc.am.contains(clean)
+                || (settings.normalize && loc.folded_am.contains(clean)))
+        {
             ampm = Some(false);
             i += 1;
             continue;
@@ -642,6 +672,8 @@ fn try_parse_in_locale(
                 if rest.len() == 2 && rest.bytes().all(|b| b.is_ascii_digit()) {
                     if let Ok(y2) = rest.parse::<u32>() {
                         year = Some(expand_two_digit_year(y2));
+                        year_pos = Some(i);
+                        year_expanded_from_two = true;
                         i += 1;
                         continue;
                     }
@@ -651,10 +683,11 @@ fn try_parse_in_locale(
 
         // 7. Numeric token (including ordinals)
         if let Some((num, digit_len)) = parse_date_number_or_ordinal(clean) {
-            if digit_len == 4 && (1000..=2999).contains(&num) && year.is_none() {
+            if digit_len == 4 && (1..=9999).contains(&num) && year.is_none() {
                 year = Some(num as i32);
+                year_pos = Some(i);
             } else {
-                free_nums.push((num, digit_len));
+                free_nums.push((num, digit_len, i));
             }
             i += 1;
             continue;
@@ -686,7 +719,10 @@ fn try_parse_in_locale(
     let has_time = time.is_some();
     if let (Some(t), Some(is_pm)) = (time, ampm) {
         let mut h = t.hour();
-        if is_pm && (1..12).contains(&h) {
+        if h == 0 || h > 12 {
+            return None;
+        }
+        if is_pm && h < 12 {
             h += 12;
         } else if !is_pm && h == 12 {
             h = 0;
@@ -713,51 +749,78 @@ fn try_parse_in_locale(
 
     match free_nums.as_slice() {
         [] => {}
-        [(n, len)] => {
+        [(n, len, pos)] => {
             if month.is_some() && day.is_none() && (1..=31).contains(n) && *len <= 2 {
                 day = Some(*n);
+                day_pos = Some(*pos);
             } else if year.is_none() && *len == 2 && weekday_seen.is_none() {
                 year = Some(expand_two_digit_year(*n));
+                year_pos = Some(*pos);
+                year_expanded_from_two = true;
             } else {
                 return None;
             }
         }
-        [(n1, l1), (n2, l2)] => {
+        [(n1, l1, p1), (n2, l2, p2)] => {
             if month.is_some() && day.is_none() && year.is_none() {
                 if (1..=31).contains(n1) && *l1 <= 2 && *l2 == 2 {
                     day = Some(*n1);
+                    day_pos = Some(*p1);
                     year = Some(expand_two_digit_year(*n2));
+                    year_pos = Some(*p2);
+                    year_expanded_from_two = true;
                 } else if (1..=31).contains(n2) && *l2 <= 2 && *l1 == 2 {
                     year = Some(expand_two_digit_year(*n1));
+                    year_pos = Some(*p1);
+                    year_expanded_from_two = true;
                     day = Some(*n2);
+                    day_pos = Some(*p2);
                 } else if (1..=31).contains(n1) && (1..=31).contains(n2) && n1 <= n2 {
                     // Range without year: "June 12-14"
                     day = Some(*n1);
+                    day_pos = Some(*p1);
                 } else {
                     return None;
                 }
-            } else if month.is_some() && year.is_some() && day.is_none() && (1..=31).contains(n1) && (1..=31).contains(n2) && n1 <= n2 {
+            } else if month.is_some()
+                && year.is_some()
+                && day.is_none()
+                && (1..=31).contains(n1)
+                && (1..=31).contains(n2)
+                && n1 <= n2
+            {
                 // Date range like "June 12-14, 2021" or "12-14 June 2021" -> take start day
                 day = Some(*n1);
-            } else if month.is_none() && day.is_none() {
+                day_pos = Some(*p1);
+            } else if month.is_none() && day.is_none() && weekday_seen.is_none() {
                 match order {
-                    DateOrder::YMD | DateOrder::MDY if (1..=12).contains(n1) && (1..=31).contains(n2) => {
+                    DateOrder::YMD | DateOrder::MDY
+                        if (1..=12).contains(n1) && (1..=31).contains(n2) =>
+                    {
                         month = Some(*n1);
+                        month_pos = Some(*p1);
                         day = Some(*n2);
+                        day_pos = Some(*p2);
                     }
-                    DateOrder::YMD | DateOrder::MDY if settings.strict_date_order == StrictDateOrder::All => {
+                    DateOrder::YMD | DateOrder::MDY
+                        if settings.strict_date_order == StrictDateOrder::All =>
+                    {
                         return None;
                     }
                     _ if (1..=31).contains(n1) && (1..=12).contains(n2) => {
                         day = Some(*n1);
+                        day_pos = Some(*p1);
                         month = Some(*n2);
+                        month_pos = Some(*p2);
                     }
                     _ if settings.strict_date_order == StrictDateOrder::All => {
                         return None;
                     }
                     _ if (1..=12).contains(n1) && (1..=31).contains(n2) => {
                         month = Some(*n1);
+                        month_pos = Some(*p1);
                         day = Some(*n2);
+                        day_pos = Some(*p2);
                     }
                     _ => return None,
                 }
@@ -766,6 +829,33 @@ fn try_parse_in_locale(
             }
         }
         _ => return None,
+    }
+
+    if settings.languages.is_none()
+        && !crate::locale::is_major_auto_locale(&loc.code)
+        && time.is_none()
+        && month.is_some()
+        && month_token_ascii
+        && month_token_len <= 3
+        && ((day.is_some() && year.is_none()) || year_expanded_from_two)
+    {
+        return None;
+    }
+
+    if settings.strict_date_order == StrictDateOrder::All {
+        if let (Some(yp), Some(mp), Some(dp)) = (year_pos, month_pos, day_pos) {
+            let order_ok = match order {
+                DateOrder::YMD => yp < mp && mp < dp,
+                DateOrder::YDM => yp < dp && dp < mp,
+                DateOrder::MDY => mp < dp && dp < yp,
+                DateOrder::DMY => dp < mp && mp < yp,
+                DateOrder::MYD => mp < yp && yp < dp,
+                DateOrder::DYM => dp < yp && yp < mp,
+            };
+            if !order_ok {
+                return None;
+            }
+        }
     }
 
     if year.is_none() && month.is_none() && day.is_none() {
@@ -781,7 +871,14 @@ fn try_parse_in_locale(
         let cur_wd = base.weekday().num_days_from_monday() as i64;
         let tgt_wd = wd as i64;
         let diff = match settings.prefer_dates_from {
-            PreferDatesFrom::Past | PreferDatesFrom::CurrentPeriod => {
+            PreferDatesFrom::Past => {
+                let mut d = tgt_wd - cur_wd;
+                if d >= 0 {
+                    d -= 7;
+                }
+                d
+            }
+            PreferDatesFrom::CurrentPeriod => {
                 let mut d = tgt_wd - cur_wd;
                 if d > 0 {
                     d -= 7;
@@ -790,7 +887,7 @@ fn try_parse_in_locale(
             }
             PreferDatesFrom::Future => {
                 let mut d = tgt_wd - cur_wd;
-                if d < 0 {
+                if d <= 0 {
                     d += 7;
                 }
                 d
@@ -882,6 +979,32 @@ fn complete_partial_date(
 
     let mut y = year.unwrap_or_else(|| base.year());
     let d = day.unwrap_or_else(|| resolve_missing_day(y, m, base.day(), settings.prefer_day_of_month));
+    if year.is_none() && m == 2 && d == 29 {
+        match settings.prefer_dates_from {
+            PreferDatesFrom::Past | PreferDatesFrom::CurrentPeriod => {
+                while days_in_month(y, 2) < 29
+                    || NaiveDate::from_ymd_opt(y, 2, 29).is_none_or(|nd| nd > base.date())
+                {
+                    y -= 1;
+                    if y < 1 {
+                        return None;
+                    }
+                }
+            }
+            PreferDatesFrom::Future => {
+                while days_in_month(y, 2) < 29
+                    || NaiveDate::from_ymd_opt(y, 2, 29).is_none_or(|nd| nd <= base.date())
+                {
+                    y += 1;
+                    if y > 9999 {
+                        return None;
+                    }
+                }
+            }
+        }
+        return Some((y, m, d, period, parts));
+    }
+
     if d < 1 || d > days_in_month(y, m) {
         return None;
     }
@@ -890,7 +1013,11 @@ fn complete_partial_date(
         if let Some(cand) = NaiveDate::from_ymd_opt(y, m, d) {
             match settings.prefer_dates_from {
                 PreferDatesFrom::Past if cand > base.date() => y -= 1,
-                PreferDatesFrom::Future if cand < base.date() => y += 1,
+                PreferDatesFrom::Future
+                    if cand < base.date() || (day.is_some() && cand == base.date()) =>
+                {
+                    y += 1;
+                }
                 _ => {}
             }
         }

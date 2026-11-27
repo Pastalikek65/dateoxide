@@ -9,7 +9,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+
+static PART_OF_DAY_CLS: OnceLock<Py<PyAny>> = OnceLock::new();
 
 pyo3::create_exception!(_dateoxide, SettingValidationError, PyValueError);
 
@@ -40,7 +42,6 @@ const ALLOWED_SETTINGS: &[&str] = &[
     "IGNORE_SURROUNDING_TEXT",
     "CACHE_SIZE_LIMIT",
     "PARTS_OF_DAY",
-    "FUZZY",
 ];
 
 fn parsed_to_py(py: Python<'_>, dt: ParsedDateTime) -> PyResult<PyObject> {
@@ -163,7 +164,7 @@ fn extract_settings(
 
     if let Some(v) = dict.get_item("DATE_ORDER")? {
         if !v.is_none() {
-            let s: String = v.extract()?;
+            let s: String = v.extract().map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             cfg.date_order = Some(DateOrder::from_str(&s).ok_or_else(|| {
                 SettingValidationError::new_err(format!("Invalid DATE_ORDER: '{}'", s))
             })?);
@@ -171,7 +172,7 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("STRICT_DATE_ORDER")? {
         if !v.is_none() {
-            let s: String = v.extract()?;
+            let s: String = v.extract().map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             cfg.strict_date_order = StrictDateOrder::from_str(&s).ok_or_else(|| {
                 SettingValidationError::new_err(format!("Invalid STRICT_DATE_ORDER: '{}'", s))
             })?;
@@ -179,12 +180,14 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("PREFER_LOCALE_DATE_ORDER")? {
         if !v.is_none() {
-            cfg.prefer_locale_date_order = v.extract()?;
+            cfg.prefer_locale_date_order = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
         }
     }
     if let Some(v) = dict.get_item("PREFER_DATES_FROM")? {
         if !v.is_none() {
-            let s: String = v.extract()?;
+            let s: String = v.extract().map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             cfg.prefer_dates_from = PreferDatesFrom::from_str(&s).ok_or_else(|| {
                 SettingValidationError::new_err(format!("Invalid PREFER_DATES_FROM: '{}'", s))
             })?;
@@ -192,7 +195,7 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("PREFER_DAY_OF_MONTH")? {
         if !v.is_none() {
-            let s: String = v.extract()?;
+            let s: String = v.extract().map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             cfg.prefer_day_of_month = PreferDayOfMonth::from_str(&s).ok_or_else(|| {
                 SettingValidationError::new_err(format!("Invalid PREFER_DAY_OF_MONTH: '{}'", s))
             })?;
@@ -200,7 +203,7 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("PREFER_MONTH_OF_YEAR")? {
         if !v.is_none() {
-            let s: String = v.extract()?;
+            let s: String = v.extract().map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             cfg.prefer_month_of_year = PreferMonthOfYear::from_str(&s).ok_or_else(|| {
                 SettingValidationError::new_err(format!("Invalid PREFER_MONTH_OF_YEAR: '{}'", s))
             })?;
@@ -208,7 +211,9 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("STRICT_PARSING")? {
         if !v.is_none() {
-            cfg.strict_parsing = v.extract()?;
+            cfg.strict_parsing = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
         }
     }
     if let Some(v) = dict.get_item("RELATIVE_BASE")? {
@@ -217,9 +222,24 @@ fn extract_settings(
                 if b {
                     return Err(SettingValidationError::new_err("RELATIVE_BASE cannot be True"));
                 }
-            } else {
-                let ndt: NaiveDateTime = v.extract()?;
+            } else if let Ok(ndt) = v.extract::<NaiveDateTime>() {
                 cfg.relative_base = Some(ndt);
+            } else if let Ok(fdt) = v.extract::<chrono::DateTime<chrono::FixedOffset>>() {
+                cfg.relative_base = Some(fdt.naive_local());
+            } else if v.hasattr("replace")? {
+                let kw = PyDict::new(v.py());
+                kw.set_item("tzinfo", v.py().None())?;
+                let naive_py = v.call_method("replace", (), Some(&kw)).map_err(|e| {
+                    SettingValidationError::new_err(format!("Invalid RELATIVE_BASE: {}", e))
+                })?;
+                let ndt: NaiveDateTime = naive_py.extract().map_err(|e| {
+                    SettingValidationError::new_err(format!("Invalid RELATIVE_BASE: {}", e))
+                })?;
+                cfg.relative_base = Some(ndt);
+            } else {
+                return Err(SettingValidationError::new_err(
+                    "RELATIVE_BASE must be a datetime object",
+                ));
             }
         }
     }
@@ -316,7 +336,7 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("DEFAULT_START_OF_WEEK")? {
         if !v.is_none() {
-            let s: String = v.extract()?;
+            let s: String = v.extract().map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             cfg.default_start_of_week = StartOfWeek::from_str(&s).ok_or_else(|| {
                 SettingValidationError::new_err(format!("Invalid DEFAULT_START_OF_WEEK: '{}'", s))
             })?;
@@ -324,7 +344,14 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("DEFAULT_DAYS_IN_MONTH")? {
         if !v.is_none() {
-            cfg.default_days_in_month = v.extract()?;
+            let d: i64 = v.extract().map_err(|e| SettingValidationError::new_err(e.to_string()))?;
+            if !(1..=31).contains(&d) {
+                return Err(SettingValidationError::new_err(format!(
+                    "Invalid DEFAULT_DAYS_IN_MONTH: {} (must be 1..=31)",
+                    d
+                )));
+            }
+            cfg.default_days_in_month = d as u32;
         }
     }
     if let Some(v) = dict.get_item("IGNORE_SURROUNDING_TEXT")? {
@@ -371,7 +398,16 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("CACHE_SIZE_LIMIT")? {
         if !v.is_none() {
-            cfg.cache_size_limit = v.extract()?;
+            let limit: isize = v
+                .extract()
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
+            if limit < 0 {
+                return Err(SettingValidationError::new_err(format!(
+                    "Invalid CACHE_SIZE_LIMIT: {} (must be >= 0)",
+                    limit
+                )));
+            }
+            cfg.cache_size_limit = limit as usize;
         }
     }
 
@@ -408,7 +444,8 @@ fn call_detect_languages(
     let bound = func.bind(py);
     let res = match bound.call1((text, confidence_threshold)) {
         Ok(r) => r,
-        Err(_) => bound.call1((text,))?,
+        Err(err) if err.is_instance_of::<PyTypeError>(py) => bound.call1((text,))?,
+        Err(err) => return Err(err),
     };
     if res.is_none() {
         return Ok(None);
@@ -428,7 +465,13 @@ fn datedata_to_py(py: Python<'_>, data: DateData) -> PyResult<PyDateData> {
     };
     let part_of_day = match data.part_of_day {
         Some(pod) => {
-            let enum_cls = py.import("dateoxide.conf")?.getattr("PartOfDay")?;
+            let enum_cls = if let Some(cached) = PART_OF_DAY_CLS.get() {
+                cached.bind(py).clone()
+            } else {
+                let imported = py.import("dateoxide.conf")?.getattr("PartOfDay")?.unbind();
+                let _ = PART_OF_DAY_CLS.set(imported);
+                PART_OF_DAY_CLS.get().unwrap().bind(py).clone()
+            };
             Some(enum_cls.call1((pod.as_str(),))?.unbind())
         }
         None => None,
@@ -453,6 +496,31 @@ pub struct PyDateData {
     parts_vec: Vec<String>,
     #[pyo3(get)]
     pub part_of_day: Option<PyObject>,
+}
+
+fn eq_opt_py(py: Python<'_>, a: &Option<PyObject>, b: &Option<PyObject>) -> PyResult<bool> {
+    match (a, b) {
+        (None, None) => Ok(true),
+        (Some(x), Some(y)) => x.bind(py).eq(y.bind(py)),
+        _ => Ok(false),
+    }
+}
+
+#[pyfunction]
+fn _unpickle_datedata(
+    date_obj: Option<PyObject>,
+    period: String,
+    locale: Option<String>,
+    parts: Vec<String>,
+    part_of_day: Option<PyObject>,
+) -> PyDateData {
+    PyDateData {
+        date_obj,
+        period,
+        locale,
+        parts_vec: parts,
+        part_of_day,
+    }
 }
 
 #[pymethods]
@@ -521,6 +589,46 @@ impl PyDateData {
             "DateData(date_obj={}, period='{}', locale={}, parts={})",
             dt_repr, self.period, loc_repr, parts_repr
         ))
+    }
+
+    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        let Ok(o) = other.extract::<PyRef<'_, PyDateData>>() else {
+            return Ok(py.NotImplemented());
+        };
+        let is_eq = self.period == o.period
+            && self.locale == o.locale
+            && self.parts_vec == o.parts_vec
+            && eq_opt_py(py, &self.date_obj, &o.date_obj)?
+            && eq_opt_py(py, &self.part_of_day, &o.part_of_day)?;
+        Ok(is_eq.into_pyobject(py)?.to_owned().into_any().unbind())
+    }
+
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<(PyObject, PyObject)> {
+        let cls_fn = py
+            .import("dateoxide._dateoxide")?
+            .getattr("_unpickle_datedata")?
+            .unbind();
+        let dt_obj = self
+            .date_obj
+            .as_ref()
+            .map(|o| o.clone_ref(py))
+            .unwrap_or_else(|| py.None());
+        let pod_obj = self
+            .part_of_day
+            .as_ref()
+            .map(|o| o.clone_ref(py))
+            .unwrap_or_else(|| py.None());
+        let args = (
+            dt_obj,
+            self.period.clone(),
+            self.locale.clone(),
+            self.parts_vec.clone(),
+            pod_obj,
+        )
+            .into_pyobject(py)?
+            .into_any()
+            .unbind();
+        Ok((cls_fn, args))
     }
 }
 
@@ -623,13 +731,13 @@ impl PyDateDataParser {
                 .unwrap_or_default();
             if !prev.is_empty() {
                 let prev_cfg = self.build_previous_locales_config(effective_cfg, &prev);
-                let res = dateoxide_core::get_date_data(date_string, &prev_cfg);
+                let res = py.allow_threads(|| dateoxide_core::get_date_data(date_string, &prev_cfg));
                 if res.date_obj.is_some() {
                     self.record_previous_locale(res.locale.as_deref());
                     return Ok(res);
                 }
             }
-            let res = dateoxide_core::get_date_data(date_string, effective_cfg);
+            let res = py.allow_threads(|| dateoxide_core::get_date_data(date_string, effective_cfg));
             if res.date_obj.is_some() {
                 self.record_previous_locale(res.locale.as_deref());
             }
@@ -637,7 +745,7 @@ impl PyDateDataParser {
         }
 
         if let Some(ref cfg) = cfg_owned {
-            return Ok(dateoxide_core::get_date_data(date_string, cfg));
+            return Ok(py.allow_threads(|| dateoxide_core::get_date_data(date_string, cfg)));
         }
 
         let limit = self.settings.cache_size_limit;
@@ -647,7 +755,7 @@ impl PyDateDataParser {
                     return Ok(cached.clone());
                 }
             }
-            let data = dateoxide_core::get_date_data(date_string, &self.settings);
+            let data = py.allow_threads(|| dateoxide_core::get_date_data(date_string, &self.settings));
             if let Ok(mut guard) = self.cache.lock() {
                 if !guard.map.contains_key(date_string) {
                     while guard.order.len() >= limit {
@@ -665,7 +773,7 @@ impl PyDateDataParser {
             return Ok(data);
         }
 
-        Ok(dateoxide_core::get_date_data(date_string, &self.settings))
+        Ok(py.allow_threads(|| dateoxide_core::get_date_data(date_string, &self.settings)))
     }
 }
 
@@ -739,8 +847,35 @@ impl PyDateDataParser {
         py: Python<'_>,
         date_strings: Vec<Option<String>>,
     ) -> PyResult<Py<PyList>> {
-        let cfg = &self.settings;
-        let results = py.allow_threads(|| dateoxide_core::parse_batch_opt(&date_strings, cfg));
+        let results = match (&self.settings.languages, &self.detect_languages_function) {
+            (None, Some(func)) => {
+            let mut out = Vec::with_capacity(date_strings.len());
+            for item in &date_strings {
+                let Some(s) = item.as_deref() else {
+                    out.push(None);
+                    continue;
+                };
+                let mut local_cfg = None;
+                if let Some(detected) = call_detect_languages(
+                    py,
+                    func,
+                    s,
+                    self.settings.language_detection_confidence_threshold,
+                )? {
+                    let mut c = self.settings.clone();
+                    c.languages = Some(detected);
+                    local_cfg = Some(c);
+                }
+                let cfg_ref = local_cfg.as_ref().unwrap_or(&self.settings);
+                out.push(py.allow_threads(|| dateoxide_core::parse_with_settings(s, cfg_ref)));
+            }
+            out
+            }
+            _ => {
+                let cfg = &self.settings;
+                py.allow_threads(|| dateoxide_core::parse_batch_opt(&date_strings, cfg))
+            }
+        };
         let py_items: Vec<PyObject> = results
             .into_iter()
             .map(|opt| match opt {
@@ -756,7 +891,23 @@ impl PyDateDataParser {
         py: Python<'_>,
         date_range_string: &str,
     ) -> PyResult<Option<(PyObject, PyObject)>> {
-        match dateoxide_core::parse_date_range(date_range_string, &self.settings) {
+        let mut cfg_owned: Option<Settings> = None;
+        if self.settings.languages.is_none() {
+            if let Some(ref func) = self.detect_languages_function {
+                if let Some(detected) = call_detect_languages(
+                    py,
+                    func,
+                    date_range_string,
+                    self.settings.language_detection_confidence_threshold,
+                )? {
+                    let mut c = self.settings.clone();
+                    c.languages = Some(detected);
+                    cfg_owned = Some(c);
+                }
+            }
+        }
+        let cfg_ref = cfg_owned.as_ref().unwrap_or(&self.settings);
+        match py.allow_threads(|| dateoxide_core::parse_date_range(date_range_string, cfg_ref)) {
             Some((start, end)) => Ok(Some((parsed_to_py(py, start)?, parsed_to_py(py, end)?))),
             None => Ok(None),
         }
@@ -790,7 +941,7 @@ fn parse(
             }
         }
     }
-    let parsed = dateoxide_core::parse_with_settings(date_string, &cfg);
+    let parsed = py.allow_threads(|| dateoxide_core::parse_with_settings(date_string, &cfg));
     match parsed {
         Some(dt) => Ok(Some(parsed_to_py(py, dt)?)),
         None => Ok(None),
@@ -833,7 +984,7 @@ fn parse_date_range(
     settings: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Option<(PyObject, PyObject)>> {
     let cfg = extract_settings(None, languages, locales, region, false, settings)?;
-    match dateoxide_core::parse_date_range(date_range_string, &cfg) {
+    match py.allow_threads(|| dateoxide_core::parse_date_range(date_range_string, &cfg)) {
         Some((start, end)) => Ok(Some((parsed_to_py(py, start)?, parsed_to_py(py, end)?))),
         None => Ok(None),
     }
@@ -843,7 +994,6 @@ fn parse_date_range(
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
 #[pyo3(signature = (text, languages=None, settings=None, add_detected_language=false, detect_languages_function=None, strategy="split", date_formats=None, add_period=false))]
-#[allow(unused_variables)]
 fn search_dates(
     py: Python<'_>,
     text: &str,
@@ -855,6 +1005,12 @@ fn search_dates(
     date_formats: Option<Vec<String>>,
     add_period: bool,
 ) -> PyResult<Option<Py<PyList>>> {
+    if !matches!(strategy, "split" | "ngram") {
+        return Err(PyValueError::new_err(format!(
+            "Invalid strategy: '{}'. Expected 'split' or 'ngram'.",
+            strategy
+        )));
+    }
     let mut cfg = extract_settings(date_formats, languages, None, None, false, settings)?;
     if cfg.languages.is_none() {
         if let Some(ref func) = detect_languages_function {
@@ -899,7 +1055,7 @@ fn parse_freshness(
     settings: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyDateData> {
     let cfg = extract_settings(None, languages, None, None, false, settings)?;
-    let dd = dateoxide_core::parse_freshness(date_string, &cfg);
+    let dd = py.allow_threads(|| dateoxide_core::parse_freshness(date_string, &cfg));
     datedata_to_py(py, dd)
 }
 
@@ -936,7 +1092,7 @@ fn parse_jalali(
     settings: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyDateData> {
     let cfg = extract_settings(None, None, None, None, false, settings)?;
-    let dd = dateoxide_core::calendars::parse_jalali(source, &cfg);
+    let dd = py.allow_threads(|| dateoxide_core::calendars::parse_jalali(source, &cfg));
     datedata_to_py(py, dd)
 }
 
@@ -948,7 +1104,7 @@ fn parse_hijri(
     settings: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyDateData> {
     let cfg = extract_settings(None, None, None, None, false, settings)?;
-    let dd = dateoxide_core::calendars::parse_hijri(source, &cfg);
+    let dd = py.allow_threads(|| dateoxide_core::calendars::parse_hijri(source, &cfg));
     datedata_to_py(py, dd)
 }
 
@@ -960,7 +1116,7 @@ fn parse_minguo(
     settings: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyDateData> {
     let cfg = extract_settings(None, None, None, None, false, settings)?;
-    let dd = dateoxide_core::calendars::parse_minguo(source, &cfg);
+    let dd = py.allow_threads(|| dateoxide_core::calendars::parse_minguo(source, &cfg));
     datedata_to_py(py, dd)
 }
 
@@ -972,7 +1128,7 @@ fn parse_french_republican(
     settings: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyDateData> {
     let cfg = extract_settings(None, None, None, None, false, settings)?;
-    let dd = dateoxide_core::calendars::parse_french_republican(source, &cfg);
+    let dd = py.allow_threads(|| dateoxide_core::calendars::parse_french_republican(source, &cfg));
     datedata_to_py(py, dd)
 }
 
@@ -1052,6 +1208,7 @@ fn _dateoxide(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(detect_time_span, m)?)?;
     m.add_function(wrap_pyfunction!(generate_time_span, m)?)?;
     m.add_function(wrap_pyfunction!(supported_languages, m)?)?;
+    m.add_function(wrap_pyfunction!(_unpickle_datedata, m)?)?;
     m.add_class::<PyDateData>()?;
     m.add_class::<PyDateDataParser>()?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;

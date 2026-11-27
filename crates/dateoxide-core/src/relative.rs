@@ -64,7 +64,18 @@ pub fn apply_relative_offset(
             if amount > 120_000.0 {
                 return None;
             }
-            add_months(base, signed.round() as i32)?
+            if signed.fract().abs() > 1e-6 {
+                let whole_months = signed.trunc() as i32;
+                let frac_days = (signed.fract() * 30.0).round() as i64;
+                let shifted = if whole_months != 0 {
+                    add_months(base, whole_months)?
+                } else {
+                    base
+                };
+                shifted.checked_add_signed(Duration::days(frac_days))?
+            } else {
+                add_months(base, signed.round() as i32)?
+            }
         }
         TimeUnit::Year => {
             if amount > 9_999.0 {
@@ -241,6 +252,13 @@ fn strip_approx_prefix(s: &str) -> String {
     out
 }
 
+#[derive(Debug, Clone)]
+pub enum RelativeOutcome {
+    Matched(RelativeMatch),
+    OutOfBounds,
+    NoMatch,
+}
+
 /// Try parsing a normalized lowercase string as a relative date across candidate locales.
 pub fn try_parse_relative(
     normalized: &str,
@@ -248,6 +266,21 @@ pub fn try_parse_relative(
     registry: &LocaleRegistry,
     settings: &Settings,
 ) -> Option<RelativeMatch> {
+    match try_parse_relative_outcome(normalized, candidate_ids, registry, settings) {
+        RelativeOutcome::Matched(m) => Some(m),
+        RelativeOutcome::OutOfBounds | RelativeOutcome::NoMatch => None,
+    }
+}
+
+/// Like `try_parse_relative`, distinguishing calendar underflow/overflow from non-matches
+/// so out-of-range relative expressions (e.g. `"1 day ago"` at `0001-01-01`) are not re-parsed
+/// as another locale's absolute month.
+pub fn try_parse_relative_outcome(
+    normalized: &str,
+    candidate_ids: &[usize],
+    registry: &LocaleRegistry,
+    settings: &Settings,
+) -> RelativeOutcome {
     let base = settings.effective_base();
     let trimmed_article = normalized.strip_prefix("the ").unwrap_or(normalized);
     let approx_stripped = strip_approx_prefix(trimmed_article);
@@ -260,10 +293,10 @@ pub fn try_parse_relative(
 
     // 0. Special compound day + time-of-day idioms, half/fractional durations & conversational clocks
     if let Some(m) = try_conversational_clock_or_fraction(eff, settings) {
-        return Some(m);
+        return RelativeOutcome::Matched(m);
     }
     if let Some(m) = try_compound_tod_idiom(eff, &folded_full, candidate_ids, registry, base, settings) {
-        return Some(m);
+        return RelativeOutcome::Matched(m);
     }
 
     // 1. O(1) Global Exact Relative Phrase lookup ("yesterday", "bugün", "yarın", "demain", "今日", "कल", "غدا")
@@ -302,9 +335,11 @@ pub fn try_parse_relative(
                 .find(|(_, s)| *s == chosen)
                 .map(|(l, _)| *l)
                 .unwrap_or(matched_specs[0].0);
-            let dt = apply_relative_offset(base, chosen.sign, chosen.amount as f64, chosen.unit)?;
+            let Some(dt) = apply_relative_offset(base, chosen.sign, chosen.amount as f64, chosen.unit) else {
+                return RelativeOutcome::OutOfBounds;
+            };
             let has_t = is_time_unit(chosen.unit);
-            return Some(RelativeMatch {
+            return RelativeOutcome::Matched(RelativeMatch {
                 naive: dt,
                 period: period_for_unit(chosen.unit),
                 locale: registry.locales[chosen_lid].code.clone(),
@@ -351,9 +386,11 @@ pub fn try_parse_relative(
                     .find(|(_, s)| *s == chosen)
                     .map(|(l, _)| *l)
                     .unwrap_or(matched_specs[0].0);
-                let dt = apply_relative_offset(base, chosen.sign, chosen.amount as f64, chosen.unit)?;
+                let Some(dt) = apply_relative_offset(base, chosen.sign, chosen.amount as f64, chosen.unit) else {
+                    return RelativeOutcome::OutOfBounds;
+                };
                 let has_t = is_time_unit(chosen.unit);
-                return Some(RelativeMatch {
+                return RelativeOutcome::Matched(RelativeMatch {
                     naive: dt,
                     period: period_for_unit(chosen.unit),
                     locale: registry.locales[chosen_lid].code.clone(),
@@ -379,8 +416,10 @@ pub fn try_parse_relative(
         if let Some(t) = extracted_time {
             let cleaned = strip_connector_words(phrase_no_time, loc);
             if let Some(spec) = lookup_exact_in_locale(cleaned, loc, settings.normalize, settings.prefer_dates_from) {
-                let dt = apply_relative_offset(base, spec.sign, spec.amount as f64, spec.unit)?;
-                return Some(RelativeMatch {
+                let Some(dt) = apply_relative_offset(base, spec.sign, spec.amount as f64, spec.unit) else {
+                    return RelativeOutcome::OutOfBounds;
+                };
+                return RelativeOutcome::Matched(RelativeMatch {
                     naive: dt.date().and_time(t),
                     period: Period::Day,
                     locale: loc.code.clone(),
@@ -395,7 +434,7 @@ pub fn try_parse_relative(
         // Never allow a bare TOD word from a secondary locale to shadow an exact month/weekday in top candidate (e.g. "Jun" vs fy "jûn").
         if extracted_time.is_none() && !(top_is_month_or_wd && lid != candidate_ids[0]) {
             if let Some((dt, pod)) = try_relative_plus_tod(eff, loc, base, settings) {
-                return Some(RelativeMatch {
+                return RelativeOutcome::Matched(RelativeMatch {
                     naive: dt,
                     period: Period::Day,
                     locale: loc.code.clone(),
@@ -429,13 +468,15 @@ pub fn try_parse_relative(
         };
 
         if let Some((spec_sign, amount, unit, used_time)) = affix_hit {
-            let mut dt = apply_relative_offset(base, spec_sign, amount, unit)?;
+            let Some(mut dt) = apply_relative_offset(base, spec_sign, amount, unit) else {
+                return RelativeOutcome::OutOfBounds;
+            };
             if let Some(t) = used_time {
                 dt = dt.date().and_time(t);
             }
             let explicit_t = used_time.is_some();
             let has_t = explicit_t || is_time_unit(unit);
-            return Some(RelativeMatch {
+            return RelativeOutcome::Matched(RelativeMatch {
                 naive: dt,
                 period: if explicit_t { Period::Day } else { period_for_unit(unit) },
                 locale: loc.code.clone(),
@@ -454,7 +495,7 @@ pub fn try_parse_relative(
             }
             let explicit_t = extracted_time.is_some();
             let has_t = explicit_t || has_time_unit;
-            return Some(RelativeMatch {
+            return RelativeOutcome::Matched(RelativeMatch {
                 naive: dt,
                 period: if explicit_t { Period::Day } else { period },
                 locale: loc.code.clone(),
@@ -477,7 +518,7 @@ pub fn try_parse_relative(
             }
             let explicit_t = extracted_time.is_some();
             let has_t = explicit_t || has_time_unit;
-            return Some(RelativeMatch {
+            return RelativeOutcome::Matched(RelativeMatch {
                 naive: dt,
                 period: if explicit_t { Period::Day } else { period },
                 locale: loc.code.clone(),
@@ -499,7 +540,7 @@ pub fn try_parse_relative(
                 dt = dt.date().and_time(t);
             }
             let has_t = extracted_time.is_some();
-            return Some(RelativeMatch {
+            return RelativeOutcome::Matched(RelativeMatch {
                 naive: dt,
                 period: if has_t { Period::Day } else { period },
                 locale: loc.code.clone(),
@@ -510,7 +551,7 @@ pub fn try_parse_relative(
         }
     }
 
-    None
+    RelativeOutcome::NoMatch
 }
 
 fn try_compound_tod_idiom(
@@ -899,6 +940,15 @@ fn try_bare_duration_relative(
     base: NaiveDateTime,
     settings: &Settings,
 ) -> Option<(NaiveDateTime, Period, bool)> {
+    if settings.languages.is_none() && !crate::locale::is_major_auto_locale(&loc.code) {
+        let mut toks = s.split_whitespace();
+        if let (Some(_), Some(u_tok), None) = (toks.next(), toks.next(), toks.next()) {
+            let u_clean = u_tok.trim_end_matches('.');
+            if u_clean.len() <= 3 && u_clean.is_ascii() {
+                return None;
+            }
+        }
+    }
     let sign = if settings.prefer_dates_from == PreferDatesFrom::Future {
         1
     } else {
@@ -1188,8 +1238,10 @@ fn try_relative_period_or_weekday(
     base: NaiveDateTime,
     normalize: bool,
 ) -> Option<(NaiveDateTime, Period)> {
-    if let Some(cjk) = try_cjk_relative_weekday(s.trim(), base) {
-        return Some(cjk);
+    if matches!(loc.code.as_str(), "zh" | "ja") {
+        if let Some(cjk) = try_cjk_relative_weekday(s.trim(), base) {
+            return Some(cjk);
+        }
     }
 
     let fs = if normalize {
@@ -1254,6 +1306,18 @@ fn try_relative_period_or_weekday(
 /// Parse standalone fractional relative durations and conversational clock idioms
 /// (e.g. "two and a half hours ago", "bir buçuk saat önce", "quarter past 3", "saat 3 buçuk").
 pub fn try_conversational_clock_or_fraction(
+    normalized: &str,
+    settings: &Settings,
+) -> Option<RelativeMatch> {
+    let m = try_conversational_clock_or_fraction_inner(normalized, settings)?;
+    if crate::locale::settings_allows_locale(settings, &m.locale) {
+        Some(m)
+    } else {
+        None
+    }
+}
+
+fn try_conversational_clock_or_fraction_inner(
     normalized: &str,
     settings: &Settings,
 ) -> Option<RelativeMatch> {

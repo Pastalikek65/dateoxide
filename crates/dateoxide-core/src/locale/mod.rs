@@ -1,8 +1,9 @@
 pub mod schema;
 
-use crate::settings::DateOrder;
+use crate::settings::{DateOrder, Settings};
 use rustc_hash::{FxHashMap, FxHashSet};
 use schema::RawLocale;
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 static EMBEDDED_LOCALES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/locales.bin"));
@@ -67,6 +68,8 @@ pub struct CompiledLocale {
     pub weekdays: FxHashMap<String, u8>,
     pub am: FxHashSet<String>,
     pub pm: FxHashSet<String>,
+    pub folded_am: FxHashSet<String>,
+    pub folded_pm: FxHashSet<String>,
     pub units: FxHashMap<String, TimeUnit>,
     pub ago: FxHashSet<String>,
     pub in_words: FxHashSet<String>,
@@ -206,13 +209,23 @@ impl LocaleRegistry {
             }
 
             let mut am = FxHashSet::default();
+            let mut folded_am = FxHashSet::default();
             for s in raw.am {
                 register_token(&s, lang_id, true);
+                let f = fold_diacritics(&s);
+                if f != s {
+                    folded_am.insert(f);
+                }
                 am.insert(s);
             }
             let mut pm = FxHashSet::default();
+            let mut folded_pm = FxHashSet::default();
             for s in raw.pm {
                 register_token(&s, lang_id, true);
+                let f = fold_diacritics(&s);
+                if f != s {
+                    folded_pm.insert(f);
+                }
                 pm.insert(s);
             }
 
@@ -366,6 +379,8 @@ impl LocaleRegistry {
                 weekdays,
                 am,
                 pm,
+                folded_am,
+                folded_pm,
                 units,
                 ago,
                 in_words,
@@ -792,12 +807,163 @@ fn detect_script_hint(s: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-/// Normalize all 18 Unicode decimal numeral systems to ASCII 0-9
-/// and collapse whitespace/punctuation for fast matching.
+/// Whether `code` is a major auto-detect language safe for short unanchored tokens.
+#[inline]
+pub fn is_major_auto_locale(code: &str) -> bool {
+    matches!(
+        code,
+        "en" | "tr" | "de" | "fr" | "es" | "it" | "pt" | "nl" | "ru" | "ar" | "fa" | "zh"
+            | "ja" | "ko" | "pl" | "uk" | "sv" | "no" | "nb" | "nn" | "da" | "fi" | "cs"
+            | "sk" | "ro" | "hu" | "el" | "he" | "hi" | "id" | "ms" | "vi" | "th" | "tl"
+    )
+}
+
+/// Whether `settings.languages` permits the given base locale code.
+#[inline]
+pub fn settings_allows_locale(settings: &Settings, code: &str) -> bool {
+    let Some(ref ls) = settings.languages else {
+        return true;
+    };
+    let reg = LocaleRegistry::global();
+    let target_base = code.split(['-', '_']).next().unwrap_or(code);
+    ls.iter().any(|l| {
+        let base = l.split(['-', '_']).next().unwrap_or(l);
+        if l.eq_ignore_ascii_case(code) || base.eq_ignore_ascii_case(target_base) {
+            return true;
+        }
+        reg.resolve_lang_id(l)
+            .is_some_and(|id| reg.locales[id].code == code)
+    })
+}
+
+/// Returns `true` if `code` is a common uppercase 3-letter ISO-4217 currency code.
+#[inline]
+pub fn is_iso4217_currency(tok: &str) -> bool {
+    tok.len() >= 3
+        && tok.len() <= 4
+        && tok.bytes().all(|b| b.is_ascii_uppercase())
+        && matches!(
+            tok,
+            "EUR" | "USD" | "GBP" | "SEK" | "NOK" | "DKK" | "CHF" | "JPY" | "CNY" | "RMB"
+                | "CAD" | "AUD" | "NZD" | "TRY" | "PLN" | "CZK" | "HUF" | "RON" | "BGN"
+                | "RUB" | "UAH" | "INR" | "BRL" | "MXN" | "ARS" | "CLP" | "COP" | "PEN"
+                | "ZAR" | "NGN" | "KES" | "EGP" | "MAD" | "KRW" | "SGD" | "HKD" | "TWD"
+                | "THB" | "IDR" | "MYR" | "PHP" | "VND" | "ILS" | "AED" | "SAR" | "QAR"
+                | "KWD" | "BHD" | "OMR" | "JOD" | "PKR" | "BDT" | "LKR" | "ISK" | "RSD"
+                | "HRK" | "GEL" | "AMD" | "AZN" | "KZT" | "UZS" | "BTC" | "ETH" | "USDT"
+        )
+}
+
+#[inline]
+fn has_khmer_chars(s: &str) -> bool {
+    s.chars().any(|c| ('\u{1780}'..='\u{17FF}').contains(&c))
+}
+
+#[inline]
+fn is_invisible_format_control(c: char, keep_zwsp: bool) -> bool {
+    if c == '\u{200B}' {
+        return !keep_zwsp;
+    }
+    matches!(
+        c,
+        '\u{FEFF}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{00AD}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
+#[inline]
+fn is_edge_emoji(c: char) -> bool {
+    matches!(
+        c,
+        '\u{1F300}'..='\u{1FAFF}' | '\u{2600}'..='\u{27BF}' | '\u{FE0E}' | '\u{FE0F}'
+    )
+}
+
+#[inline]
+fn map_fullwidth_punct(c: char) -> char {
+    match c {
+        '／' => '/',
+        '－' => '-',
+        '：' => ':',
+        '，' => ',',
+        '．' => '.',
+        '\u{00A0}' | '\u{2007}' | '\u{2009}' | '\u{202F}' | '\u{3000}' => ' ',
+        _ => c,
+    }
+}
+
+/// Clean invisible Unicode controls, fullwidth ASCII punctuation, and leading/trailing emoji
+/// without altering case or stripping NUL bytes. Zero-alloc when no changes are needed.
+pub fn clean_unicode_surface(input: &str) -> Cow<'_, str> {
+    if input.contains('\0') {
+        return Cow::Borrowed(input);
+    }
+    let keep_zwsp = has_khmer_chars(input);
+    let needs_clean = input.bytes().any(|b| b >= 0x80)
+        && input.chars().any(|c| {
+            is_invisible_format_control(c, keep_zwsp)
+                || is_edge_emoji(c)
+                || matches!(
+                    c,
+                    '／' | '－' | '：' | '，' | '．' | '\u{00A0}' | '\u{2007}' | '\u{2009}' | '\u{202F}' | '\u{3000}'
+                )
+        });
+    if !needs_clean {
+        return Cow::Borrowed(input);
+    }
+
+    let trimmed = input.trim_matches(|c: char| c.is_whitespace() || is_edge_emoji(c));
+    let mut out = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars() {
+        if is_invisible_format_control(ch, keep_zwsp) {
+            continue;
+        }
+        out.push(map_fullwidth_punct(ch));
+    }
+    Cow::Owned(out)
+}
+
+/// Returns `true` if `ch` is an ASCII digit or one of the supported Unicode decimal digits.
+#[inline]
+pub fn is_unicode_decimal_digit(ch: char) -> bool {
+    ch.is_ascii_digit()
+        || matches!(
+            ch,
+            '\u{0660}'..='\u{0669}'
+                | '\u{06F0}'..='\u{06F9}'
+                | '\u{0966}'..='\u{096F}'
+                | '\u{09E6}'..='\u{09EF}'
+                | '\u{0A66}'..='\u{0A6F}'
+                | '\u{0AE6}'..='\u{0AEF}'
+                | '\u{0B66}'..='\u{0B6F}'
+                | '\u{0BE6}'..='\u{0BEF}'
+                | '\u{0C66}'..='\u{0C6F}'
+                | '\u{0CE6}'..='\u{0CEF}'
+                | '\u{0D66}'..='\u{0D6F}'
+                | '\u{0DE6}'..='\u{0DEF}'
+                | '\u{0E50}'..='\u{0E59}'
+                | '\u{0ED0}'..='\u{0EDF}'
+                | '\u{0F20}'..='\u{0F29}'
+                | '\u{1040}'..='\u{1049}'
+                | '\u{17E0}'..='\u{17E9}'
+                | '\u{FF10}'..='\u{FF19}'
+        )
+}
+
+/// Normalize all Unicode decimal numeral systems to ASCII 0-9, strip invisible Unicode format
+/// controls, normalize fullwidth punctuation, and lowercase cleanly for fast matching.
 pub fn normalize_digits_and_lower(input: &str) -> String {
+    let keep_zwsp = has_khmer_chars(input);
     let mut out = String::with_capacity(input.len());
     let mut prev_space = true;
     for ch in input.chars() {
+        if is_invisible_format_control(ch, keep_zwsp) {
+            continue;
+        }
         let mapped = match ch {
             '\u{0660}'..='\u{0669}' => char::from_u32('0' as u32 + (ch as u32 - 0x0660)).unwrap(),
             '\u{06F0}'..='\u{06F9}' => char::from_u32('0' as u32 + (ch as u32 - 0x06F0)).unwrap(),
@@ -819,8 +985,7 @@ pub fn normalize_digits_and_lower(input: &str) -> String {
             '\u{FF10}'..='\u{FF19}' => char::from_u32('0' as u32 + (ch as u32 - 0xFF10)).unwrap(),
             // Turkish dotted/dotless I normalization to match lowercase tables cleanly
             '\u{0130}' => 'i',
-            '\u{00A0}' | '\u{2009}' | '\u{202F}' => ' ',
-            other => other,
+            other => map_fullwidth_punct(other),
         };
         if mapped.is_whitespace() {
             if !prev_space {

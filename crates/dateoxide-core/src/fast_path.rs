@@ -326,13 +326,6 @@ pub fn try_custom_formats(input: &str, settings: &Settings) -> Option<FastPathMa
     if formats.is_empty() {
         return None;
     }
-    let s = input.trim();
-    for fmt in formats {
-        if let Some(m) = try_strptime_any(s, fmt, Some("en".to_string()), settings) {
-            return Some(m);
-        }
-    }
-
     // Localized strptime fallback when formats use locale-dependent directives (%B/%b/%A/%a/%p)
     let needs_locale = formats.iter().any(|f| {
         f.contains("%B")
@@ -343,6 +336,16 @@ pub fn try_custom_formats(input: &str, settings: &Settings) -> Option<FastPathMa
             || f.contains("%p")
             || f.contains("%P")
     });
+    let try_english_pass = !needs_locale || crate::locale::settings_allows_locale(settings, "en");
+    let s = input.trim();
+    if try_english_pass {
+        for fmt in formats {
+            if let Some(m) = try_strptime_any(s, fmt, Some("en".to_string()), settings) {
+                return Some(m);
+            }
+        }
+    }
+
     if !needs_locale {
         return None;
     }
@@ -500,26 +503,38 @@ fn try_prefixed_time_only(
         return None;
     }
 
-    let lower = core.to_ascii_lowercase();
-    let prefixes = [
-        "a las ",
-        "alle ",
-        "saat ",
-        "klo ",
-        "kl. ",
-        "at ",
-        "um ",
-        "om ",
-        "kl ",
-        "às ",
-        "à ",
-        "в ",
-        "о ",
+    let lower = core.to_lowercase();
+    let prefixes: &[(&str, &[&str])] = &[
+        ("a las ", &["es", "gl"]),
+        ("alle ", &["it", "de"]),
+        ("saat ", &["tr", "az", "id", "ms"]),
+        ("klo ", &["fi"]),
+        ("kl. ", &["sv", "da", "nb", "nn", "no", "is"]),
+        ("at ", &["en"]),
+        ("um ", &["de"]),
+        ("om ", &["nl", "af"]),
+        ("kl ", &["sv", "da", "nb", "nn", "no"]),
+        ("às ", &["pt", "gl"]),
+        ("à ", &["fr", "pt", "ca"]),
+        ("в ", &["ru", "uk", "bg", "be", "sr", "mk"]),
+        ("о ", &["uk", "pl"]),
     ];
     let mut rest: Option<&str> = None;
-    for p in prefixes {
+    for &(p, langs) in prefixes {
         if lower.starts_with(p) {
-            let sliced = core[p.len()..].trim();
+            if settings.languages.is_some()
+                && !langs
+                    .iter()
+                    .any(|&l| crate::locale::settings_allows_locale(settings, l))
+            {
+                continue;
+            }
+            let prefix_chars = p.chars().count();
+            let sliced = core
+                .char_indices()
+                .nth(prefix_chars)
+                .map(|(idx, _)| core[idx..].trim())
+                .unwrap_or("");
             if !sliced.is_empty() {
                 rest = Some(sliced);
                 break;
@@ -1183,6 +1198,9 @@ fn resolve_ymd_triplet(
         if !(1..=9999).contains(&y) {
             return None;
         }
+        if strict == StrictDateOrder::All && matches!(order, DateOrder::MYD | DateOrder::DYM) {
+            return None;
+        }
         if order == DateOrder::YDM {
             if let Some(d) = NaiveDate::from_ymd_opt(y, parts[2], parts[1]) {
                 return Some(d);
@@ -1201,9 +1219,26 @@ fn resolve_ymd_triplet(
         return None;
     }
 
+    if lens[1] == 4 {
+        let y = parts[1] as i32;
+        if !(1..=9999).contains(&y) {
+            return None;
+        }
+        if strict == StrictDateOrder::All && !matches!(order, DateOrder::MYD | DateOrder::DYM) {
+            return None;
+        }
+        return match order {
+            DateOrder::MYD => NaiveDate::from_ymd_opt(y, parts[0], parts[2]),
+            _ => NaiveDate::from_ymd_opt(y, parts[2], parts[0]),
+        };
+    }
+
     if lens[2] == 4 {
         let y = parts[2] as i32;
         if !(1..=9999).contains(&y) {
+            return None;
+        }
+        if strict == StrictDateOrder::All && !matches!(order, DateOrder::MDY | DateOrder::DMY) {
             return None;
         }
         return match order {

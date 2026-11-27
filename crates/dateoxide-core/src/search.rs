@@ -222,6 +222,17 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
             if raw_sub.bytes().all(|b| b.is_ascii_digit()) && raw_sub.len() < 4 {
                 continue;
             }
+            if settings.languages.is_none()
+                && end_idx + 1 < spans.len()
+                && !raw_sub.is_empty()
+                && raw_sub.bytes().all(|b| b.is_ascii_digit() || b == b'.' || b == b',')
+            {
+                let next_raw = text[spans[end_idx + 1].0..spans[end_idx + 1].1]
+                    .trim_matches(|c: char| matches!(c, ',' | '.' | ';' | '!' | '?' | '(' | ')'));
+                if crate::locale::is_iso4217_currency(next_raw) {
+                    continue;
+                }
+            }
             if is_version_like_dotted(raw_sub) {
                 continue;
             }
@@ -323,11 +334,8 @@ fn classify_token(tok: &str, registry: &LocaleRegistry, normalize: bool) -> Toke
     }
 
     if tok.chars().any(|c| {
-        c.is_ascii_digit()
-            || matches!(
-                c,
-                '\u{0660}'..='\u{0669}' | '年' | '月' | '日' | '년' | '월' | '일'
-            )
+        crate::locale::is_unicode_decimal_digit(c)
+            || matches!(c, '年' | '月' | '日' | '년' | '월' | '일')
     }) {
         return TokenKind::Signal;
     }
@@ -352,7 +360,7 @@ fn classify_token(tok: &str, registry: &LocaleRegistry, normalize: bool) -> Toke
             | "saat" | "and" | "ve" | "und" | "et" | "il" | "y" | "a" | "an" | "in" | "en"
             | "dans" | "vor" | "hace" | "las" | "los" | "ora" | "às" | "as" | "al" | "alle"
             | "kl" | "klo" | "o" | "v" | "u" | "в" | "о" | "р" | "г" | "ч" | "الساعة" | "في"
-            | "lúc" | "pukul" | "στις"
+            | "lúc" | "pukul" | "στις" | "เวลา" | "น" | "ເວລາ"
     ) {
         if matches!(
             lower.as_str(),
@@ -415,7 +423,7 @@ fn is_cjk_date_starter(s: &str) -> Option<usize> {
 fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
     if !s.contains([
         '年', '月', '日', '号', '년', '월', '일', '天', '前', '後', '后', '週', '周', '点',
-        '點', '時', '时',
+        '點', '時', '时', '－', '／', '-', '/',
     ]) {
         return Vec::new();
     }
@@ -426,7 +434,7 @@ fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
         let start_advance = if let Some(era_len) = is_cjk_date_starter(rest) {
             Some(era_len)
         } else if let Some(ch) = rest.chars().next() {
-            if ch.is_ascii_digit() || ('０'..='９').contains(&ch) {
+            if crate::locale::is_unicode_decimal_digit(ch) {
                 Some(ch.len_utf8())
             } else {
                 None
@@ -444,6 +452,7 @@ fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
         let start = pos;
         let mut cur = pos + adv;
         let mut saw_date_unit = false;
+        let mut sep_count = 0usize;
         while cur < s.len() {
             let rem = &s[cur..];
             let mut advanced_marker = false;
@@ -473,14 +482,25 @@ fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
                 continue;
             }
             let ch = rem.chars().next().unwrap();
-            if ch.is_ascii_digit()
-                || ('０'..='９').contains(&ch)
+            if crate::locale::is_unicode_decimal_digit(ch)
                 || matches!(
                     ch,
-                    '元' | '時' | '时' | '点' | '點' | '分' | '秒' | '시' | '분' | '초' | ':'
+                    '元' | '時' | '时' | '点' | '點' | '分' | '秒' | '시' | '분' | '초' | ':' | '：'
                 )
             {
                 cur += ch.len_utf8();
+            } else if matches!(ch, '-' | '－' | '/' | '／') {
+                let after = &rem[ch.len_utf8()..];
+                if after
+                    .chars()
+                    .next()
+                    .is_some_and(crate::locale::is_unicode_decimal_digit)
+                {
+                    sep_count += 1;
+                    cur += ch.len_utf8();
+                } else {
+                    break;
+                }
             } else if matches!(
                 ch,
                 '年' | '月' | '日' | '号' | '년' | '월' | '일' | '天' | '週' | '周'
@@ -507,12 +527,12 @@ fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
             }
         }
 
-        let cand = s[start..cur].trim_end_matches(':');
-        if saw_date_unit
-            && (cand.chars().any(|c| c.is_ascii_digit() || ('０'..='９').contains(&c))
+        let cand = s[start..cur].trim_end_matches([':', '：', '-', '－', '/', '／']);
+        if (saw_date_unit || sep_count >= 2)
+            && (cand.chars().any(crate::locale::is_unicode_decimal_digit)
                 || cand.contains('元'))
         {
-            // Whole token is already a single CJK date: return empty so single-token parser handles it intact
+            // Whole token is already a single CJK/ISO date: return empty so single-token parser handles it intact
             if start == 0 && cand.len() == s.len() {
                 return Vec::new();
             }
@@ -530,9 +550,9 @@ fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
 
 fn is_valid_single_token_date(tok: &str, registry: &LocaleRegistry, normalize: bool) -> bool {
     if tok.contains([
-        '-', '/', '.', ':', '年', '月', '日', '년', '월', '일', '天', '前', '後', '后', '週',
-        '周', '点', '點', '時', '时',
-    ]) && tok.chars().any(|c| c.is_ascii_digit())
+        '-', '/', '－', '／', '.', ':', '：', '年', '月', '日', '년', '월', '일', '天', '前', '後',
+        '后', '週', '周', '点', '點', '時', '时',
+    ]) && tok.chars().any(crate::locale::is_unicode_decimal_digit)
     {
         return true;
     }
@@ -597,13 +617,7 @@ fn should_skip_ambiguous_phrase(
         }
     }
     if let Some(loc) = locale {
-        let is_major = matches!(
-            loc,
-            "en" | "tr" | "de" | "fr" | "es" | "it" | "pt" | "nl" | "ru" | "ar" | "fa" | "zh"
-                | "ja" | "ko" | "pl" | "uk" | "sv" | "no" | "da" | "fi" | "cs" | "ro" | "hu"
-                | "el" | "he" | "hi" | "id" | "vi" | "th"
-        );
-        if !is_major && (is_single_token || tok.len() <= 12) {
+        if !crate::locale::is_major_auto_locale(loc) && (is_single_token || tok.len() <= 12) {
             return true;
         }
         if is_single_token && loc != "en" && period != Period::Day && period != Period::Time && tok.len() <= 3 {
