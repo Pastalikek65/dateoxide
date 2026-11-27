@@ -191,7 +191,7 @@ EXTRA_WORD_NUMBERS_205: dict[str, dict[str, int]] = {
     "uz-Arab": {"بیر": 1, "ایکی": 2, "اوچ": 3, "تورت": 4, "بیش": 5, "التی": 6, "ییتی": 7, "سکیز": 8, "توققیز": 9, "اون": 10},
     "ckb": {"یەک": 1, "دوو": 2, "سێ": 3, "چوار": 4, "پێنج": 5, "شەش": 6, "حەوت": 7, "هەشت": 8, "نۆ": 9, "دە": 10},
     "lrc": {"یک": 1, "دو": 2, "سه": 3, "چوار": 4, "پنج": 5, "شش": 6, "هفت": 7, "هشت": 8, "نو": 9, "ده": 10},
-    "mzn": {"اتا": 1, "دتا": 2, "ستا": 3, "چارتا": 4, "پنجتا": 5, "ششتا": 6, "هفتتا": 7, "هشتتا": 8, "نهتا": 9, "دتا": 10},
+    "mzn": {"صفر": 0, "اتا": 1, "دتا": 2, "ستا": 3, "چارتا": 4, "پنجتا": 5, "ششتا": 6, "هفتتا": 7, "هشتتا": 8, "نهتا": 9, "دهتا": 10},
     "pa-Arab": {"اک": 1, "دو": 2, "تن": 3, "چار": 4, "پنج": 5, "چھ": 6, "ست": 7, "اٹھ": 8, "نو": 9, "دس": 10},
     "ps": {"يو": 1, "دوه": 2, "درې": 3, "څلور": 4, "پنځه": 5, "شپږ": 6, "اووه": 7, "اته": 8, "نهه": 9, "لس": 10},
     "ug": {"بىر": 1, "ئىككى": 2, "ئۈچ": 3, "تۆت": 4, "بەش": 5, "ئالتە": 6, "يەتتە": 7, "سەككىز": 8, "توققۇز": 9, "ئون": 10},
@@ -211,9 +211,9 @@ EXTRA_WORD_NUMBERS_205: dict[str, dict[str, int]] = {
     "to": {"taha": 1, "ua": 2, "tolu": 3, "fa": 4, "nima": 5, "ono": 6, "fitu": 7, "valu": 8, "hiva": 9, "hongofulu": 10},
     "kab": {"yiwen": 1, "sin": 2, "kraḍ": 3, "kuẓ": 4, "semmus": 5, "sḍis": 6, "sa": 7, "tam": 8, "tẓa": 9, "mraw": 10},
     "shi": {"ⵢⴰⵏ": 1, "ⵙⵉⵏ": 2, "ⴽⵕⴰⴹ": 3, "ⴽⴽⵓⵥ": 4, "ⵙⵎⵎⵓⵙ": 5, "ⵚⴹⵉⵚ": 6, "ⵙⴰ": 7, "ⵜⴰⵎ": 8, "ⵜⵥⴰ": 9, "ⵎⵔⴰⵡ": 10},
-    "shi-Latn": {"yan": 1, "sin": 2, "krad": 3, "kkuz": 4, "smmus": 5, "sdis": 6, "tam": 8, "tza": 9, "mraw": 10},
+    "shi-Latn": {"zero": 0, "yan": 1, "sin": 2, "krad": 3, "kkuz": 4, "smmus": 5, "sdis": 6, "sa": 7, "tam": 8, "tza": 9, "mraw": 10},
     "shi-Tfng": {"ⵢⴰⵏ": 1, "ⵙⵉⵏ": 2, "ⴽⵕⴰⴹ": 3, "ⴽⴽⵓⵥ": 4, "ⵙⵎⵎⵓⵙ": 5, "ⵚⴹⵉⵚ": 6, "ⵙⴰ": 7, "ⵜⴰⵎ": 8, "ⵜⵥⴰ": 9, "ⵎⵔⴰⵡ": 10},
-    "tzm": {"yan": 1, "sin": 2, "krad": 3, "kkoz": 4, "semmus": 5, "sdis": 6, "tam": 8, "tza": 9, "mraw": 10},
+    "tzm": {"zero": 0, "yan": 1, "sin": 2, "krad": 3, "kkoz": 4, "semmus": 5, "sdis": 6, "sa": 7, "tam": 8, "tza": 9, "mraw": 10},
     "zgh": {"ⵢⴰⵏ": 1, "ⵙⵉⵏ": 2, "ⴽⵕⴰⴹ": 3, "ⴽⴽⵓⵥ": 4, "ⵙⵎⵎⵓⵙ": 5, "ⵚⴹⵉⵚ": 6, "ⵙⴰ": 7, "ⵜⴰⵎ": 8, "ⵜⵥⴰ": 9, "ⵎⵔⴰⵡ": 10},
     "om": {"tokko": 1, "lama": 2, "sadii": 3, "afur": 4, "shan": 5, "ja'a": 6, "torba": 7, "saddeet": 8, "sagal": 9, "kudhan": 10},
     "so": {"kow": 1, "laba": 2, "saddex": 3, "afar": 4, "shan": 5, "lix": 6, "toddoba": 7, "siddeed": 8, "sagaal": 9, "toban": 10},
@@ -221,7 +221,7 @@ EXTRA_WORD_NUMBERS_205: dict[str, dict[str, int]] = {
     "agq": {"mò'": 1, "bàa": 2, "tāa": 3, "kwɨ̀ɨ": 4, "tâa": 5, "tɔ̀ghɔ̀": 6, "sàmbà": 7, "fàmà": 8, "dɨ̀bù'": 9, "ghɨ̀m": 10},
     "ak": {"baako": 1, "mmienu": 2, "mmiɛnsa": 3, "nnan": 4, "nnum": 5, "nsia": 6, "nson": 7, "nwɔtwe": 8, "nkron": 9, "edu": 10},
     "asa": {"imwe": 1, "mbili": 2, "ndatu": 3, "nne": 4, "tano": 5, "mtandatu": 6, "mfungate": 7, "mnane": 8, "kenda": 9, "ikumi": 10},
-    "bas": {"da": 1, "baa": 2, "aa": 3, "na": 4, "tan": 5, "samal": 6, "sambok": 7, "jôm": 8, "boo": 9, "jôm": 10},
+    "bas": {"zɛrò": 0, "da": 1, "baa": 2, "aa": 3, "na": 4, "tan": 5, "samal": 6, "sambok": 7, "jwɛm": 8, "boo": 9, "jôm": 10},
     "bem": {"imo": 1, "ibili": 2, "itatu": 3, "ine": 4, "isano": 5, "mutanda": 6, "cine lubali": 7, "cine konse konse": 8, "pabula": 9, "ikumi": 10},
     "bez": {"yimwi": 1, "pivili": 2, "pidatu": 3, "pitai": 4, "pihanu": 5, "sita": 6, "saba": 7, "nane": 8, "tisa": 9, "kumi": 10},
     "bm": {"kelen": 1, "fila": 2, "saba": 3, "naani": 4, "duuru": 5, "wɔɔrɔ": 6, "wolonwula": 7, "seegi": 8, "kɔnɔntɔn": 9, "tan": 10},
@@ -261,7 +261,7 @@ EXTRA_WORD_NUMBERS_205: dict[str, dict[str, int]] = {
     "mua": {"mǝn": 1, "gǝbǝ": 2, "hɨndu": 3, "fada": 4, "lǝǝ": 5, "maai": 6, "kursa": 7, "lǝfǝda": 8, "bǝrǝm": 9, "guu": 10},
     "naq": {"ǀgui": 1, "ǀgam": 2, "ǃnona": 3, "haka": 4, "koro": 5, "ǃnani": 6, "hū": 7, "ǁkhaisa": 8, "khoese": 9, "disi": 10},
     "nd": {"kunye": 1, "kubili": 2, "kuthathu": 3, "kune": 4, "kuhlanu": 5, "isithupha": 6, "isikhombisa": 7, "isificaminwembili": 8, "isificamunwemunye": 9, "itshumi": 10},
-    "nmg": {"wum": 1, "ba": 2, "la": 3, "na": 4, "tan": 5, "tuo": 6, "sambwa": 7, "mwom": 8, "ebuo": 9, "wum": 10},
+    "nmg": {"zɛrò": 0, "mvur": 1, "ba": 2, "la": 3, "na": 4, "tan": 5, "tuo": 6, "sambwa": 7, "mwom": 8, "ebuo": 9, "wum": 10},
     "nnh": {"mɔ̀'": 1, "pɛ̀": 2, "tɛ́t": 3, "kwà": 4, "tɛ̂": 5, "ntɔ̀gɔ̀": 6, "sàmbà": 7, "fɔ̀m": 8, "pù'": 9, "ɣə̀m": 10},
     "nus": {"kɛl": 1, "rɛw": 2, "diɔk": 3, "ŋuan": 4, "dhiɛc": 5, "bäkɛl": 6, "bärɛw": 7, "bädiɔk": 8, "bäŋuan": 9, "wal": 10},
     "nyn": {"emwe": 1, "ibiri": 2, "ishatu": 3, "ina": 4, "itaano": 5, "mukaaga": 6, "mushanju": 7, "munaana": 8, "mwenda": 9, "ikumi": 10},
@@ -407,6 +407,12 @@ EXTRA_UNITS_205: dict[str, list[tuple[str, int]]] = {
         ("ལོ", 0), ("ཟླ་བ", 1), ("བདུན་ཕྲག", 2), ("ཉིན", 3),
         ("ཆུ་ཚོད", 4), ("སྐར་མ", 5), ("སྐར་ཆ", 6),
     ],
+    "am": [
+        ("ቀናት", 3), ("ቀኖች", 3),
+    ],
+    "ta": [
+        ("நாட்கள்", 3), ("நாள்", 3),
+    ],
     "ko": [],
 }
 
@@ -431,4 +437,185 @@ TL_EXTRA: dict[str, list] = {
         ("kamakalawa", -1, 2, 3),
         ("samakalawa", 1, 2, 3),
     ],
+}
+
+# Authentic zero + teens/tens/hundreds/thousands + gender/oblique variants for major locales
+EXTRA_EXTENDED_NUMBERS: dict[str, dict[str, int]] = {
+    "en": {
+        "zero": 0, "thirteen": 13, "fourteen": 14, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+        "nineteen": 19, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80,
+        "ninety": 90, "hundred": 100, "thousand": 1000,
+    },
+    "tr": {
+        "sıfır": 0, "on bir": 11, "on üç": 13, "on dört": 14, "on beş": 15, "on altı": 16,
+        "on yedi": 17, "on sekiz": 18, "on dokuz": 19, "otuz": 30, "kırk": 40, "elli": 50,
+        "altmış": 60, "yetmiş": 70, "seksen": 80, "doksan": 90, "yüz": 100, "bin": 1000, "çift": 2,
+    },
+    "de": {
+        "null": 0, "dreizehn": 13, "vierzehn": 14, "fünfzehn": 15, "sechzehn": 16, "siebzehn": 17,
+        "achtzehn": 18, "neunzehn": 19, "zwanzig": 20, "dreißig": 30, "dreissig": 30, "vierzig": 40,
+        "fünfzig": 50, "sechzig": 60, "siebzig": 70, "achtzig": 80, "neunzig": 90,
+        "hundert": 100, "tausend": 1000, "eins": 1,
+    },
+    "fr": {
+        "zéro": 0, "onze": 11, "treize": 13, "quatorze": 14, "quinze": 15, "seize": 16,
+        "vingt": 20, "trente": 30, "quarante": 40, "cinquante": 50, "soixante": 60,
+        "quatre-vingt": 80, "quatre-vingts": 80, "cent": 100, "cents": 100, "mille": 1000,
+    },
+    "es": {
+        "cero": 0, "once": 11, "trece": 13, "catorce": 14, "quince": 15, "dieciséis": 16,
+        "diecisiete": 17, "dieciocho": 18, "diecinueve": 19, "veinte": 20, "veintiuno": 21,
+        "veintiún": 21, "veintiuna": 21, "veintidós": 22, "veintitrés": 23, "veinticuatro": 24,
+        "veinticinco": 25, "veintiséis": 26, "veintisiete": 27, "veintiocho": 28, "veintinueve": 29,
+        "treinta": 30, "cuarenta": 40, "cincuenta": 50, "sesenta": 60, "setenta": 70,
+        "ochenta": 80, "noventa": 90, "cien": 100, "ciento": 100, "mil": 1000,
+    },
+    "it": {
+        "zero": 0, "undici": 11, "dodici": 12, "tredici": 13, "quattordici": 14, "quindici": 15,
+        "sedici": 16, "diciassette": 17, "diciotto": 18, "diciannove": 19, "venti": 20,
+        "trenta": 30, "quaranta": 40, "cinquanta": 50, "sessanta": 60, "settanta": 70,
+        "ottanta": 80, "novanta": 90, "cento": 100, "mille": 1000,
+    },
+    "pt": {
+        "zero": 0, "onze": 11, "doze": 12, "treze": 13, "catorze": 14, "quinze": 15,
+        "dezesseis": 16, "dezassete": 17, "dezessete": 17, "dezoito": 18, "dezenove": 19,
+        "vinte": 20, "trinta": 30, "quarenta": 40, "cinquenta": 50, "sessenta": 60,
+        "setenta": 70, "oitenta": 80, "noventa": 90, "cem": 100, "cento": 100, "mil": 1000,
+    },
+    "nl": {
+        "nul": 0, "elf": 11, "twaalf": 12, "dertien": 13, "veertien": 14, "vijftien": 15,
+        "zestien": 16, "zeventien": 17, "achttien": 18, "negentien": 19, "twintig": 20,
+        "dertig": 30, "veertig": 40, "vijftig": 50, "zestig": 60, "zeventig": 70,
+        "tachtig": 80, "negentig": 90, "honderd": 100, "duizend": 1000,
+    },
+    "ru": {
+        "ноль": 0, "нуль": 0, "одного": 1, "одной": 1, "двух": 2, "трёх": 3, "трех": 3,
+        "четырёх": 4, "четырех": 4, "пяти": 5, "шести": 6, "семи": 7, "восьми": 8,
+        "девяти": 9, "десяти": 10, "одиннадцать": 11, "двенадцать": 12, "тринадцать": 13,
+        "четырнадцать": 14, "пятнадцать": 15, "шестнадцать": 16, "семнадцать": 17,
+        "восемнадцать": 18, "девятнадцать": 19, "двадцать": 20, "двадцати": 20,
+        "тридцать": 30, "тридцати": 30, "сорок": 40, "пятьдесят": 50, "шестьдесят": 60,
+        "семьдесят": 70, "восемьдесят": 80, "девяносто": 90, "сто": 100, "тысяча": 1000,
+    },
+    "pl": {
+        "zero": 0, "jednego": 1, "jednej": 1, "dwóch": 2, "trzech": 3, "czterech": 4,
+        "pięciu": 5, "sześciu": 6, "siedmiu": 7, "ośmiu": 8, "dziewięciu": 9, "dziesięciu": 10,
+        "jedenaście": 11, "dwanaście": 12, "trzynaście": 13, "czternaście": 14,
+        "piętnaście": 15, "szesnaście": 16, "siedemnaście": 17, "osiemnaście": 18,
+        "dziewiętnaście": 19, "dwadzieścia": 20, "dwudziestu": 20, "trzydzieści": 30,
+        "czterdzieści": 40, "pięćdziesiąt": 50, "sześćdziesiąt": 60, "siedemdziesiąt": 70,
+        "osiemdziesiąt": 80, "dziewięćdziesiąt": 90, "sto": 100, "tysiąc": 1000,
+    },
+    "uk": {
+        "нуль": 0, "одного": 1, "двох": 2, "трьох": 3, "чотирьох": 4, "п'яти": 5,
+        "шісти": 6, "семи": 7, "восьми": 8, "дев'яти": 9, "десяти": 10, "двадцять": 20,
+        "тридцять": 30, "сорок": 40, "сто": 100, "тисяча": 1000,
+    },
+    "cs": {"nula": 0, "jedenáct": 11, "dvanáct": 12, "dvacet": 20, "třicet": 30, "čtyřicet": 40, "padesát": 50, "sto": 100, "tisíc": 1000},
+    "sk": {"nula": 0, "jedenásť": 11, "dvanásť": 12, "dvadsať": 20, "tridsať": 30, "sto": 100, "tisíc": 1000},
+    "sv": {"noll": 0, "en": 1, "ett": 1, "två": 2, "tre": 3, "fyra": 4, "fem": 5, "sex": 6, "sju": 7, "åtta": 8, "nio": 9, "tio": 10, "elva": 11, "tolv": 12, "tjugo": 20, "trettio": 30, "fyrtio": 40, "femtio": 50, "sextio": 60, "sjuttio": 70, "åttio": 80, "nittio": 90, "hundra": 100, "tusen": 1000},
+    "da": {"nul": 0, "en": 1, "et": 1, "to": 2, "tre": 3, "fire": 4, "fem": 5, "seks": 6, "syv": 7, "otte": 8, "ni": 9, "ti": 10, "elleve": 11, "tolv": 12, "tyve": 20, "tredive": 30, "fyrre": 40, "halvtreds": 50, "hundrede": 100, "tusind": 1000},
+    "nb": {"null": 0, "en": 1, "ett": 1, "to": 2, "tre": 3, "fire": 4, "fem": 5, "seks": 6, "sju": 7, "åtte": 8, "ni": 9, "ti": 10, "elleve": 11, "tolv": 12, "tjue": 20, "tretti": 30, "førti": 40, "femti": 50, "hundre": 100, "tusen": 1000},
+    "nn": {"null": 0, "tjue": 20, "tretti": 30, "førti": 40, "femti": 50, "hundre": 100, "tusen": 1000},
+    "fi": {"nolla": 0, "yksitoista": 11, "kaksitoista": 12, "kaksikymmentä": 20, "kolmekymmentä": 30, "sata": 100, "tuhat": 1000},
+    "hu": {"nulla": 0, "zéró": 0, "egy": 1, "kettő": 2, "két": 2, "három": 3, "négy": 4, "öt": 5, "hat": 6, "hét": 7, "nyolc": 8, "kilenc": 9, "tíz": 10, "húsz": 20, "harminc": 30, "negyven": 40, "ötven": 50, "száz": 100, "ezer": 1000},
+    "ca": {"zero": 0, "un": 1, "una": 1, "dos": 2, "dues": 2, "tres": 3, "quatre": 4, "cinc": 5, "sis": 6, "set": 7, "vuit": 8, "nou": 9, "deu": 10, "onze": 11, "dotze": 12, "vint": 20, "trenta": 30, "quaranta": 40, "cinquanta": 50, "cent": 100, "mil": 1000},
+    "bg": {"нула": 0, "един": 1, "една": 1, "едно": 1, "два": 2, "две": 2, "три": 3, "четири": 4, "пет": 5, "шест": 6, "седем": 7, "осем": 8, "девет": 9, "десет": 10, "двадесет": 20, "тридесет": 30, "сто": 100, "хиляда": 1000},
+    "ka": {"ნული": 0, "ერთი": 1, "ერთ": 1, "ორი": 2, "სამი": 3, "ოთხი": 4, "ხუთი": 5, "ექვსი": 6, "შვიდი": 7, "რვა": 8, "ცხრა": 9, "ათი": 10, "ოცი": 20, "ასი": 100, "ათასი": 1000},
+    "ro": {"zero": 0, "un": 1, "o": 1, "douăzeci": 20, "treizeci": 30, "sută": 100, "mie": 1000},
+    "el": {"μηδέν": 0, "ένας": 1, "έντεκα": 11, "δώδεκα": 12, "είκοσι": 20, "τριάντα": 30, "σαράντα": 40, "πενήντα": 50, "εκατό": 100, "χίλια": 1000},
+    "ar": {
+        "صفر": 0, "اثنين": 2, "اثنتان": 2, "ثلاث": 3, "أربع": 4, "خمس": 5, "ست": 6, "سبع": 7,
+        "ثمان": 8, "ثماني": 8, "تسع": 9, "عشر": 10, "أحد عشر": 11, "اثنا عشر": 12,
+        "عشرون": 20, "عشرين": 20, "ثلاثون": 30, "ثلاثين": 30, "أربعون": 40, "أربعين": 40,
+        "خمسون": 50, "خمسين": 50, "ستون": 60, "ستين": 60, "سبعون": 70, "ثمانون": 80,
+        "تسعون": 90, "مائة": 100, "مئة": 100, "ألف": 1000, "الف": 1000,
+    },
+    "he": {
+        "אפס": 0, "שלוש": 3, "ארבע": 4, "חמש": 5, "שש": 6, "שבע": 7, "שמונה": 8, "תשע": 9,
+        "עשר": 10, "אחד עשר": 11, "שנים עשר": 12, "עשרים": 20, "שלושים": 30, "ארבעים": 40,
+        "חמישים": 50, "שישים": 60, "שבעים": 70, "שמונים": 80, "תשעים": 90, "מאה": 100, "אלף": 1000,
+    },
+    "fa": {"صفر": 0, "یازده": 11, "دوازده": 12, "بیست": 20, "سی": 30, "چهل": 40, "پنجاه": 50, "صد": 100, "هزار": 1000},
+    "hi": {"शून्य": 0, "बीस": 20, "तीस": 30, "पचास": 50, "सौ": 100, "हज़ार": 1000},
+    "bn": {"শূন্য": 0, "বিশ": 20, "কুড়ি": 20, "ত্রিশ": 30, "শত": 100, "হাজার": 1000},
+    "th": {"ศูนย์": 0, "สิบเอ็ด": 11, "สิบสอง": 12, "ยี่สิบ": 20, "สามสิบ": 30, "ร้อย": 100, "พัน": 1000},
+    "id": {"nol": 0, "sebelas": 11, "dua belas": 12, "puluh": 10, "ratus": 100, "ribu": 1000},
+    "ms": {"sifar": 0, "kosong": 0, "sebelas": 11, "ratus": 100, "ribu": 1000},
+    "vi": {"không": 0, "hai mươi": 20, "ba mươi": 30, "trăm": 100, "nghìn": 1000},
+    "zh": {"零": 0, "〇": 0, "百": 100, "千": 1000},
+    "ja": {"ゼロ": 0, "零": 0, "〇": 0, "百": 100, "千": 1000},
+    "ko": {"영": 0, "공": 0, "스물": 20, "스무": 20, "이십": 20, "서른": 30, "삼십": 30, "백": 100, "천": 1000},
+}
+
+# Zero words fallback by locale when not already specified
+EXTRA_ZERO_205: dict[str, str] = {
+    "af": "nul", "sq": "zero", "hy": "զրո", "az": "sıfır", "az-Cyrl": "сыфыр", "eu": "zero",
+    "be": "нуль", "bs": "nula", "bs-Cyrl": "нула", "br": "zero", "hr": "nula", "et": "null",
+    "fo": "null", "fil": "sero", "tl": "sero", "fy": "nul", "gl": "cero",
+    "is": "núll", "ga": "náid", "kk": "нөл", "ky": "нөл", "lv": "nulle", "lt": "nulis",
+    "lb": "null", "mk": "нула", "mt": "żero", "mn": "тэг", "ne": "शून्य", "gu": "શૂન્ય",
+    "kn": "ಸೊನ್ನೆ", "ml": "പൂജ്യം", "mr": "शून्य", "pa": "ਸਿਫ਼ਰ", "si": "බිංදුව", "ta": "பூஜ்யம்",
+    "te": "సున్నా", "ur": "صفر", "uz": "nol", "uz-Cyrl": "нол", "uz-Arab": "نول",
+    "cy": "sero", "eo": "nulo", "sw": "sifuri", "am": "ዜሮ", "ti": "ዜሮ",
+    "sl": "nič", "sr": "нула", "sr-Cyrl": "нула", "sr-Latn": "nula",
+}
+
+# Ordinals (1..31 + key day ordinals) for date & NLP parsing
+EXTRA_ORDINALS: dict[str, dict[str, int]] = {
+    "en": {
+        "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6,
+        "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10, "eleventh": 11, "twelfth": 12,
+        "thirteenth": 13, "fourteenth": 14, "fifteenth": 15, "sixteenth": 16, "seventeenth": 17,
+        "eighteenth": 18, "nineteenth": 19, "twentieth": 20, "thirtieth": 30,
+    },
+    "tr": {
+        "birinci": 1, "ikinci": 2, "üçüncü": 3, "dördüncü": 4, "beşinci": 5, "altıncı": 6,
+        "yedinci": 7, "sekizinci": 8, "dokuzuncu": 9, "onuncu": 10, "yirminci": 20, "otuzuncu": 30,
+    },
+    "de": {
+        "erste": 1, "erster": 1, "ersten": 1, "zweite": 2, "zweiten": 2, "dritte": 3, "dritten": 3,
+        "vierte": 4, "vierten": 4, "fünfte": 5, "sechste": 6, "siebte": 7, "achte": 8,
+        "neunte": 9, "zehnte": 10, "zwanzigste": 20, "dreißigste": 30,
+    },
+    "fr": {
+        "premier": 1, "première": 1, "deuxième": 2, "troisième": 3, "quatrième": 4, "cinquième": 5,
+        "sixième": 6, "septième": 7, "huitième": 8, "neuvième": 9, "dixième": 10, "vingtième": 20,
+    },
+    "es": {
+        "primero": 1, "primer": 1, "primera": 1, "segundo": 2, "tercero": 3, "tercer": 3,
+        "cuarto": 4, "quinto": 5, "sexto": 6, "séptimo": 7, "octavo": 8, "noveno": 9, "décimo": 10,
+    },
+    "it": {
+        "primo": 1, "secondo": 2, "terzo": 3, "quarto": 4, "quinto": 5, "sesto": 6,
+        "settimo": 7, "ottavo": 8, "nono": 9, "decimo": 10,
+    },
+    "pt": {
+        "primeiro": 1, "primeira": 1, "segundo": 2, "terceiro": 3, "quarto": 4, "quinto": 5,
+        "sexto": 6, "sétimo": 7, "oitavo": 8, "nono": 9, "décimo": 10,
+    },
+    "nl": {
+        "eerste": 1, "tweede": 2, "derde": 3, "vierde": 4, "vijfde": 5, "zesde": 6,
+        "zevende": 7, "achtste": 8, "negende": 9, "tiende": 10,
+    },
+    "ru": {
+        "первый": 1, "первое": 1, "первого": 1, "второй": 2, "второе": 2, "второго": 2,
+        "третий": 3, "третьего": 3, "четвёртый": 4, "пятый": 5, "шестой": 6,
+        "седьмой": 7, "восьмой": 8, "девятый": 9, "десятый": 10,
+    },
+    "pl": {
+        "pierwszy": 1, "pierwszego": 1, "drugi": 2, "drugiego": 2, "trzeci": 3, "czwarty": 4,
+        "piąty": 5, "szósty": 6, "siódmy": 7, "ósmy": 8, "dziewiąty": 9, "dziesiąty": 10,
+    },
+    "ar": {
+        "الأول": 1, "الاول": 1, "الثاني": 2, "الثالث": 3, "الرابع": 4, "الخامس": 5,
+        "السادس": 6, "السابع": 7, "الثامن": 8, "التاسع": 9, "العاشر": 10,
+    },
+    "he": {
+        "ראשון": 1, "ראשונה": 1, "שני": 2, "שניה": 2, "שלישי": 3, "רביעי": 4,
+        "חמישי": 5, "שישי": 6, "שביעי": 7, "שמיני": 8, "תשיעי": 9, "עשירי": 10,
+    },
+    "sv": {"första": 1, "andra": 2, "tredje": 3, "fjärde": 4, "femte": 5},
+    "da": {"første": 1, "anden": 2, "tredje": 3, "fjerde": 4, "femte": 5},
+    "nb": {"første": 1, "andre": 2, "tredje": 3, "fjerde": 4, "femte": 5},
 }

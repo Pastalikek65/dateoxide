@@ -156,8 +156,18 @@ fn patterns() -> &'static [CompiledSpanPattern] {
 
 /// Detect time span expressions such as `"last week"`, `"past 3 days"`, `"next 2 months"`.
 pub fn detect_time_span(text: &str) -> Option<TimeSpanMatch> {
+    if let Some(m) = detect_time_span_inner(text, text) {
+        return Some(m);
+    }
+    if let Some(norm) = replace_span_word_numbers(text) {
+        return detect_time_span_inner(&norm, text);
+    }
+    None
+}
+
+fn detect_time_span_inner(scan: &str, orig: &str) -> Option<TimeSpanMatch> {
     for pat in patterns() {
-        if let Some(caps) = pat.regex.captures(text) {
+        if let Some(caps) = pat.regex.captures(scan) {
             let full = caps.get(0)?;
             let number = if pat.has_num {
                 let num_str = caps.iter().skip(1).flatten().next()?.as_str();
@@ -168,17 +178,56 @@ pub fn detect_time_span(text: &str) -> Option<TimeSpanMatch> {
             } else {
                 None
             };
+            let (start_pos, end_pos, matched_text) = if scan == orig {
+                (full.start(), full.end(), full.as_str().to_string())
+            } else {
+                (0, orig.len(), full.as_str().to_string())
+            };
             return Some(TimeSpanMatch {
                 span_type: pat.span_type,
                 direction: pat.direction,
                 number,
-                matched_text: full.as_str().to_string(),
-                start_pos: full.start(),
-                end_pos: full.end(),
+                matched_text,
+                start_pos,
+                end_pos,
             });
         }
     }
     None
+}
+
+fn replace_span_word_numbers(text: &str) -> Option<String> {
+    let mut changed = false;
+    let mut out = Vec::new();
+    for tok in text.split_whitespace() {
+        let lower = tok.to_ascii_lowercase();
+        let rep = match lower.as_str() {
+            "one" | "bir" | "eins" | "un" | "une" | "uno" => Some("1"),
+            "two" | "couple" | "iki" | "zwei" | "deux" | "dos" => Some("2"),
+            "three" | "üç" | "drei" | "trois" | "tres" => Some("3"),
+            "four" | "dört" | "vier" | "quatre" | "cuatro" => Some("4"),
+            "five" | "beş" | "fünf" | "cinq" | "cinco" => Some("5"),
+            "six" | "altı" | "sechs" | "seis" => Some("6"),
+            "seven" | "yedi" | "sieben" | "sept" | "siete" => Some("7"),
+            "eight" | "sekiz" | "acht" | "huit" | "ocho" => Some("8"),
+            "nine" | "dokuz" | "neun" | "neuf" | "nueve" => Some("9"),
+            "ten" | "on" | "zehn" | "dix" | "diez" => Some("10"),
+            "eleven" | "elf" | "onze" | "once" => Some("11"),
+            "twelve" | "zwölf" | "douze" | "doce" => Some("12"),
+            _ => None,
+        };
+        if let Some(d) = rep {
+            out.push(d.to_string());
+            changed = true;
+        } else {
+            out.push(tok.to_string());
+        }
+    }
+    if changed {
+        Some(out.join(" "))
+    } else {
+        None
+    }
 }
 
 fn week_start(date: NaiveDateTime, start_of_week: StartOfWeek) -> NaiveDateTime {

@@ -77,6 +77,7 @@ pub struct CompiledLocale {
     pub relative_exact: FxHashMap<String, Vec<RelativeSpec>>,
     pub relative_affix: Vec<RelativeAffix>,
     pub word_numbers: FxHashMap<String, u32>,
+    pub ordinals: FxHashMap<String, u32>,
     pub time_of_day: FxHashMap<String, u8>,
     // Diacritic-folded secondary tables (populated only where folded != exact)
     pub folded_months: FxHashMap<String, u8>,
@@ -84,6 +85,7 @@ pub struct CompiledLocale {
     pub folded_units: FxHashMap<String, TimeUnit>,
     pub folded_ago: FxHashSet<String>,
     pub folded_in_words: FxHashSet<String>,
+    pub folded_ordinals: FxHashMap<String, u32>,
     pub folded_relative_exact: FxHashMap<String, Vec<RelativeSpec>>,
     pub folded_relative_affix: Vec<RelativeAffix>,
     pub folded_time_of_day: FxHashMap<String, u8>,
@@ -102,6 +104,10 @@ pub struct LocaleRegistry {
     pub folded_exact_phrase_index: FxHashMap<String, Vec<(u16, RelativeSpec)>>,
     /// Tokens that can start or belong to a date expression (used for fast search_dates).
     pub known_date_tokens: FxHashSet<String>,
+    /// Cardinal & ordinal word numeral tokens across 205 locales (cannot start bare prose matches).
+    pub known_numeral_tokens: FxHashSet<String>,
+    /// Non-ASCII numeral words for agglutinative/spaceless token prefix detection (e.g. Sinhala, Thai).
+    pub non_ascii_numeral_words: Vec<String>,
 }
 
 impl LocaleRegistry {
@@ -123,6 +129,7 @@ impl LocaleRegistry {
         let mut folded_exact_phrase_index: FxHashMap<String, Vec<(u16, RelativeSpec)>> =
             FxHashMap::default();
         let mut known_date_tokens: FxHashSet<String> = FxHashSet::default();
+        let mut known_numeral_tokens: FxHashSet<String> = FxHashSet::default();
 
         let mut register_token = |tok: &str, lang_id: u16, is_search_token: bool| {
             if tok.is_empty() {
@@ -134,6 +141,10 @@ impl LocaleRegistry {
             }
             if is_search_token {
                 known_date_tokens.insert(tok.to_string());
+                let q_trim = tok.trim_matches(|c: char| matches!(c, '\'' | '’' | 'ꞌ' | 'ʻ'));
+                if !q_trim.is_empty() && q_trim != tok {
+                    known_date_tokens.insert(q_trim.to_string());
+                }
             }
             let folded = fold_diacritics(tok);
             if folded != tok && !folded.is_empty() {
@@ -343,9 +354,35 @@ impl LocaleRegistry {
             for (w, n) in raw.word_numbers {
                 let f = fold_diacritics(&w);
                 if f != w {
-                    word_numbers.entry(f).or_insert(n);
+                    word_numbers.entry(f.clone()).or_insert(n);
+                    known_numeral_tokens.insert(f);
+                }
+                for part in w.split_whitespace() {
+                    known_numeral_tokens.insert(part.to_string());
+                    let pf = fold_diacritics(part);
+                    if pf != part {
+                        known_numeral_tokens.insert(pf);
+                    }
+                    if part.chars().count() >= 3 || !part.is_ascii() {
+                        register_token(part, lang_id, false);
+                    }
                 }
                 word_numbers.insert(w, n);
+            }
+
+            let mut ordinals = FxHashMap::default();
+            let mut folded_ordinals = FxHashMap::default();
+            for (w, n) in raw.ordinals {
+                let f = fold_diacritics(&w);
+                if f != w {
+                    folded_ordinals.entry(f.clone()).or_insert(n);
+                    known_numeral_tokens.insert(f);
+                }
+                known_numeral_tokens.insert(w.clone());
+                if w.chars().count() >= 3 || !w.is_ascii() {
+                    register_token(&w, lang_id, false);
+                }
+                ordinals.insert(w, n);
             }
 
             let mut time_of_day = FxHashMap::default();
@@ -388,12 +425,14 @@ impl LocaleRegistry {
                 relative_exact,
                 relative_affix,
                 word_numbers,
+                ordinals,
                 time_of_day,
                 folded_months,
                 folded_weekdays,
                 folded_units,
                 folded_ago,
                 folded_in_words,
+                folded_ordinals,
                 folded_relative_exact,
                 folded_relative_affix,
                 folded_time_of_day,
@@ -425,6 +464,12 @@ impl LocaleRegistry {
             }
         }
 
+        let non_ascii_numeral_words: Vec<String> = known_numeral_tokens
+            .iter()
+            .filter(|w| !w.is_ascii() && w.chars().count() >= 2)
+            .cloned()
+            .collect();
+
         Self {
             locales,
             code_to_id,
@@ -433,6 +478,8 @@ impl LocaleRegistry {
             exact_phrase_index,
             folded_exact_phrase_index,
             known_date_tokens,
+            known_numeral_tokens,
+            non_ascii_numeral_words,
         }
     }
 
@@ -927,35 +974,14 @@ pub fn clean_unicode_surface(input: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Returns `true` if `ch` is an ASCII digit or one of the supported Unicode decimal digits.
+/// Returns `true` if `ch` is an ASCII digit or a Unicode decimal digit across all 68 `Nd` scripts.
 #[inline]
 pub fn is_unicode_decimal_digit(ch: char) -> bool {
-    ch.is_ascii_digit()
-        || matches!(
-            ch,
-            '\u{0660}'..='\u{0669}'
-                | '\u{06F0}'..='\u{06F9}'
-                | '\u{0966}'..='\u{096F}'
-                | '\u{09E6}'..='\u{09EF}'
-                | '\u{0A66}'..='\u{0A6F}'
-                | '\u{0AE6}'..='\u{0AEF}'
-                | '\u{0B66}'..='\u{0B6F}'
-                | '\u{0BE6}'..='\u{0BEF}'
-                | '\u{0C66}'..='\u{0C6F}'
-                | '\u{0CE6}'..='\u{0CEF}'
-                | '\u{0D66}'..='\u{0D6F}'
-                | '\u{0DE6}'..='\u{0DEF}'
-                | '\u{0E50}'..='\u{0E59}'
-                | '\u{0ED0}'..='\u{0EDF}'
-                | '\u{0F20}'..='\u{0F29}'
-                | '\u{1040}'..='\u{1049}'
-                | '\u{17E0}'..='\u{17E9}'
-                | '\u{FF10}'..='\u{FF19}'
-        )
+    crate::numerals::is_unicode_decimal_digit(ch)
 }
 
-/// Normalize all Unicode decimal numeral systems to ASCII 0-9, strip invisible Unicode format
-/// controls, normalize fullwidth punctuation, and lowercase cleanly for fast matching.
+/// Normalize all 68 Unicode `Nd` decimal numeral systems to ASCII 0-9, strip invisible Unicode
+/// format controls, normalize fullwidth punctuation, and lowercase cleanly for fast matching.
 pub fn normalize_digits_and_lower(input: &str) -> String {
     let keep_zwsp = has_khmer_chars(input);
     let mut out = String::with_capacity(input.len());
@@ -965,27 +991,16 @@ pub fn normalize_digits_and_lower(input: &str) -> String {
             continue;
         }
         let mapped = match ch {
-            '\u{0660}'..='\u{0669}' => char::from_u32('0' as u32 + (ch as u32 - 0x0660)).unwrap(),
-            '\u{06F0}'..='\u{06F9}' => char::from_u32('0' as u32 + (ch as u32 - 0x06F0)).unwrap(),
-            '\u{0966}'..='\u{096F}' => char::from_u32('0' as u32 + (ch as u32 - 0x0966)).unwrap(),
-            '\u{09E6}'..='\u{09EF}' => char::from_u32('0' as u32 + (ch as u32 - 0x09E6)).unwrap(),
-            '\u{0A66}'..='\u{0A6F}' => char::from_u32('0' as u32 + (ch as u32 - 0x0A66)).unwrap(),
-            '\u{0AE6}'..='\u{0AEF}' => char::from_u32('0' as u32 + (ch as u32 - 0x0AE6)).unwrap(),
-            '\u{0B66}'..='\u{0B6F}' => char::from_u32('0' as u32 + (ch as u32 - 0x0B66)).unwrap(),
-            '\u{0BE6}'..='\u{0BEF}' => char::from_u32('0' as u32 + (ch as u32 - 0x0BE6)).unwrap(),
-            '\u{0C66}'..='\u{0C6F}' => char::from_u32('0' as u32 + (ch as u32 - 0x0C66)).unwrap(),
-            '\u{0CE6}'..='\u{0CEF}' => char::from_u32('0' as u32 + (ch as u32 - 0x0CE6)).unwrap(),
-            '\u{0D66}'..='\u{0D6F}' => char::from_u32('0' as u32 + (ch as u32 - 0x0D66)).unwrap(),
-            '\u{0DE6}'..='\u{0DEF}' => char::from_u32('0' as u32 + (ch as u32 - 0x0DE6)).unwrap(),
-            '\u{0E50}'..='\u{0E59}' => char::from_u32('0' as u32 + (ch as u32 - 0x0E50)).unwrap(),
-            '\u{0ED0}'..='\u{0EDF}' => char::from_u32('0' as u32 + (ch as u32 - 0x0ED0)).unwrap(),
-            '\u{0F20}'..='\u{0F29}' => char::from_u32('0' as u32 + (ch as u32 - 0x0F20)).unwrap(),
-            '\u{1040}'..='\u{1049}' => char::from_u32('0' as u32 + (ch as u32 - 0x1040)).unwrap(),
-            '\u{17E0}'..='\u{17E9}' => char::from_u32('0' as u32 + (ch as u32 - 0x17E0)).unwrap(),
-            '\u{FF10}'..='\u{FF19}' => char::from_u32('0' as u32 + (ch as u32 - 0xFF10)).unwrap(),
             // Turkish dotted/dotless I normalization to match lowercase tables cleanly
             '\u{0130}' => 'i',
-            other => map_fullwidth_punct(other),
+            other => {
+                let nd = crate::numerals::normalize_nd_char(other);
+                if nd != other {
+                    nd
+                } else {
+                    map_fullwidth_punct(other)
+                }
+            }
         };
         if mapped.is_whitespace() {
             if !prev_space {

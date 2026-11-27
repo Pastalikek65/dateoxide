@@ -19,10 +19,13 @@ from typing import Any
 from dateparser.data import date_translation_data
 
 from locale_enrichment_205 import (
+    EXTRA_EXTENDED_NUMBERS,
+    EXTRA_ORDINALS,
     EXTRA_REL_MARKERS_205,
     EXTRA_TOD_205,
     EXTRA_UNITS_205,
     EXTRA_WORD_NUMBERS_205,
+    EXTRA_ZERO_205,
     MIRROR_LOCALES,
     TL_EXTRA,
 )
@@ -504,9 +507,16 @@ def extract_locale(code: str, info: dict[str, Any]) -> dict[str, Any]:
                 seen_affix.add(key)
                 relative_affix.append([prefix, suffix, sign, unit_id])
 
-    # Word numbers
+    # Word numbers (complete 0..10 + teens/tens/hundreds + oblique forms)
     word_numbers: dict[str, int] = {norm(k): v for k, v in EXTRA_WORD_NUMBERS.get(code, {}).items()}
     word_numbers.update({norm(k): v for k, v in EXTRA_WORD_NUMBERS_205.get(code, {}).items()})
+    word_numbers.update({norm(k): v for k, v in EXTRA_EXTENDED_NUMBERS.get(code, {}).items()})
+    if 0 not in word_numbers.values():
+        zero_w = norm(EXTRA_ZERO_205.get(code, "0"))
+        if zero_w and zero_w not in word_numbers:
+            word_numbers[zero_w] = 0
+        elif "0" not in word_numbers:
+            word_numbers["0"] = 0
     for simp_dict in info.get("simplifications", []):
         for k, v in simp_dict.items():
             v_str = str(v).strip()
@@ -514,6 +524,8 @@ def extract_locale(code: str, info: dict[str, Any]) -> dict[str, Any]:
                 k_clean = norm(str(k))
                 if k_clean and not any(ch in k_clean for ch in "[](){}|?*^$\\+"):
                     word_numbers.setdefault(k_clean, int(v_str))
+
+    ordinals: dict[str, int] = {norm(k): v for k, v in EXTRA_ORDINALS.get(code, {}).items()}
 
     # Time-of-day phrases
     time_of_day: dict[str, int] = {}
@@ -547,6 +559,7 @@ def extract_locale(code: str, info: dict[str, Any]) -> dict[str, Any]:
         "relative_exact": relative_exact,
         "relative_affix": relative_affix,
         "word_numbers": sorted([[k, v] for k, v in word_numbers.items()]),
+        "ordinals": sorted([[k, v] for k, v in ordinals.items()]),
         "time_of_day": sorted([[k, v] for k, v in time_of_day.items()]),
     }
 
@@ -567,15 +580,20 @@ def main() -> None:
     locales = [extract_locale(code, importlib.import_module(f"dateparser.data.date_translation_data.{code}").info) for code in ordered_codes]
     by_code = {loc["code"]: loc for loc in locales}
 
-    # Apply script/sibling mirrors (tl <- fil, az-Latn <- az, etc.) for empty NLP fields
+    # Apply script/sibling mirrors (tl <- fil, az-Latn <- az, etc.) for empty or partial NLP fields
     for target_code, donor_code in MIRROR_LOCALES.items():
         tgt = by_code.get(target_code)
         src = by_code.get(donor_code)
         if not tgt or not src:
             continue
-        for fld in ("am", "pm", "relative_exact", "relative_affix", "ago", "in_words", "word_numbers", "time_of_day"):
+        for fld in ("am", "pm", "relative_exact", "relative_affix", "ago", "in_words", "time_of_day"):
             if not tgt[fld] and src[fld]:
                 tgt[fld] = [list(item) if isinstance(item, list) else item for item in src[fld]]
+        for fld in ("word_numbers", "ordinals"):
+            existing = {k: v for k, v in tgt[fld]}
+            for k, v in src[fld]:
+                existing.setdefault(k, v)
+            tgt[fld] = sorted([[k, v] for k, v in existing.items()])
 
     # Synthesize structured relative_affix patterns for any locale lacking past or future affixes
     for loc in locales:
@@ -673,6 +691,23 @@ def main() -> None:
     ]
     if incomplete:
         raise RuntimeError(f"Incomplete locales remain ({len(incomplete)}): {incomplete[:15]}")
+
+    # Build-time numeral integrity validation across all 205 locales
+    num_errors: list[str] = []
+    for loc in locales:
+        code = loc["code"]
+        seen_keys: set[str] = set()
+        vals: set[int] = set()
+        for w, n in loc["word_numbers"]:
+            if w in seen_keys:
+                num_errors.append(f"[{code}] duplicate word number key {w!r}")
+            seen_keys.add(w)
+            vals.add(n)
+        missing = [d for d in range(0, 11) if d not in vals]
+        if missing:
+            num_errors.append(f"[{code}] missing numerals {missing}")
+    if num_errors:
+        raise RuntimeError(f"Numeral validation failed ({len(num_errors)}): {num_errors[:15]}")
 
     out_path = Path(__file__).resolve().parent.parent / "crates" / "dateoxide-core" / "data" / "locales.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)

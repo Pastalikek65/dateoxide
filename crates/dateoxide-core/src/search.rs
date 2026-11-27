@@ -145,9 +145,18 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
             }
         }
 
-        if kinds[i] != TokenKind::Signal {
+        if kinds[i] != TokenKind::Signal && kinds[i] != TokenKind::Numeral {
             i += 1;
             continue;
+        }
+        if kinds[i] == TokenKind::Numeral {
+            // Numeral can start a span ONLY when followed soon by a date Signal (prevents "twenty apples" false positives)
+            let has_following_signal = ((i + 1)..spans.len().min(i + 5))
+                .any(|k| kinds[k] == TokenKind::Signal);
+            if !has_following_signal {
+                i += 1;
+                continue;
+            }
         }
 
         let mut best_end = i;
@@ -170,12 +179,18 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                     best_end = j;
                     j += 1;
                 }
+                TokenKind::Numeral => {
+                    best_end = j;
+                    j += 1;
+                }
                 TokenKind::Connector => {
-                    if j + 1 < spans.len() && kinds[j + 1] == TokenKind::Signal {
+                    if j + 1 < spans.len()
+                        && matches!(kinds[j + 1], TokenKind::Signal | TokenKind::Numeral)
+                    {
                         j += 1;
                     } else if j + 2 < spans.len()
                         && kinds[j + 1] == TokenKind::Connector
-                        && kinds[j + 2] == TokenKind::Signal
+                        && matches!(kinds[j + 2], TokenKind::Signal | TokenKind::Numeral)
                     {
                         j += 2;
                     } else {
@@ -184,6 +199,11 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                 }
                 TokenKind::Other => break,
             }
+        }
+
+        if !((i..=best_end).any(|k| kinds[k] == TokenKind::Signal)) {
+            i += 1;
+            continue;
         }
 
         let mut matched = false;
@@ -213,10 +233,15 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
             let raw_sub = text[sub_start..sub_end].trim_matches(|c: char| {
                 matches!(
                     c,
-                    ',' | ';' | '!' | '?' | '(' | ')' | '[' | ']' | '"' | '\'' | '،' | '؛' | '؟'
+                    ',' | ';' | '!' | '?' | '(' | ')' | '[' | ']' | '"' | '،' | '؛' | '؟'
                         | '。' | '，' | '、' | '；' | '！' | '？'
                 )
             });
+            let raw_sub = if raw_sub.starts_with('\'') && raw_sub.ends_with('\'') && raw_sub.len() >= 2 {
+                &raw_sub[1..raw_sub.len() - 1]
+            } else {
+                raw_sub
+            };
             let raw_sub = raw_sub.trim_end_matches('.');
 
             if raw_sub.bytes().all(|b| b.is_ascii_digit()) && raw_sub.len() < 4 {
@@ -267,9 +292,7 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
 
             let dd = get_date_data(raw_sub, parse_settings);
             if let Some(dt) = dd.date_obj {
-                let has_digits = raw_sub
-                    .chars()
-                    .any(|c| c.is_ascii_digit() || ('\u{0660}'..='\u{0669}').contains(&c));
+                let has_digits = raw_sub.chars().any(crate::numerals::is_unicode_decimal_digit);
                 if parse_settings.languages.is_none()
                     && !has_digits
                     && should_skip_ambiguous_phrase(
@@ -306,6 +329,7 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TokenKind {
     Signal,
+    Numeral,
     Connector,
     Other,
 }
@@ -334,18 +358,27 @@ fn classify_token(tok: &str, registry: &LocaleRegistry, normalize: bool) -> Toke
     }
 
     if tok.chars().any(|c| {
-        crate::locale::is_unicode_decimal_digit(c)
-            || matches!(c, '年' | '月' | '日' | '년' | '월' | '일')
+        crate::numerals::is_unicode_decimal_digit(c)
+            || crate::numerals::is_cjk_numeral_char(c)
+            || matches!(
+                c,
+                '年' | '月' | '日' | '년' | '월' | '일' | '天' | '前' | '後' | '后' | '週' | '周'
+            )
+            || crate::numerals::is_geez_numeral_char(c)
+            || matches!(c, '௰' | '௱' | '௲' | '൰' | '൱' | '൲')
     }) {
         return TokenKind::Signal;
     }
 
-    let lower = normalize_digits_and_lower(tok);
+    let lower_untrimmed = normalize_digits_and_lower(tok);
+    let trimmed_tok = tok.trim_matches(|c: char| matches!(c, '\'' | '’' | 'ꞌ' | 'ʻ' | ',' | '.'));
+    let lower = normalize_digits_and_lower(if trimmed_tok.is_empty() { tok } else { trimmed_tok });
 
     if matches!(
         lower.as_str(),
         "or" | "if" | "so" | "as" | "by" | "is" | "are" | "was" | "were" | "be" | "to" | "for"
             | "from" | "not" | "but" | "with" | "us" | "we" | "me" | "my" | "it" | "its" | "let"
+            | "ok"
     ) {
         return TokenKind::Other;
     }
@@ -371,13 +404,61 @@ fn classify_token(tok: &str, registry: &LocaleRegistry, normalize: bool) -> Toke
         return TokenKind::Connector;
     }
 
+    if registry.known_date_tokens.contains(&lower_untrimmed) {
+        return TokenKind::Signal;
+    }
+
+    if crate::numerals::parse_date_number_or_ordinal(&lower).is_some() {
+        return TokenKind::Signal;
+    }
+
     if registry.known_date_tokens.contains(&lower) {
         return TokenKind::Signal;
+    }
+    if registry.known_numeral_tokens.contains(&lower) {
+        return TokenKind::Numeral;
+    }
+    if lower.contains('-') {
+        let hparts: Vec<&str> = lower.split('-').filter(|p| !p.is_empty()).collect();
+        if !hparts.is_empty() && hparts.iter().any(|p| registry.known_date_tokens.contains(*p)) {
+            return TokenKind::Signal;
+        }
+        if !hparts.is_empty() && hparts.iter().all(|p| registry.known_numeral_tokens.contains(*p)) {
+            return TokenKind::Numeral;
+        }
     }
     if normalize {
         let folded = fold_diacritics(&lower);
         if registry.known_date_tokens.contains(&folded) {
             return TokenKind::Signal;
+        }
+        if registry.known_numeral_tokens.contains(&folded) {
+            return TokenKind::Numeral;
+        }
+        if folded.contains('-')
+            && folded
+                .split('-')
+                .filter(|p| !p.is_empty())
+                .all(|p| registry.known_numeral_tokens.contains(p))
+        {
+            return TokenKind::Numeral;
+        }
+    }
+    if !lower.is_ascii()
+        && registry
+            .non_ascii_numeral_words
+            .iter()
+            .any(|w| lower.starts_with(w.as_str()))
+    {
+        return TokenKind::Numeral;
+    }
+    if let Some((l, r)) = lower.split_once("und") {
+        if !l.is_empty()
+            && !r.is_empty()
+            && (registry.known_numeral_tokens.contains(l) || l == "ein")
+            && registry.known_numeral_tokens.contains(r)
+        {
+            return TokenKind::Numeral;
         }
     }
 
@@ -434,7 +515,9 @@ fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
         let start_advance = if let Some(era_len) = is_cjk_date_starter(rest) {
             Some(era_len)
         } else if let Some(ch) = rest.chars().next() {
-            if crate::locale::is_unicode_decimal_digit(ch) {
+            if crate::numerals::is_unicode_decimal_digit(ch)
+                || crate::numerals::is_cjk_numeral_char(ch)
+            {
                 Some(ch.len_utf8())
             } else {
                 None
@@ -482,7 +565,8 @@ fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
                 continue;
             }
             let ch = rem.chars().next().unwrap();
-            if crate::locale::is_unicode_decimal_digit(ch)
+            if crate::numerals::is_unicode_decimal_digit(ch)
+                || crate::numerals::is_cjk_numeral_char(ch)
                 || matches!(
                     ch,
                     '元' | '時' | '时' | '点' | '點' | '分' | '秒' | '시' | '분' | '초' | ':' | '：'
@@ -529,7 +613,8 @@ fn extract_cjk_date_subspans(s: &str) -> Vec<&str> {
 
         let cand = s[start..cur].trim_end_matches([':', '：', '-', '－', '/', '／']);
         if (saw_date_unit || sep_count >= 2)
-            && (cand.chars().any(crate::locale::is_unicode_decimal_digit)
+            && (cand.chars().any(crate::numerals::is_unicode_decimal_digit)
+                || cand.chars().any(crate::numerals::is_cjk_numeral_char)
                 || cand.contains('元'))
         {
             // Whole token is already a single CJK/ISO date: return empty so single-token parser handles it intact
@@ -552,9 +637,20 @@ fn is_valid_single_token_date(tok: &str, registry: &LocaleRegistry, normalize: b
     if tok.contains([
         '-', '/', '－', '／', '.', ':', '：', '年', '月', '日', '년', '월', '일', '天', '前', '後',
         '后', '週', '周', '点', '點', '時', '时',
-    ]) && tok.chars().any(crate::locale::is_unicode_decimal_digit)
-    {
+    ]) && tok.chars().any(|c| {
+        crate::numerals::is_unicode_decimal_digit(c) || crate::numerals::is_cjk_numeral_char(c)
+    }) {
         return true;
+    }
+    // Single spaceless Thai token starting with a numeral word (e.g. "ห้านาทีที่แล้ว")
+    if let Some(th_id) = registry.resolve_lang_id("th") {
+        let th = &registry.locales[th_id];
+        if !tok.is_ascii()
+            && th.word_numbers.keys().any(|w| !w.is_ascii() && tok.starts_with(w.as_str()))
+            && th.units.keys().any(|u| !u.is_ascii() && tok.contains(u.as_str()))
+        {
+            return true;
+        }
     }
     if tok.len() == 4 && tok.bytes().all(|b| b.is_ascii_digit()) {
         if let Ok(y) = tok.parse::<u32>() {

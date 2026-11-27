@@ -23,6 +23,17 @@ pub fn try_parse_absolute(
     registry: &LocaleRegistry,
     settings: &Settings,
 ) -> Option<AbsoluteMatch> {
+    try_parse_absolute_with_raw(normalized, None, candidate_ids, registry, settings)
+}
+
+/// Like `try_parse_absolute`, also receiving pre-lowercased input for strict uppercase Roman checks.
+pub fn try_parse_absolute_with_raw(
+    normalized: &str,
+    raw_input: Option<&str>,
+    candidate_ids: &[usize],
+    registry: &LocaleRegistry,
+    settings: &Settings,
+) -> Option<AbsoluteMatch> {
     if (normalized.contains('年')
         || normalized.contains('月')
         || normalized.contains('日')
@@ -70,7 +81,7 @@ pub fn try_parse_absolute(
 
     for &lid in candidate_ids {
         let loc = &registry.locales[lid];
-        if let Some(m) = try_parse_in_locale(normalized, loc, settings) {
+        if let Some(m) = try_parse_in_locale(normalized, raw_input, loc, settings) {
             return Some(m);
         }
     }
@@ -431,8 +442,27 @@ fn tod_hour_to_time_and_pod(hour: u8, settings: &Settings) -> (NaiveTime, Option
     }
 }
 
+fn raw_has_uppercase_roman(raw_input: Option<&str>, clean_lower: &str) -> Option<u32> {
+    let raw = raw_input?;
+    if !clean_lower
+        .bytes()
+        .all(|b| matches!(b, b'i' | b'v' | b'x' | b'l' | b'c' | b'd' | b'm'))
+    {
+        return None;
+    }
+    for tok in raw.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if tok.eq_ignore_ascii_case(clean_lower) && tok.bytes().all(|b| b.is_ascii_uppercase()) {
+            if let Some(v) = crate::numerals::parse_roman_numeral(tok) {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
 fn try_parse_in_locale(
     normalized: &str,
+    raw_input: Option<&str>,
     loc: &CompiledLocale,
     settings: &Settings,
 ) -> Option<AbsoluteMatch> {
@@ -455,6 +485,7 @@ fn try_parse_in_locale(
     let mut part_of_day: Option<PartOfDay> = None;
     let mut ampm: Option<bool> = None;
     let mut free_nums: Vec<(u32, usize, usize)> = Vec::new();
+    let mut roman_cands: Vec<(u32, usize)> = Vec::new();
     let mut matched_locale_signal = false;
     let mut ambiguous_month_weekday: Option<u8> = None;
 
@@ -681,6 +712,19 @@ fn try_parse_in_locale(
             }
         }
 
+        // 6c. Word ordinals (must run BEFORE step 8 unit skip so "second of June 2024" -> day=2, not TimeUnit::Second)
+        if day.is_none() {
+            if let Some(ord) = crate::numerals::lookup_ordinal(clean, loc, settings.normalize) {
+                if (1..=31).contains(&ord) {
+                    day = Some(ord);
+                    day_pos = Some(i);
+                    matched_locale_signal = true;
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+
         // 7. Numeric token (including ordinals)
         if let Some((num, digit_len)) = parse_date_number_or_ordinal(clean) {
             if digit_len == 4 && (1..=9999).contains(&num) && year.is_none() {
@@ -691,6 +735,15 @@ fn try_parse_in_locale(
             }
             i += 1;
             continue;
+        }
+
+        // 7b. Strictly gated uppercase Roman numerals (only in genuine date expressions like "15 V 2024", "XV May MMXXIV")
+        if raw_tokens.len() >= 2 {
+            if let Some(rv) = raw_has_uppercase_roman(raw_input, clean) {
+                roman_cands.push((rv, i));
+                i += 1;
+                continue;
+            }
         }
 
         // 8. Skip / connector words (including localized "year" markers & locale-gated European connectors)
@@ -710,6 +763,47 @@ fn try_parse_in_locale(
         }
 
         return None;
+    }
+
+    if !roman_cands.is_empty() {
+        let mut used_roman_month = false;
+        // Pass 1: 4-digit/century year Roman numerals (e.g. MMXXIV)
+        for &(rv, rpos) in &roman_cands {
+            if year.is_none() && (100..=3999).contains(&rv) {
+                year = Some(rv as i32);
+                year_pos = Some(rpos);
+            }
+        }
+        if settings.languages.is_none() && year.is_none() {
+            return None;
+        }
+        // Pass 2: Roman month (1..=12) when month is still missing and anchored by day/year/free_nums
+        for &(rv, rpos) in &roman_cands {
+            if year_pos == Some(rpos) {
+                continue;
+            }
+            if month.is_none()
+                && (1..=12).contains(&rv)
+                && (year.is_some() || day.is_some() || !free_nums.is_empty())
+            {
+                month = Some(rv);
+                month_pos = Some(rpos);
+                matched_locale_signal = true;
+                used_roman_month = true;
+                break;
+            }
+        }
+        // Pass 3: Roman day (1..=31)
+        for &(rv, rpos) in &roman_cands {
+            if year_pos == Some(rpos) || (used_roman_month && month_pos == Some(rpos)) {
+                continue;
+            }
+            if day.is_none() && (1..=31).contains(&rv) {
+                free_nums.push((rv, 2, rpos));
+            } else {
+                return None;
+            }
+        }
     }
 
     if !matched_locale_signal && year.is_none() {
@@ -1059,8 +1153,10 @@ fn split_date_tokens<'a>(s: &'a str, loc: &CompiledLocale, normalize: bool) -> V
         }
         if chunk.contains('-') {
             let clean = chunk.trim_matches('.');
-            if lookup_month(clean, loc, normalize).is_some()
+            if parse_date_number_or_ordinal(clean).is_some()
+                || lookup_month(clean, loc, normalize).is_some()
                 || lookup_weekday(clean, loc, normalize).is_some()
+                || crate::numerals::lookup_ordinal(clean, loc, normalize).is_some()
                 || loc.months.keys().any(|k| k.split_whitespace().any(|w| w == clean))
             {
                 out.push(chunk);
@@ -1162,23 +1258,7 @@ fn push_splitting_attached_digits<'a>(
     }
 }
 
+#[inline]
 fn parse_date_number_or_ordinal(s: &str) -> Option<(u32, usize)> {
-    if s.is_empty() || s.len() > 6 {
-        return None;
-    }
-    let stripped = s
-        .strip_suffix("st")
-        .or_else(|| s.strip_suffix("nd"))
-        .or_else(|| s.strip_suffix("rd"))
-        .or_else(|| s.strip_suffix("th"))
-        .or_else(|| s.strip_suffix("er"))
-        .or_else(|| s.strip_suffix('º'))
-        .or_else(|| s.strip_suffix('ª'))
-        .unwrap_or(s);
-
-    if stripped.is_empty() || stripped.len() > 4 || !stripped.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let val: u32 = stripped.parse().ok()?;
-    Some((val, stripped.len()))
+    crate::numerals::parse_date_number_or_ordinal(s)
 }

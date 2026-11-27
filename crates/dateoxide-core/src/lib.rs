@@ -42,6 +42,7 @@ pub mod absolute;
 pub mod calendars;
 pub mod fast_path;
 pub mod locale;
+pub mod numerals;
 pub mod ranges;
 pub mod relative;
 pub mod search;
@@ -256,14 +257,16 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
     } else {
         without_tz_initial
     };
-    let normalized = normalize_digits_and_lower(without_tz);
-    if normalized.is_empty() {
+    let norm_nd = normalize_digits_and_lower(without_tz);
+    if norm_nd.is_empty() {
         return DateData::empty();
     }
+    let norm_script = numerals::normalize_non_decimal_numerals(&norm_nd);
+    let normalized = norm_script.as_ref();
 
-    // Re-check fast path if Unicode digits (e.g. Arabic-Indic / Persian) were normalized to ASCII
+    // Re-check fast path if Unicode digits (e.g. Arabic-Indic / Persian / all 68 Nd scripts) were normalized to ASCII
     if normalized.as_bytes()[0].is_ascii_digit() && normalized != without_tz {
-        if let Some(m) = fast_path::try_fast_path(&normalized, settings) {
+        if let Some(m) = fast_path::try_fast_path(normalized, settings) {
             return build_datedata(
                 m.naive,
                 m.tz.or(tz),
@@ -316,7 +319,7 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
     }
 
     let candidates = registry.detect_candidates(
-        &normalized,
+        normalized,
         &tokens,
         settings.languages.as_deref(),
         &settings.default_languages,
@@ -326,7 +329,7 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
 
     if candidates.is_empty() {
         if settings.allows_parser(ParserKind::RelativeTime) {
-            if let Some(m) = relative::try_conversational_clock_or_fraction(&normalized, settings) {
+            if let Some(m) = relative::try_conversational_clock_or_fraction(normalized, settings) {
                 return build_datedata(
                     m.naive,
                     tz,
@@ -347,8 +350,24 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
             || normalized.contains('년')
             || normalized.contains('월')
             || normalized.contains('일');
-        if settings.allows_parser(ParserKind::AbsoluteTime) && is_cjk_or_bare_year {
-            if let Some(m) = absolute::try_parse_absolute(&normalized, &[], registry, settings) {
+        let has_roman_month_cand = trimmed.split_whitespace().count() >= 2
+            && trimmed
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|t| numerals::parse_roman_numeral(t).is_some())
+            && normalized.bytes().any(|b| b.is_ascii_digit());
+        if settings.allows_parser(ParserKind::AbsoluteTime) && (is_cjk_or_bare_year || has_roman_month_cand) {
+            let fallback_cands: Vec<usize> = if has_roman_month_cand {
+                registry.resolve_lang_id("en").into_iter().collect()
+            } else {
+                Vec::new()
+            };
+            if let Some(m) = absolute::try_parse_absolute_with_raw(
+                normalized,
+                Some(trimmed),
+                &fallback_cands,
+                registry,
+                settings,
+            ) {
                 return build_datedata(
                     m.naive,
                     tz,
@@ -366,7 +385,7 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
 
     // 4. Multilingual Relative Date Engine
     if settings.allows_parser(ParserKind::RelativeTime) {
-        match relative::try_parse_relative_outcome(&normalized, &candidates, registry, settings) {
+        match relative::try_parse_relative_outcome(normalized, &candidates, registry, settings) {
             relative::RelativeOutcome::Matched(m) => {
                 return build_datedata(
                     m.naive,
@@ -386,7 +405,9 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
 
     // 5. Multilingual Absolute & Partial Date Engine
     if settings.allows_parser(ParserKind::AbsoluteTime) {
-        if let Some(m) = absolute::try_parse_absolute(&normalized, &candidates, registry, settings) {
+        if let Some(m) =
+            absolute::try_parse_absolute_with_raw(normalized, Some(trimmed), &candidates, registry, settings)
+        {
             return build_datedata(
                 m.naive,
                 tz,

@@ -753,16 +753,15 @@ fn try_affix_match(
     }
 
     let lookup_word_num = |ns: &str| -> Option<f64> {
-        if let Some(&n) = loc.word_numbers.get(ns) {
-            return Some(n as f64);
-        }
-        if normalize {
-            let fns = fold_diacritics(ns);
-            if let Some(&n) = loc.word_numbers.get(&fns) {
-                return Some(n as f64);
+        let toks: Vec<&str> = ns.split_whitespace().collect();
+        if toks.len() > 1 {
+            if let Some((val, consumed)) = crate::numerals::parse_cardinal_slice(&toks, loc, normalize) {
+                if consumed == toks.len() {
+                    return Some(val as f64);
+                }
             }
         }
-        None
+        lookup_word_number_val(ns, loc, normalize)
     };
 
     let want_future = !matches!(pref, PreferDatesFrom::Past);
@@ -840,33 +839,27 @@ fn parse_positive_number(s: &str) -> Option<f64> {
     }
 }
 
+fn lookup_word_number_val(tok: &str, loc: &CompiledLocale, normalize: bool) -> Option<f64> {
+    if let Some(v) = crate::numerals::parse_single_word_cardinal(tok, loc, normalize) {
+        return Some(v as f64);
+    }
+    None
+}
+
 fn replace_word_numbers_once(s: &str, loc: &CompiledLocale, normalize: bool) -> Option<String> {
-    if loc.word_numbers.is_empty() {
-        return None;
+    crate::numerals::collapse_word_numbers(s, loc, normalize)
+}
+
+#[inline]
+fn is_plural_bare_unit_without_count(clean: &str, loc_code: &str) -> bool {
+    if loc_code == "en" {
+        return matches!(
+            clean,
+            "seconds" | "secs" | "minutes" | "mins" | "hours" | "hrs" | "days" | "weeks"
+                | "months" | "years" | "decades" | "centuries" | "fortnights"
+        );
     }
-    let mut changed = false;
-    let mut parts = Vec::new();
-    for tok in s.split_whitespace() {
-        if let Some(&n) = loc.word_numbers.get(tok) {
-            parts.push(n.to_string());
-            changed = true;
-        } else if normalize {
-            let ft = fold_diacritics(tok);
-            if let Some(&n) = loc.word_numbers.get(&ft) {
-                parts.push(n.to_string());
-                changed = true;
-            } else {
-                parts.push(tok.to_string());
-            }
-        } else {
-            parts.push(tok.to_string());
-        }
-    }
-    if changed {
-        Some(parts.join(" "))
-    } else {
-        None
-    }
+    false
 }
 
 fn try_compound_relative(
@@ -1028,17 +1021,20 @@ fn apply_token_duration_pairs(
                 return None;
             }
             pending_num = Some(n);
-        } else if let Some(&wn) = loc.word_numbers.get(clean) {
+        } else if let Some(wn) = lookup_word_number_val(clean, loc, normalize) {
             if pending_num.is_some() {
                 return None;
             }
-            pending_num = Some(wn as f64);
+            pending_num = Some(wn);
         } else {
             let u = lookup_unit(clean)?;
             if !allow_single_char_attached_units && pending_num.is_none() {
                 return None;
             }
             if !allow_single_char_attached_units && clean.chars().count() < 2 {
+                return None;
+            }
+            if pending_num.is_none() && is_plural_bare_unit_without_count(clean, &loc.code) {
                 return None;
             }
             let amt = pending_num.take().unwrap_or(1.0);
@@ -1768,7 +1764,107 @@ fn try_conversational_clock(s: &str, settings: &Settings) -> Option<RelativeMatc
         });
     }
 
+    // English spelled-out clock times ("five thirty pm", "ten fifteen am")
+    if let Some(nt) = try_english_spelled_clock(s) {
+        let nd = resolve_time_only_date(nt, settings);
+        return Some(RelativeMatch {
+            naive: nd.and_time(nt),
+            period: Period::Day,
+            locale: "en".to_string(),
+            has_time: true,
+            parts: vec!["time"],
+            part_of_day: None,
+        });
+    }
+
     None
+}
+
+fn try_english_spelled_clock(s: &str) -> Option<NaiveTime> {
+    let mut t = s.trim();
+    let mut is_pm = false;
+    let mut is_am = false;
+    for suf in ["p.m.", "p.m", "pm"] {
+        if let Some(rest) = t.strip_suffix(suf) {
+            t = rest.trim();
+            is_pm = true;
+            break;
+        }
+    }
+    if !is_pm {
+        for suf in ["a.m.", "a.m", "am"] {
+            if let Some(rest) = t.strip_suffix(suf) {
+                t = rest.trim();
+                is_am = true;
+                break;
+            }
+        }
+    }
+    if !is_am && !is_pm {
+        return None;
+    }
+    let toks: Vec<&str> = t.split_whitespace().collect();
+    if toks.len() < 2 || toks.len() > 3 {
+        return None;
+    }
+    let mut h = parse_small_num_or_word(toks[0])? as u32;
+    if !(1..=12).contains(&h) {
+        return None;
+    }
+    let minute: u32 = match toks[1] {
+        "o'clock" | "oclock" if toks.len() == 2 => 0,
+        "oh" if toks.len() == 3 => {
+            let m = parse_small_num_or_word(toks[2])? as u32;
+            if m > 9 {
+                return None;
+            }
+            m
+        }
+        _ => {
+            let mut m_val = match toks[1] {
+                "fifteen" => 15,
+                "twenty" => 20,
+                "thirty" => 30,
+                "forty" => 40,
+                "fifty" => 50,
+                "ten" => 10,
+                "twelve" => 12,
+                "eleven" => 11,
+                other => {
+                    if let Some((l, r)) = other.split_once('-') {
+                        let lv = match l {
+                            "twenty" => 20,
+                            "thirty" => 30,
+                            "forty" => 40,
+                            "fifty" => 50,
+                            _ => return None,
+                        };
+                        let rv = parse_small_num_or_word(r)? as u32;
+                        if rv >= 10 {
+                            return None;
+                        }
+                        lv + rv
+                    } else {
+                        return None;
+                    }
+                }
+            };
+            if toks.len() == 3 {
+                let ones = parse_small_num_or_word(toks[2])? as u32;
+                if ones == 0 || ones > 9 || m_val % 10 != 0 || m_val < 20 {
+                    return None;
+                }
+                m_val += ones;
+            }
+            m_val
+        }
+    };
+    if is_pm && h < 12 {
+        h += 12;
+    } else if is_am && h == 12 {
+        h = 0;
+    }
+    NaiveTime::from_hms_opt(h, minute, 0)
 }
 
 /// Extract a trailing time from strings like "yesterday at 5pm", "hier à 14h30", "dün saat 15:30",
