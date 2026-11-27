@@ -626,17 +626,22 @@ fn detect_script_hint(s: &str) -> Option<&'static [&'static str]> {
     let mut has_bengali = false;
     let mut has_gurmukhi = false;
     let mut has_gujarati = false;
+    let mut has_oriya = false;
     let mut has_tamil = false;
     let mut has_telugu = false;
     let mut has_kannada = false;
     let mut has_malayalam = false;
     let mut has_sinhala = false;
     let mut has_lao = false;
+    let mut has_tibetan = false;
     let mut has_myanmar = false;
     let mut has_georgian = false;
     let mut has_armenian = false;
     let mut has_ethiopic = false;
+    let mut has_cherokee = false;
     let mut has_khmer = false;
+    let mut has_tifinagh = false;
+    let mut has_yi = false;
 
     for ch in s.chars() {
         let c = ch as u32;
@@ -653,17 +658,22 @@ fn detect_script_hint(s: &str) -> Option<&'static [&'static str]> {
             0x0980..=0x09FF => has_bengali = true,
             0x0A00..=0x0A7F => has_gurmukhi = true,
             0x0A80..=0x0AFF => has_gujarati = true,
+            0x0B00..=0x0B7F => has_oriya = true,
             0x0B80..=0x0BFF => has_tamil = true,
             0x0C00..=0x0C7F => has_telugu = true,
             0x0C80..=0x0CFF => has_kannada = true,
             0x0D00..=0x0D7F => has_malayalam = true,
             0x0D80..=0x0DFF => has_sinhala = true,
             0x0E80..=0x0EFF => has_lao = true,
+            0x0F00..=0x0FFF => has_tibetan = true,
             0x1000..=0x109F => has_myanmar = true,
             0x10A0..=0x10FF => has_georgian = true,
             0x0530..=0x058F => has_armenian = true,
             0x1200..=0x137F => has_ethiopic = true,
+            0x13A0..=0x13FF | 0xAB70..=0xABBF => has_cherokee = true,
             0x1780..=0x17FF => has_khmer = true,
+            0x2D30..=0x2D7F => has_tifinagh = true,
+            0xA000..=0xA4CF => has_yi = true,
             _ => {}
         }
     }
@@ -673,25 +683,32 @@ fn detect_script_hint(s: &str) -> Option<&'static [&'static str]> {
     } else if has_hangul {
         Some(&["ko"])
     } else if has_han {
-        Some(&["zh", "ja"])
+        Some(&["zh", "ja", "zh-hans", "zh-hant", "yue"])
     } else if has_cyrillic {
-        Some(&["ru", "uk", "bg", "sr", "be", "kk", "mk", "ky", "mn"])
+        Some(&[
+            "ru", "uk", "bg", "sr", "be", "kk", "mk", "ky", "mn", "az-cyrl", "uz-cyrl",
+            "bs-cyrl", "sr-cyrl", "ce", "os", "sah",
+        ])
     } else if has_arabic {
-        Some(&["ar", "fa", "ur"])
+        Some(&[
+            "ar", "fa", "ur", "ps", "ckb", "ug", "ks", "pa-arab", "uz-arab", "lrc", "mzn",
+        ])
     } else if has_hebrew {
-        Some(&["he"])
+        Some(&["he", "yi"])
     } else if has_greek {
         Some(&["el"])
     } else if has_thai {
         Some(&["th"])
     } else if has_devanagari {
-        Some(&["hi", "mr", "ne"])
+        Some(&["hi", "mr", "ne", "kok", "brx"])
     } else if has_bengali {
         Some(&["bn", "as"])
     } else if has_gurmukhi {
-        Some(&["pa"])
+        Some(&["pa", "pa-guru"])
     } else if has_gujarati {
         Some(&["gu"])
+    } else if has_oriya {
+        Some(&["or"])
     } else if has_tamil {
         Some(&["ta"])
     } else if has_telugu {
@@ -704,6 +721,8 @@ fn detect_script_hint(s: &str) -> Option<&'static [&'static str]> {
         Some(&["si"])
     } else if has_lao {
         Some(&["lo"])
+    } else if has_tibetan {
+        Some(&["bo", "dz"])
     } else if has_myanmar {
         Some(&["my"])
     } else if has_georgian {
@@ -712,8 +731,14 @@ fn detect_script_hint(s: &str) -> Option<&'static [&'static str]> {
         Some(&["hy"])
     } else if has_ethiopic {
         Some(&["am", "ti"])
+    } else if has_cherokee {
+        Some(&["chr"])
     } else if has_khmer {
         Some(&["km"])
+    } else if has_tifinagh {
+        Some(&["zgh", "shi-tfng", "shi"])
+    } else if has_yi {
+        Some(&["ii"])
     } else {
         None
     }

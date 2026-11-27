@@ -1025,4 +1025,54 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_v060_time_period_iso_month_guard_and_205_scripts() {
+        let mut s_tp = fixed_settings();
+        s_tp.return_time_as_period = true;
+        for expr in ["2 hours ago", "30 minutes ago", "half an hour ago", "через полчаса"] {
+            let dd = get_date_data(expr, &s_tp);
+            assert!(dd.date_obj.is_some(), "failed {}", expr);
+            assert_eq!(dd.period, Period::Time, "expected Period::Time for {}", expr);
+        }
+
+        // Invalid month "2026-13-01" falls back to YDM under default None, returns None under StrictDateOrder::All
+        let mut s_strict = fixed_settings();
+        s_strict.strict_date_order = StrictDateOrder::All;
+        assert!(parse_with_settings("2026-13-01", &s_strict).is_none());
+        let s = fixed_settings();
+        assert_eq!(
+            parse_with_settings("2026-13-01", &s).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 1, 13).unwrap()
+        );
+        let mut s_ydm = fixed_settings();
+        s_ydm.date_order = Some(DateOrder::YDM);
+        assert_eq!(
+            parse_with_settings("2026-13-01", &s_ydm).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 1, 13).unwrap()
+        );
+
+        // Newly enriched scripts & languages (bo, or, chr, zgh, ii, tl, eo, yo, haw, qu)
+        for (lang, expr) in [
+            ("bo", "གཉིས ཉིན སྔོན་ལ"),
+            ("or", "ସକାଳ"),
+            ("chr", "ᏌᎾᎴ"),
+            ("zgh", "ⵜⵉⴼⴰⵡⵜ"),
+            ("ii", "ꎮꂷ"),
+            ("tl", "kahapon"),
+            ("eo", "antaŭ 3 jaroj"),
+            ("yo", "àárọ̀"),
+            ("haw", "3 lā i hala"),
+            ("qu", "ñawpaq 3 wata"),
+        ] {
+            let mut s_l = fixed_settings();
+            s_l.languages = Some(vec![lang.to_string()]);
+            assert!(
+                parse_with_settings(expr, &s_l).is_some(),
+                "failed {} for {}",
+                expr,
+                lang
+            );
+        }
+    }
 }

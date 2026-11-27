@@ -1176,14 +1176,15 @@ fn resolve_ymd_triplet(
             if strict == StrictDateOrder::All {
                 return None;
             }
+            return NaiveDate::from_ymd_opt(y, parts[1], parts[2]);
         }
         if let Some(d) = NaiveDate::from_ymd_opt(y, parts[1], parts[2]) {
             return Some(d);
         }
-        if strict == StrictDateOrder::All {
-            return None;
+        if strict == StrictDateOrder::None {
+            return NaiveDate::from_ymd_opt(y, parts[2], parts[1]);
         }
-        return NaiveDate::from_ymd_opt(y, parts[2], parts[1]);
+        return None;
     }
 
     if lens[2] == 4 {

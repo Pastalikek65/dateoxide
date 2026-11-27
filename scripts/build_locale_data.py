@@ -12,10 +12,20 @@ import importlib
 import json
 import os
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 from dateparser.data import date_translation_data
+
+from locale_enrichment_205 import (
+    EXTRA_REL_MARKERS_205,
+    EXTRA_TOD_205,
+    EXTRA_UNITS_205,
+    EXTRA_WORD_NUMBERS_205,
+    MIRROR_LOCALES,
+    TL_EXTRA,
+)
 
 MONTH_KEYS = [
     "january", "february", "march", "april", "may", "june",
@@ -341,6 +351,7 @@ EXTRA_RELATIVE_EXACT: dict[str, list[tuple[str, int, int, int]]] = {
 EXTRA_AGO: dict[str, list[str]] = {
     "tr": ["evvel"],
     "az": ["əvvəl"],
+    "ko": ["전"],
 }
 
 EXTRA_IN_WORDS: dict[str, list[str]] = {
@@ -357,6 +368,18 @@ EXTRA_IN_WORDS: dict[str, list[str]] = {
     "el": ["σε"],
     "he": ["בעוד"],
     "fi": ["kuluttua"],
+    "ko": ["후", "뒤"],
+    "gsw": ["innert"],
+    "lb": ["bannent"],
+    "zu": ["ngemva kwa"],
+}
+
+ENGLISH_STOPWORDS = {
+    "in", "at", "on", "to", "a", "an", "is", "be", "or", "so", "do", "no", "as", "by",
+    "my", "we", "us", "he", "me", "it", "of", "go", "up", "if", "let", "set", "get",
+    "can", "man", "see", "her", "his", "she", "did", "say", "was", "are", "not", "but",
+    "for", "all", "new", "old", "one", "two", "may", "year", "month", "week", "day",
+    "hour", "minute", "second",
 }
 
 # Extra shorthand units often used in real-world data (3d ago, 5 dk önce, etc.)
@@ -420,11 +443,14 @@ def extract_locale(code: str, info: dict[str, Any]) -> dict[str, Any]:
             if key not in seen_units:
                 seen_units.add(key)
                 units.append([tok, unit_id])
-    for tok, unit_id in EXTRA_UNITS.get(code, []):
+    for tok, unit_id in EXTRA_UNITS.get(code, []) + EXTRA_UNITS_205.get(code, []):
         key = (norm(tok), unit_id)
         if key not in seen_units:
             seen_units.add(key)
             units.append([key[0], unit_id])
+
+    am = am or dedup_list(TL_EXTRA["am"]) if code == "tl" else am
+    pm = pm or dedup_list(TL_EXTRA["pm"]) if code == "tl" else pm
 
     ago = dedup_list(list(info.get("ago", [])) + EXTRA_AGO.get(code, []))
     in_words = dedup_list(list(info.get("in", [])) + EXTRA_IN_WORDS.get(code, []))
@@ -479,7 +505,8 @@ def extract_locale(code: str, info: dict[str, Any]) -> dict[str, Any]:
                 relative_affix.append([prefix, suffix, sign, unit_id])
 
     # Word numbers
-    word_numbers: dict[str, int] = dict(EXTRA_WORD_NUMBERS.get(code, {}))
+    word_numbers: dict[str, int] = {norm(k): v for k, v in EXTRA_WORD_NUMBERS.get(code, {}).items()}
+    word_numbers.update({norm(k): v for k, v in EXTRA_WORD_NUMBERS_205.get(code, {}).items()})
     for simp_dict in info.get("simplifications", []):
         for k, v in simp_dict.items():
             v_str = str(v).strip()
@@ -493,8 +520,18 @@ def extract_locale(code: str, info: dict[str, Any]) -> dict[str, Any]:
     for key_name, hour in TOD_KEYS:
         for phrase in dedup_list(info.get(key_name, [])):
             time_of_day.setdefault(phrase, hour)
-    for phrase, hour in EXTRA_TOD.get(code, []):
-        time_of_day.setdefault(norm(phrase), hour)
+    for phrase, hour in EXTRA_TOD.get(code, []) + EXTRA_TOD_205.get(code, []):
+        p_norm = norm(phrase)
+        p_ascii = "".join(
+            ch for ch in unicodedata.normalize("NFKD", p_norm) if not unicodedata.combining(ch)
+        )
+        if code != "en" and ((len(p_ascii) <= 2 and p_ascii.isascii()) or p_norm in ENGLISH_STOPWORDS):
+            continue
+        time_of_day.setdefault(p_norm, hour)
+
+    if code == "tl" and not relative_exact:
+        for phrase, sign, amount, unit_id in TL_EXTRA["relative_exact"]:
+            relative_exact.append([norm(phrase), sign, amount, unit_id])
 
     return {
         "code": code,
@@ -527,10 +564,115 @@ def main() -> None:
         c for c in all_codes if c not in priority_set
     ]
 
-    locales = []
-    for code in ordered_codes:
-        mod = importlib.import_module(f"dateparser.data.date_translation_data.{code}")
-        locales.append(extract_locale(code, mod.info))
+    locales = [extract_locale(code, importlib.import_module(f"dateparser.data.date_translation_data.{code}").info) for code in ordered_codes]
+    by_code = {loc["code"]: loc for loc in locales}
+
+    # Apply script/sibling mirrors (tl <- fil, az-Latn <- az, etc.) for empty NLP fields
+    for target_code, donor_code in MIRROR_LOCALES.items():
+        tgt = by_code.get(target_code)
+        src = by_code.get(donor_code)
+        if not tgt or not src:
+            continue
+        for fld in ("am", "pm", "relative_exact", "relative_affix", "ago", "in_words", "word_numbers", "time_of_day"):
+            if not tgt[fld] and src[fld]:
+                tgt[fld] = [list(item) if isinstance(item, list) else item for item in src[fld]]
+
+    # Synthesize structured relative_affix patterns for any locale lacking past or future affixes
+    for loc in locales:
+        code = loc["code"]
+        has_past = any(a[2] == -1 for a in loc["relative_affix"])
+        has_fut = any(a[2] == 1 for a in loc["relative_affix"])
+        if (not has_past or not has_fut) and code in EXTRA_REL_MARKERS_205:
+            past_markers, fut_markers = EXTRA_REL_MARKERS_205[code]
+            units_by_id: dict[int, list[str]] = {}
+            for u_tok, u_id in loc["units"]:
+                if u_id <= 6:
+                    units_by_id.setdefault(u_id, []).append(u_tok)
+
+            seen_aff = {tuple(a) for a in loc["relative_affix"]}
+            gen_affixes: list[list[Any]] = list(loc["relative_affix"])
+            sign_lists = []
+            if not has_past:
+                sign_lists.append((-1, past_markers))
+            if not has_fut:
+                sign_lists.append((1, fut_markers))
+            for u_id in range(7):
+                u_toks = units_by_id.get(u_id, [])
+                native_toks = [u for u in u_toks if u not in ENGLISH_STOPWORDS]
+                chosen_toks = native_toks or u_toks
+                for u_tok in chosen_toks[:4]:
+                    for sign, marker_list in sign_lists:
+                        for placement, marker in marker_list:
+                            if placement == "prefix":
+                                pfx = marker.lstrip()
+                                sfx = f" {u_tok}"
+                            else:
+                                pfx = ""
+                                sfx = f" {u_tok}{marker}" if marker.startswith(" ") else f" {u_tok} {marker.strip()}"
+                            key = (pfx, sfx, sign, u_id)
+                            if key not in seen_aff:
+                                seen_aff.add(key)
+                                gen_affixes.append([pfx, sfx, sign, u_id])
+            loc["relative_affix"] = gen_affixes
+
+        # Populate ago / in_words for all 205 locales (skipping English stopwords & 1-char ASCII)
+        def _keep_marker(m: str) -> bool:
+            m = norm(m).strip(".,;:-/")
+            if not m:
+                return False
+            if code != "en" and ((len(m) == 1 and m.isascii()) or m in ENGLISH_STOPWORDS):
+                return False
+            return True
+
+        ago_set = list(loc["ago"])
+        in_set = list(loc["in_words"])
+        if code in EXTRA_REL_MARKERS_205:
+            past_markers, fut_markers = EXTRA_REL_MARKERS_205[code]
+            for _, m in past_markers:
+                mc = norm(m)
+                if mc and mc not in ago_set and _keep_marker(mc):
+                    ago_set.append(mc)
+            for _, m in fut_markers:
+                mc = norm(m)
+                if mc and mc not in in_set and _keep_marker(mc):
+                    in_set.append(mc)
+
+        unit_toks_sorted = sorted({u_tok for u_tok, _ in loc["units"]}, key=len, reverse=True)
+        for pfx, sfx, sign, _ in loc["relative_affix"]:
+            rem_pfx = pfx.strip()
+            rem_sfx = sfx.strip()
+            for u_tok in unit_toks_sorted:
+                if rem_sfx == u_tok:
+                    rem_sfx = ""
+                elif rem_sfx.startswith(u_tok + " "):
+                    rem_sfx = rem_sfx[len(u_tok) + 1 :].strip()
+                elif rem_sfx.endswith(" " + u_tok):
+                    rem_sfx = rem_sfx[: -len(u_tok) - 1].strip()
+                elif not u_tok.isascii() and rem_sfx.startswith(u_tok):
+                    rem_sfx = rem_sfx[len(u_tok) :].strip()
+            for cand in (rem_pfx, rem_sfx):
+                cand_c = norm(cand).strip(".,;:-/")
+                if _keep_marker(cand_c):
+                    target = ago_set if sign < 0 else in_set
+                    if cand_c not in target:
+                        target.append(cand_c)
+
+        loc["ago"] = ago_set
+        loc["in_words"] = in_set
+
+    # Verify strict 205/205 completeness across every single NLP field
+    required_fields = (
+        "months", "weekdays", "am", "pm", "units",
+        "ago", "in_words", "relative_exact", "relative_affix",
+        "word_numbers", "time_of_day",
+    )
+    incomplete = [
+        (loc["code"], [f for f in required_fields if not loc.get(f)])
+        for loc in locales
+        if any(not loc.get(f) for f in required_fields)
+    ]
+    if incomplete:
+        raise RuntimeError(f"Incomplete locales remain ({len(incomplete)}): {incomplete[:15]}")
 
     out_path = Path(__file__).resolve().parent.parent / "crates" / "dateoxide-core" / "data" / "locales.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -101,6 +101,11 @@ fn add_months(base: NaiveDateTime, delta_months: i32) -> Option<NaiveDateTime> {
     Some(nd.and_time(base.time()))
 }
 
+#[inline]
+fn is_time_unit(unit: TimeUnit) -> bool {
+    matches!(unit, TimeUnit::Hour | TimeUnit::Minute | TimeUnit::Second)
+}
+
 fn period_for_unit(unit: TimeUnit) -> Period {
     match unit {
         TimeUnit::Year | TimeUnit::Decade | TimeUnit::Century => Period::Year,
@@ -302,12 +307,13 @@ pub fn try_parse_relative(
                 .map(|(l, _)| *l)
                 .unwrap_or(matched_specs[0].0);
             let dt = apply_relative_offset(base, chosen.sign, chosen.amount as f64, chosen.unit)?;
+            let has_t = is_time_unit(chosen.unit);
             return Some(RelativeMatch {
                 naive: dt,
                 period: period_for_unit(chosen.unit),
                 locale: registry.locales[chosen_lid].code.clone(),
-                has_time: false,
-                parts: parts_for_relative(false, Some(chosen.unit)),
+                has_time: has_t,
+                parts: parts_for_relative(has_t, Some(chosen.unit)),
                 part_of_day: None,
             });
         }
@@ -350,12 +356,13 @@ pub fn try_parse_relative(
                     .map(|(l, _)| *l)
                     .unwrap_or(matched_specs[0].0);
                 let dt = apply_relative_offset(base, chosen.sign, chosen.amount as f64, chosen.unit)?;
+                let has_t = is_time_unit(chosen.unit);
                 return Some(RelativeMatch {
                     naive: dt,
                     period: period_for_unit(chosen.unit),
                     locale: registry.locales[chosen_lid].code.clone(),
-                    has_time: false,
-                    parts: parts_for_relative(false, Some(chosen.unit)),
+                    has_time: has_t,
+                    parts: parts_for_relative(has_t, Some(chosen.unit)),
                     part_of_day: None,
                 });
             }
@@ -405,15 +412,21 @@ pub fn try_parse_relative(
             eff
         };
 
-        if let Some((spec_sign, amount, unit)) = try_affix_match(target_str, loc, settings.normalize) {
+        if let Some((spec_sign, amount, unit)) = try_affix_match(
+            target_str,
+            loc,
+            settings.normalize,
+            settings.prefer_dates_from,
+        ) {
             let mut dt = apply_relative_offset(base, spec_sign, amount, unit)?;
             if let Some(t) = extracted_time {
                 dt = dt.date().and_time(t);
             }
-            let has_t = extracted_time.is_some();
+            let explicit_t = extracted_time.is_some();
+            let has_t = explicit_t || is_time_unit(unit);
             return Some(RelativeMatch {
                 naive: dt,
-                period: if has_t { Period::Day } else { period_for_unit(unit) },
+                period: if explicit_t { Period::Day } else { period_for_unit(unit) },
                 locale: loc.code.clone(),
                 has_time: has_t,
                 parts: parts_for_relative(has_t, Some(unit)),
@@ -428,13 +441,14 @@ pub fn try_parse_relative(
             if let Some(t) = extracted_time {
                 dt = dt.date().and_time(t);
             }
-            let has_t = extracted_time.is_some();
+            let explicit_t = extracted_time.is_some();
+            let has_t = explicit_t || has_time_unit;
             return Some(RelativeMatch {
                 naive: dt,
-                period: if has_t { Period::Day } else { period },
+                period: if explicit_t { Period::Day } else { period },
                 locale: loc.code.clone(),
                 has_time: has_t,
-                parts: if has_t || has_time_unit {
+                parts: if has_t {
                     vec!["year", "month", "day", "time"]
                 } else {
                     vec!["year", "month", "day"]
@@ -450,13 +464,14 @@ pub fn try_parse_relative(
             if let Some(t) = extracted_time {
                 dt = dt.date().and_time(t);
             }
-            let has_t = extracted_time.is_some();
+            let explicit_t = extracted_time.is_some();
+            let has_t = explicit_t || has_time_unit;
             return Some(RelativeMatch {
                 naive: dt,
-                period: if has_t { Period::Day } else { period },
+                period: if explicit_t { Period::Day } else { period },
                 locale: loc.code.clone(),
                 has_time: has_t,
-                parts: if has_t || has_time_unit {
+                parts: if has_t {
                     vec!["year", "month", "day", "time"]
                 } else {
                     vec!["year", "month", "day"]
@@ -577,26 +592,53 @@ fn split_tod_hour<'a>(
     loc: &CompiledLocale,
     normalize: bool,
 ) -> Option<(&'a str, u8)> {
+    let mut best: Option<(&'a str, u8, usize)> = None;
     for (phrase, &hour) in &loc.time_of_day {
         if let Some(rest) = s.strip_suffix(phrase.as_str()) {
-            if rest.is_empty() || rest.ends_with(' ') {
-                return Some((rest.trim_end(), hour));
+            if (rest.is_empty() || rest.ends_with(' '))
+                && best.map_or(true, |(_, _, bl)| phrase.len() > bl)
+            {
+                best = Some((rest.trim_end(), hour, phrase.len()));
             }
         }
     }
+    if let Some((prefix, hour, _)) = best {
+        return Some((prefix, hour));
+    }
     if normalize {
         let fs = fold_diacritics(s);
-        for (phrase, &hour) in &loc.folded_time_of_day {
+        let total_words = s.split_whitespace().count();
+        let mut best_folded: Option<(usize, u8, usize)> = None;
+        for (phrase, &hour) in loc.folded_time_of_day.iter().chain(loc.time_of_day.iter()) {
             if let Some(rest) = fs.strip_suffix(phrase.as_str()) {
                 if rest.is_empty() || rest.ends_with(' ') {
-                    return Some((s[..rest.len().min(s.len())].trim_end(), hour));
+                    let p_words = phrase.split_whitespace().count();
+                    if p_words <= total_words
+                        && fs.split_whitespace().count() == total_words
+                        && best_folded.map_or(true, |(_, _, bl)| phrase.len() > bl)
+                    {
+                        best_folded = Some((total_words - p_words, hour, phrase.len()));
+                    }
                 }
             }
         }
-        for (phrase, &hour) in &loc.time_of_day {
-            if let Some(rest) = fs.strip_suffix(phrase.as_str()) {
-                if rest.is_empty() || rest.ends_with(' ') {
-                    return Some((s[..rest.len().min(s.len())].trim_end(), hour));
+        if let Some((keep_words, hour, _)) = best_folded {
+            if keep_words == 0 {
+                return Some(("", hour));
+            }
+            let mut count = 0usize;
+            let mut in_word = false;
+            for (idx, ch) in s.char_indices() {
+                if ch.is_whitespace() {
+                    if in_word {
+                        count += 1;
+                        if count == keep_words {
+                            return Some((s[..idx].trim_end(), hour));
+                        }
+                        in_word = false;
+                    }
+                } else {
+                    in_word = true;
                 }
             }
         }
@@ -637,7 +679,12 @@ fn try_relative_plus_tod(
 }
 
 /// Zero-regex prefix + number + suffix matcher covering 99.97% of dateparser's relative-type-regex!
-fn try_affix_match(s: &str, loc: &CompiledLocale, normalize: bool) -> Option<(i8, f64, TimeUnit)> {
+fn try_affix_match(
+    s: &str,
+    loc: &CompiledLocale,
+    normalize: bool,
+    pref: PreferDatesFrom,
+) -> Option<(i8, f64, TimeUnit)> {
     let mut candidates: Vec<String> = Vec::with_capacity(3);
     candidates.push(s.to_string());
     if let Some(r) = replace_word_numbers_once(s, loc, normalize) {
@@ -653,7 +700,23 @@ fn try_affix_match(s: &str, loc: &CompiledLocale, normalize: bool) -> Option<(i8
         }
     }
 
+    let lookup_word_num = |ns: &str| -> Option<f64> {
+        if let Some(&n) = loc.word_numbers.get(ns) {
+            return Some(n as f64);
+        }
+        if normalize {
+            let fns = fold_diacritics(ns);
+            if let Some(&n) = loc.word_numbers.get(&fns) {
+                return Some(n as f64);
+            }
+        }
+        None
+    };
+
+    let want_future = !matches!(pref, PreferDatesFrom::Past);
+
     let match_against = |cand: &str, affixes: &[RelativeAffix]| -> Option<(i8, f64, TimeUnit)> {
+        let mut fallback: Option<(i8, f64, TimeUnit)> = None;
         for affix in affixes {
             let after_prefix = if affix.prefix.is_empty() {
                 cand
@@ -672,11 +735,17 @@ fn try_affix_match(s: &str, loc: &CompiledLocale, normalize: bool) -> Option<(i8
             };
 
             let num_str = middle.trim();
-            if let Some(val) = parse_positive_number(num_str) {
-                return Some((affix.sign, val, affix.unit));
+            if let Some(val) = parse_positive_number(num_str).or_else(|| lookup_word_num(num_str)) {
+                let is_pref = (affix.sign > 0) == want_future;
+                if is_pref {
+                    return Some((affix.sign, val, affix.unit));
+                }
+                if fallback.is_none() {
+                    fallback = Some((affix.sign, val, affix.unit));
+                }
             }
         }
-        None
+        fallback
     };
 
     for cand in &candidates {
@@ -1010,20 +1079,37 @@ fn classify_relative_modifier(tok: &str) -> Option<i8> {
     match tok {
         "last" | "previous" | "past" | "geçen" | "gecen" | "önceki" | "onceki" | "letzten"
         | "letzter" | "letzte" | "vergangenen" | "dernier" | "dernière" | "derniere"
-        | "pasado" | "pasada" | "passado" | "passada" | "scorso" | "scorsa" | "vorige"
-        | "afgelopen" | "zeszły" | "zeszła" | "zeszly" | "zeszla" | "poprzedni"
-        | "прошлый" | "прошлая" | "миналата" | "minuly" | "minulý" | "förra" | "forra"
-        | "sidste" | "forrige" | "viime" | "지난" => Some(-1),
+        | "pasado" | "pasada" | "passado" | "passada" | "darrer" | "darrera" | "trecut"
+        | "trecută" | "trecuta" | "múlt" | "mult" | "előző" | "elozo" | "scorso" | "scorsa"
+        | "vorige" | "afgelopen" | "zeszły" | "zeszła" | "zeszly" | "zeszla" | "poprzedni"
+        | "прошлый" | "прошлая" | "минулий" | "минула" | "миналата" | "minuly" | "minulý"
+        | "minulá" | "prejšnji" | "prejsnji" | "prethodni" | "prethodna" | "претходни"
+        | "претходна" | "förra" | "forra" | "sidste" | "forrige" | "viime" | "praėjęs"
+        | "praeitas" | "pagājušais" | "eelmine" | "síðasti" | "sidasti" | "diwethaf" | "joan"
+        | "aurreko" | "pasat" | "περασμένο" | "περασμένη" | "שעבר" | "שעברה" | "lalu"
+        | "yang lalu" | "trước" | "truoc" | "iliyopita" | "verlede" | "pasinta"
+        | "antaŭa" | "nakaraang" | "keçən" | "kecen" | "o'tgan" | "өткен" | "otken"
+        | "지난" => Some(-1),
         "next" | "coming" | "following" | "gelecek" | "önümüzdeki" | "onumuzdeki" | "sonraki"
         | "nächsten" | "nächster" | "nächste" | "nachsten" | "nachster" | "nachste"
         | "kommenden" | "prochain" | "prochaine" | "próximo" | "próxima" | "proximo"
-        | "proxima" | "siguiente" | "prossimo" | "prossima" | "volgende" | "komende"
-        | "przyszły" | "przyszła" | "przyszly" | "przyszla" | "następny" | "nastepny"
-        | "следующий" | "следующая" | "nästa" | "nasta" | "næste" | "naeste" | "neste"
-        | "ensi" | "다음" => Some(1),
+        | "proxima" | "siguiente" | "vinent" | "următorul" | "urmatorul" | "următoarea"
+        | "jövő" | "jovo" | "következő" | "kovetkezo" | "prossimo" | "prossima" | "volgende"
+        | "komende" | "przyszły" | "przyszła" | "przyszly" | "przyszla" | "następny"
+        | "nastepny" | "следующий" | "следующая" | "наступний" | "наступна" | "следващ"
+        | "příští" | "pristi" | "budúci" | "buduci" | "naslednji" | "sljedeći" | "sljedeci"
+        | "следећи" | "следећа" | "nästa" | "nasta" | "næste" | "naeste" | "neste" | "ensi"
+        | "kitas" | "nākamais" | "järgmine" | "næsti" | "naesti" | "nesaf" | "hurrengo"
+        | "vindeiro" | "επόμενο" | "επόμενη" | "הבא" | "הבאה" | "depan" | "berikutnya"
+        | "tới" | "toi" | "sau" | "ijayo" | "venonta" | "susunod" | "gələn"
+        | "gelen" | "keyingi" | "келесі" | "kelesi" | "다음" => Some(1),
         "this" | "bu" | "diesen" | "dieser" | "diese" | "ce" | "cette" | "cet" | "este"
-        | "esta" | "questo" | "questa" | "deze" | "dit" | "ten" | "ta" | "этот" | "эта"
-        | "denna" | "denne" | "tämä" | "tama" | "이번" => Some(0),
+        | "esta" | "aquest" | "aquesta" | "acest" | "această" | "aceasta" | "ez" | "ebben"
+        | "questo" | "questa" | "deze" | "dit" | "ten" | "ta" | "этот" | "эта" | "цей"
+        | "ця" | "този" | "tento" | "táto" | "ovaj" | "ova" | "овај" | "ова"
+        | "denna" | "denne" | "tämä" | "tama" | "šis" | "šī" | "see" | "þessi" | "hwn"
+        | "hau" | "αυτό" | "αυτή" | "הזה" | "הזאת" | "ini" | "này" | "nay"
+        | "hii" | "hierdie" | "ĉi" | "itong" | "ushbu" | "осы" | "osy" | "이번" => Some(0),
         _ => None,
     }
 }
@@ -1219,7 +1305,7 @@ pub fn try_conversational_clock_or_fraction(
             naive: dt,
             period: Period::Day,
             locale: if s.contains("saat") { "tr" } else { "en" }.to_string(),
-            has_time: false,
+            has_time: true,
             parts: vec!["year", "month", "day", "time"],
             part_of_day: None,
         });
@@ -1233,7 +1319,7 @@ pub fn try_conversational_clock_or_fraction(
             naive: dt,
             period: Period::Day,
             locale: if s.contains("saat") { "tr" } else { "en" }.to_string(),
-            has_time: false,
+            has_time: true,
             parts: vec!["year", "month", "day", "time"],
             part_of_day: None,
         });
@@ -1244,7 +1330,7 @@ pub fn try_conversational_clock_or_fraction(
             naive: dt,
             period: Period::Day,
             locale: "en".to_string(),
-            has_time: false,
+            has_time: true,
             parts: vec!["year", "month", "day", "time"],
             part_of_day: None,
         });
@@ -1269,12 +1355,13 @@ pub fn try_conversational_clock_or_fraction(
     };
     if let Some((sign, amt, unit, loc_code)) = half_spec {
         let dt = apply_relative_offset(base, sign, amt, unit)?;
+        let has_t = is_time_unit(unit);
         return Some(RelativeMatch {
             naive: dt,
             period: period_for_unit(unit),
             locale: loc_code.to_string(),
-            has_time: false,
-            parts: parts_for_relative(false, Some(unit)),
+            has_time: has_t,
+            parts: parts_for_relative(has_t, Some(unit)),
             part_of_day: None,
         });
     }
@@ -1311,12 +1398,13 @@ pub fn try_conversational_clock_or_fraction(
         };
         if let Some((amt, unit)) = ar_unit {
             let dt = apply_relative_offset(base, sign, amt, unit)?;
+            let has_t = is_time_unit(unit);
             return Some(RelativeMatch {
                 naive: dt,
                 period: period_for_unit(unit),
                 locale: "ar".to_string(),
-                has_time: false,
-                parts: parts_for_relative(false, Some(unit)),
+                has_time: has_t,
+                parts: parts_for_relative(has_t, Some(unit)),
                 part_of_day: None,
             });
         }
@@ -1342,12 +1430,13 @@ pub fn try_conversational_clock_or_fraction(
         };
         if let Some((amt, unit)) = he_unit {
             let dt = apply_relative_offset(base, sign, amt, unit)?;
+            let has_t = is_time_unit(unit);
             return Some(RelativeMatch {
                 naive: dt,
                 period: period_for_unit(unit),
                 locale: "he".to_string(),
-                has_time: false,
-                parts: parts_for_relative(false, Some(unit)),
+                has_time: has_t,
+                parts: parts_for_relative(has_t, Some(unit)),
                 part_of_day: None,
             });
         }
@@ -1427,12 +1516,13 @@ fn try_fractional_duration(s: &str, base: NaiveDateTime) -> Option<RelativeMatch
         if let Some((left, right)) = core_en.split_once(" and a half ") {
             if let (Some(n), Some(unit)) = (parse_small_num_or_word(left.trim()), parse_unit_token(right.trim())) {
                 let dt = apply_fractional_offset(base, sign_en, n + 0.5, unit)?;
+                let has_t = is_time_unit(unit);
                 return Some(RelativeMatch {
                     naive: dt,
                     period: period_for_unit(unit),
                     locale: "en".to_string(),
-                    has_time: false,
-                    parts: parts_for_relative(false, Some(unit)),
+                    has_time: has_t,
+                    parts: parts_for_relative(has_t, Some(unit)),
                     part_of_day: None,
                 });
             }
@@ -1451,12 +1541,13 @@ fn try_fractional_duration(s: &str, base: NaiveDateTime) -> Option<RelativeMatch
         if let Some((left, right)) = core_tr.split_once(" bucuk ").or_else(|| core_tr.split_once(" buçuk ")) {
             if let (Some(n), Some(unit)) = (parse_small_num_or_word(left.trim()), parse_unit_token(right.trim())) {
                 let dt = apply_fractional_offset(base, sign_tr, n + 0.5, unit)?;
+                let has_t = is_time_unit(unit);
                 return Some(RelativeMatch {
                     naive: dt,
                     period: period_for_unit(unit),
                     locale: "tr".to_string(),
-                    has_time: false,
-                    parts: parts_for_relative(false, Some(unit)),
+                    has_time: has_t,
+                    parts: parts_for_relative(has_t, Some(unit)),
                     part_of_day: None,
                 });
             }
@@ -1476,12 +1567,13 @@ fn try_fractional_duration(s: &str, base: NaiveDateTime) -> Option<RelativeMatch
             if let Some(unit_str) = core_de.strip_prefix(kw) {
                 if let Some(unit) = parse_unit_token(unit_str.trim()) {
                     let dt = apply_fractional_offset(base, sign_de, 1.5, unit)?;
+                    let has_t = is_time_unit(unit);
                     return Some(RelativeMatch {
                         naive: dt,
                         period: period_for_unit(unit),
                         locale: "de".to_string(),
-                        has_time: false,
-                        parts: parts_for_relative(false, Some(unit)),
+                        has_time: has_t,
+                        parts: parts_for_relative(has_t, Some(unit)),
                         part_of_day: None,
                     });
                 }

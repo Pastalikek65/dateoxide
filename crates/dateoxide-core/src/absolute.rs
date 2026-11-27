@@ -424,6 +424,7 @@ fn try_parse_in_locale(
     let mut ampm: Option<bool> = None;
     let mut free_nums: Vec<(u32, usize)> = Vec::new();
     let mut matched_locale_signal = false;
+    let mut ambiguous_month_weekday: Option<u8> = None;
 
     let mut i = 0;
     while i < raw_tokens.len() {
@@ -509,7 +510,8 @@ fn try_parse_in_locale(
         }
 
         // 3. Month name: trigram -> bigram -> unigram
-        if month.is_none() {
+        // Also re-evaluates if an earlier month token was actually an ambiguous weekday (e.g. Spanish "mar, 16 jun 2020").
+        if month.is_none() || (weekday_seen.is_none() && ambiguous_month_weekday.is_some()) {
             let mut matched_span = 0usize;
             for span in (1..=5).rev() {
                 if i + span <= raw_tokens.len() {
@@ -524,6 +526,17 @@ fn try_parse_in_locale(
                         s
                     };
                     if let Some(m) = lookup_month(&cand, loc, settings.normalize) {
+                        if month.is_none() {
+                            ambiguous_month_weekday = if weekday_seen.is_none() {
+                                lookup_weekday(&cand, loc, settings.normalize)
+                            } else {
+                                None
+                            };
+                        } else if lookup_weekday(&cand, loc, settings.normalize).is_some() {
+                            continue;
+                        } else if let Some(prev_wd) = ambiguous_month_weekday.take() {
+                            weekday_seen = Some(prev_wd);
+                        }
                         month = Some(m as u32);
                         matched_locale_signal = true;
                         matched_span = span;

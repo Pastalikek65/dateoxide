@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-11-27
+
+### Added
+- **205 / 205 full-NLP language coverage**: upgraded all 205 CLDR locales so every single language now ships complete `months`, `weekdays`, `am`/`pm`, `units`, `ago`/`in_words`, `relative_exact`, `relative_affix` (both past & future), `word_numbers` (`1..10`), and `time_of_day` anchors (`205/205` across all 11 fields, including full `tl` Tagalog parity, all 84 remaining relative-affix locales, and all 132 remaining `word_numbers`/`time_of_day` locales via `scripts/locale_enrichment_205.py`).
+- **28 / 28 Unicode script detection**: added Tibetan (`0x0F00..0x0FFF`, `bo`/`dz`), Oriya (`0x0B00..0x0B7F`, `or`), Cherokee (`0x13A0..0x13FF`, `chr`), Tifinagh (`0x2D30..0x2D7F`, `zgh`/`shi-tfng`), and Yi (`0xA000..0xA4CF`, `ii`), plus expanded Arabic/Cyrillic/Devanagari/Han/Hebrew script-variant hints.
+- **Expanded `classify_relative_modifier`**: added `last`/`next`/`this` modifiers across 25+ additional European, Asian, and African languages.
+- **Comprehensive 205-language full-NLP test suite (`tests/test_all_205_languages_nlp.py`)**: verifies absolute, exact relative, dynamic past & future relative, word-number relative, and time-of-day parsing for every single one of the 205 locales.
+
+### Fixed
+- **`RETURN_TIME_AS_PERIOD=True` on time-unit relatives**: `"2 hours ago"`, `"30 minutes ago"`, `"half an hour ago"`, `"через полчаса"`, `"半小时前"`, `"לפני שעתיים"`, and `"قبل ساعتين"` now set `has_time = true` and return `period = "time"` consistently with `dateparser`.
+- **`STRICT_DATE_ORDER` invalid ISO month guard & ambiguous weekday/month disambiguation**: rejects out-of-range ISO months (`"2026-13-01"`) under `STRICT_DATE_ORDER="all"` / `"year"` while keeping default `YDM` fallback parity with `dateparser`, disambiguates overlapping weekday/month tokens (`"mar, 16 jun 2020"`, `"15 kad 2025 kas"`), picks longest matching `time_of_day` phrases safely across Unicode folding, and supports word numbers and `PREFER_DATES_FROM` directly inside `relative_affix` patterns.
+
 ## [0.5.0] - 2026-11-27
 
 ### Added
