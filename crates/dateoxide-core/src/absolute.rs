@@ -75,6 +75,64 @@ pub fn try_parse_absolute(
     None
 }
 
+fn extract_japanese_era_year(s: &str) -> Option<Result<(i32, String), ()>> {
+    const ERAS: [(&str, i32); 5] = [
+        ("令和", 2018),
+        ("平成", 1988),
+        ("昭和", 1925),
+        ("大正", 1911),
+        ("明治", 1867),
+    ];
+    for &(era, base) in &ERAS {
+        if let Some(pos) = s.find(era) {
+            let after_era = &s[pos + era.len()..];
+            let trimmed = after_era.trim_start();
+            let ws_skipped = after_era.len() - trimmed.len();
+            let mut cursor = pos + era.len() + ws_skipped;
+
+            let era_num: i32 = if let Some(rest) = trimmed.strip_prefix('元') {
+                let rest_trim = rest.trim_start();
+                let nen_ws = rest.len() - rest_trim.len();
+                if !rest_trim.starts_with('年') {
+                    return Some(Err(()));
+                }
+                cursor += '元'.len_utf8() + nen_ws + '年'.len_utf8();
+                1
+            } else {
+                let mut d_end = 0usize;
+                for (i, ch) in trimmed.char_indices() {
+                    if ch.is_ascii_digit() {
+                        d_end = i + 1;
+                    } else {
+                        break;
+                    }
+                }
+                if d_end == 0 || d_end > 2 {
+                    return Some(Err(()));
+                }
+                let val: i32 = match trimmed[..d_end].parse() {
+                    Ok(v) if (1..=99).contains(&v) => v,
+                    _ => return Some(Err(())),
+                };
+                let after_digits = &trimmed[d_end..];
+                let rest_trim = after_digits.trim_start();
+                let nen_ws = after_digits.len() - rest_trim.len();
+                if !rest_trim.starts_with('年') {
+                    return Some(Err(()));
+                }
+                cursor += d_end + nen_ws + '年'.len_utf8();
+                val
+            };
+
+            let mut rem = String::with_capacity(s.len());
+            rem.push_str(&s[..pos]);
+            rem.push_str(&s[cursor..]);
+            return Some(Ok((base + era_num, rem)));
+        }
+    }
+    None
+}
+
 fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch> {
     let mut year: Option<i32> = None;
     let mut month: Option<u32> = None;
@@ -83,13 +141,27 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
     let mut minute: u32 = 0;
     let mut second: u32 = 0;
     let mut has_time = false;
-    let is_korean = s.contains('년') || s.contains('월') || s.contains('일') || s.contains('시');
-    let is_pm = s.contains("오후") || s.contains("pm") || s.contains("下午");
-    let is_am = s.contains("오전") || s.contains("am") || s.contains("上午");
+    let mut is_japanese = false;
+    let owned_rem;
+    let scan_s: &str = match extract_japanese_era_year(s) {
+        Some(Ok((gy, rem))) => {
+            year = Some(gy);
+            is_japanese = true;
+            owned_rem = rem;
+            &owned_rem
+        }
+        Some(Err(())) => return None,
+        None => s,
+    };
+
+    let is_korean =
+        scan_s.contains('년') || scan_s.contains('월') || scan_s.contains('일') || scan_s.contains('시');
+    let is_pm = scan_s.contains("오후") || scan_s.contains("pm") || scan_s.contains("下午");
+    let is_am = scan_s.contains("오전") || scan_s.contains("am") || scan_s.contains("上午");
 
     let mut loose_nums: Vec<(u32, usize)> = Vec::new();
     let mut cur_num = String::new();
-    let chars: Vec<char> = s.chars().collect();
+    let chars: Vec<char> = scan_s.chars().collect();
     let mut idx = 0usize;
 
     while idx < chars.len() {
@@ -148,12 +220,12 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
                         let h_cand = val % 100;
                         if (1..=31).contains(&d_cand) && h_cand <= 23 {
                             day = Some(d_cand);
-                            let byte_idx = s
+                            let byte_idx = scan_s
                                 .char_indices()
                                 .nth(idx)
                                 .map(|(b, _)| b)
                                 .unwrap_or(0);
-                            if let Some(t) = parse_time_str(&format!("{}{}", h_cand, &s[byte_idx..])) {
+                            if let Some(t) = parse_time_str(&format!("{}{}", h_cand, &scan_s[byte_idx..])) {
                                 hour = t.hour();
                                 minute = t.minute();
                                 second = t.second();
@@ -162,18 +234,18 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
                             }
                         }
                     }
-                    let byte_idx = s
+                    let byte_idx = scan_s
                         .char_indices()
                         .nth(idx)
                         .map(|(b, _)| b)
                         .unwrap_or(0);
-                    let start = s[..byte_idx]
+                    let start = scan_s[..byte_idx]
                         .char_indices()
                         .rev()
                         .find(|&(_, c)| !c.is_ascii_digit())
                         .map(|(p, c)| p + c.len_utf8())
                         .unwrap_or(0);
-                    if let Some(t) = parse_time_str(s[start..].trim()) {
+                    if let Some(t) = parse_time_str(scan_s[start..].trim()) {
                         hour = t.hour();
                         minute = t.minute();
                         second = t.second();
@@ -238,7 +310,7 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
             ("밤", 20),
         ]
         .into_iter()
-        .find(|(tok, _)| s.contains(tok))
+        .find(|(tok, _)| scan_s.contains(tok))
         .map(|(_, h)| h);
 
         if let Some(h) = tod_hour {
@@ -258,7 +330,14 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
     let nt = tod_time.or_else(|| NaiveTime::from_hms_opt(hour, minute, second))?;
     let lang = if is_korean {
         "ko"
-    } else if s.contains('時') || s.contains('朝') || s.contains('夜') || s.contains("夕方") || s.contains("正午") || s.contains("真夜中") {
+    } else if is_japanese
+        || scan_s.contains('時')
+        || scan_s.contains('朝')
+        || scan_s.contains('夜')
+        || scan_s.contains("夕方")
+        || scan_s.contains("正午")
+        || scan_s.contains("真夜中")
+    {
         "ja"
     } else {
         "zh"
@@ -520,6 +599,23 @@ fn try_parse_in_locale(
             }
         }
 
+        // 6b. Apostrophe 2-digit year (e.g. "Nov 26 '26", "15 Jan ’99")
+        if year.is_none() {
+            if let Some(rest) = clean
+                .strip_prefix('\'')
+                .or_else(|| clean.strip_prefix('\u{2019}'))
+                .or_else(|| clean.strip_prefix('\u{2018}'))
+            {
+                if rest.len() == 2 && rest.bytes().all(|b| b.is_ascii_digit()) {
+                    if let Ok(y2) = rest.parse::<u32>() {
+                        year = Some(expand_two_digit_year(y2));
+                        i += 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
         // 7. Numeric token (including ordinals)
         if let Some((num, digit_len)) = parse_date_number_or_ordinal(clean) {
             if digit_len == 4 && (1000..=2999).contains(&num) && year.is_none() {
@@ -531,9 +627,10 @@ fn try_parse_in_locale(
             continue;
         }
 
-        // 8. Skip / connector words (including localized "year" markers like "year", "год", "সাল", "klo", "u")
+        // 8. Skip / connector words (including localized "year" markers & locale-gated European connectors)
         if loc.skip.contains(clean)
             || loc.units.contains_key(clean)
+            || is_locale_connector(loc.code.as_str(), clean)
             || matches!(
                 clean,
                 "at" | "on" | "of" | "the" | "in" | "de" | "del" | "el" | "la" | "le" | "à"
@@ -821,13 +918,37 @@ fn split_date_tokens<'a>(s: &'a str, loc: &CompiledLocale, normalize: bool) -> V
     out
 }
 
+#[inline]
+fn is_locale_connector(lang: &str, clean: &str) -> bool {
+    match lang {
+        "it" => matches!(clean, "il" | "alle" | "ore" | "nel" | "della" | "all" | "di" | "lo"),
+        "es" => matches!(clean, "a" | "las" | "al" | "horas"),
+        "pt" => matches!(clean, "às" | "as" | "em" | "no" | "na" | "dia" | "horas"),
+        "fr" => matches!(clean, "au" | "du" | "les" | "heures" | "vers"),
+        "nl" => matches!(clean, "op" | "om" | "uur"),
+        "pl" => matches!(clean, "dnia" | "o" | "godz" | "roku" | "r"),
+        "sv" | "nb" | "da" | "nn" => matches!(clean, "kl" | "klockan" | "klokken"),
+        _ => false,
+    }
+}
+
 fn push_splitting_attached_digits<'a>(
     tok: &'a str,
     loc: &CompiledLocale,
     normalize: bool,
     out: &mut Vec<&'a str>,
 ) {
-    // Keep pure numbers, times, ordinals, and known hyphenated/numeric month names intact
+    // Keep apostrophe 2-digit years ('26, ’99), pure numbers, times, ordinals, and known month/weekday names intact
+    if let Some(rest) = tok
+        .strip_prefix('\'')
+        .or_else(|| tok.strip_prefix('\u{2019}'))
+        .or_else(|| tok.strip_prefix('\u{2018}'))
+    {
+        if rest.len() == 2 && rest.bytes().all(|b| b.is_ascii_digit()) {
+            out.push(tok);
+            return;
+        }
+    }
     if tok.contains(':')
         || tok.ends_with("am")
         || tok.ends_with("pm")

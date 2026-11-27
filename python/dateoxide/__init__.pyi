@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, time, tzinfo
 from typing import Any, Callable, Literal, Mapping, Sequence, overload
 
+from . import custom_language_detection as custom_language_detection
 from .conf import PartOfDay, PartsOfDay, SettingValidationError, Settings, apply_settings
 
 __version__: str

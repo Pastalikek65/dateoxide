@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-11-27
+
+### Added
+- **Regional locale date order (`en-GB`, `en-CA`, `en-AU`, etc.)**: extracts 2-letter region subtags from BCP-47 `locales` while ignoring 4-letter script subtags (`uz-Cyrl`, `zh-Hans`), honoring `PREFER_LOCALE_DATE_ORDER`.
+- **Stateful `DateDataParser(try_previous_locales=True)` & `LANGUAGE_DETECTION_CONFIDENCE_THRESHOLD`**: caches previously matched locales per parser instance to disambiguate subsequent numeric dates and validates/forwards confidence threshold to `detect_languages_function`.
+- **Full & partial `date_formats` with 205-language localization**: `chrono::format::Parsed` fallback handles partial formats (`%B %Y`, `%Y-%m`, `%d %B`, `%H:%M`, `%Y-%j`) and translates localized month/weekday/AM-PM names (`%B`, `%b`, `%h`, `%A`, `%a`, `%p`) across all compiled locales.
+- **Timestamps & `no-spaces-time` expansion**: added `PARSERS=["negative-timestamp"]`, 16-digit positive/negative microsecond timestamps, and 12/14-digit `no-spaces-time` (`YYYYMMDDHHMM[SS]`, `DDMMYYYYHHMM[SS]`).
+- **JS `Date.toString()`, Unix `ctime` mid-string TZ & full world TZ dictionary**: strips parenthesized comments (`GMT+0300 (Turkey Time)`, `-0500 (EST)`), extracts pre-year `ctime` timezones (`Thu Nov 26 14:30:00 UTC 2026`), and expands abbreviations (`PKT`, `WIB`, `WITA`, `WIT`, `PHT`, `NPT`, `ACST`, `ACDT`, `CLT`, `COT`, `IRST`, `AFT`, `UZT`, `ALMT`, etc.).
+- **Japanese Imperial Eras, apostrophe years, CJK/Korean clocks & idioms**:
+  - Correct Gregorian year conversion for `令和`/`平成`/`昭和`/`大正`/`明治` and `元年` (`令和8年` → `2026`).
+  - Apostrophe 2-digit years (`Nov 26 '26`, `15 Jan ’99`), European connectors (`il 15 gennaio 2026 alle 14:30`), `"just now"`, `"at 5:30 PM"`, `"tomorrow at 5"`, `"12 noon"`, `"12 midnight"`, `"next Monday morning"`.
+  - Approximate prefixes (`~`, `≈`, `約`, `약 `, `about `, `yaklaşık `, `vor etwa `, `il y a environ `), spaceless multi-unit CJK/Korean relatives & clocks (`3日2時間前`, `昨日の14:30`, `어제 오후 2시 30분`, `2일 3시간 전`), Russian/CJK half-units (`через полчаса`, `半小时前`), and Arabic/Hebrew duals (`منذ يومين`, `לפני שעתיים`).
+- **`search_dates` custom `date_formats` & precise CJK span trimming**: supports custom format matching (including `%Y_%m_%d` under `strategy="ngram"`) and cleanly extracts date subspans from spaceless CJK sentences (`"締め切りは2026年11月26日です。"` → `'2026年11月26日'`).
+- **Drop-in helper modules**: added `dateoxide.custom_language_detection` (`langdetect`, `fasttext`, `language_mapping`), `dateoxide.timezone_parser` (`convert_to_local_tz`, `word_is_tz`, `is_timezone_token`, `local_tz_offset`), and `dateoxide.utils` (`strip_braces`, `normalize_unicode`, `find_date_separator`, `get_last_day_of_month`, leap year & timezone helpers).
+
+### Fixed
+- **Japanese Reiwa year parsing bug**: fixed `令和8年11月26日` misparsing as `2008` instead of `2026`.
+- **Friulian `"ca di ..."` prefix safety**: kept approximation stripping (`ca.`) from colliding with Friulian future prefix `"ca di "`.
+
 ## [0.4.0] - 2026-11-27
 
 ### Added

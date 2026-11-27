@@ -248,6 +248,18 @@ fn extract_settings(
             cfg.use_given_language_order = v.extract()?;
         }
     }
+    if let Some(v) = dict.get_item("LANGUAGE_DETECTION_CONFIDENCE_THRESHOLD")? {
+        if !v.is_none() {
+            let val: f64 = v.extract()?;
+            if !val.is_finite() || !(0.0..=1.0).contains(&val) {
+                return Err(SettingValidationError::new_err(format!(
+                    "Invalid LANGUAGE_DETECTION_CONFIDENCE_THRESHOLD: {}",
+                    val
+                )));
+            }
+            cfg.language_detection_confidence_threshold = val;
+        }
+    }
     if let Some(v) = dict.get_item("REQUIRE_PARTS")? {
         if !v.is_none() {
             let parts: Vec<String> = v.extract()?;
@@ -363,9 +375,10 @@ fn call_detect_languages(
     py: Python<'_>,
     func: &PyObject,
     text: &str,
+    confidence_threshold: f64,
 ) -> PyResult<Option<Vec<String>>> {
     let bound = func.bind(py);
-    let res = match bound.call1((text, 0.5f64)) {
+    let res = match bound.call1((text, confidence_threshold)) {
         Ok(r) => r,
         Err(_) => bound.call1((text,))?,
     };
@@ -494,10 +507,59 @@ struct ParserCache {
 pub struct PyDateDataParser {
     settings: Settings,
     detect_languages_function: Option<PyObject>,
+    try_previous_locales: bool,
+    previous_locales: Mutex<Vec<String>>,
     cache: Mutex<ParserCache>,
 }
 
 impl PyDateDataParser {
+    fn record_previous_locale(&self, locale: Option<&str>) {
+        if !self.try_previous_locales {
+            return;
+        }
+        let Some(loc) = locale else {
+            return;
+        };
+        if loc.is_empty() {
+            return;
+        }
+        if let Ok(mut prev) = self.previous_locales.lock() {
+            prev.retain(|x| x != loc);
+            prev.insert(0, loc.to_string());
+            prev.truncate(8);
+        }
+    }
+
+    fn build_previous_locales_config(&self, base_cfg: &Settings, prev: &[String]) -> Settings {
+        let mut c = base_cfg.clone();
+        c.use_given_language_order = true;
+        match base_cfg.languages {
+            None => {
+                c.languages = Some(prev.to_vec());
+            }
+            Some(ref explicit) => {
+                let mut reordered = Vec::with_capacity(explicit.len());
+                for p in prev {
+                    for e in explicit {
+                        let base_e = e.split(['-', '_']).next().unwrap_or(e);
+                        if (e.eq_ignore_ascii_case(p) || base_e.eq_ignore_ascii_case(p))
+                            && !reordered.contains(e)
+                        {
+                            reordered.push(e.clone());
+                        }
+                    }
+                }
+                for e in explicit {
+                    if !reordered.contains(e) {
+                        reordered.push(e.clone());
+                    }
+                }
+                c.languages = Some(reordered);
+            }
+        }
+        c
+    }
+
     fn resolve_date_data(
         &self,
         py: Python<'_>,
@@ -512,12 +574,40 @@ impl PyDateDataParser {
         }
         if self.settings.languages.is_none() {
             if let Some(ref func) = self.detect_languages_function {
-                if let Some(detected) = call_detect_languages(py, func, date_string)? {
+                if let Some(detected) = call_detect_languages(
+                    py,
+                    func,
+                    date_string,
+                    self.settings.language_detection_confidence_threshold,
+                )? {
                     let c = cfg_owned.get_or_insert_with(|| self.settings.clone());
                     c.languages = Some(detected);
                 }
             }
         }
+
+        if self.try_previous_locales {
+            let effective_cfg = cfg_owned.as_ref().unwrap_or(&self.settings);
+            let prev: Vec<String> = self
+                .previous_locales
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
+            if !prev.is_empty() {
+                let prev_cfg = self.build_previous_locales_config(effective_cfg, &prev);
+                let res = dateoxide_core::get_date_data(date_string, &prev_cfg);
+                if res.date_obj.is_some() {
+                    self.record_previous_locale(res.locale.as_deref());
+                    return Ok(res);
+                }
+            }
+            let res = dateoxide_core::get_date_data(date_string, effective_cfg);
+            if res.date_obj.is_some() {
+                self.record_previous_locale(res.locale.as_deref());
+            }
+            return Ok(res);
+        }
+
         if let Some(ref cfg) = cfg_owned {
             return Ok(dateoxide_core::get_date_data(date_string, cfg));
         }
@@ -555,7 +645,6 @@ impl PyDateDataParser {
 impl PyDateDataParser {
     #[new]
     #[pyo3(signature = (languages=None, locales=None, region=None, try_previous_locales=false, use_given_order=false, settings=None, detect_languages_function=None))]
-    #[allow(unused_variables)]
     fn new(
         languages: Option<Vec<String>>,
         locales: Option<Vec<String>>,
@@ -569,6 +658,8 @@ impl PyDateDataParser {
         Ok(Self {
             settings: cfg,
             detect_languages_function,
+            try_previous_locales,
+            previous_locales: Mutex::new(Vec::new()),
             cache: Mutex::new(ParserCache::default()),
         })
     }
@@ -660,7 +751,12 @@ fn parse(
     let mut cfg = extract_settings(date_formats, languages, locales, region, false, settings)?;
     if cfg.languages.is_none() {
         if let Some(ref func) = detect_languages_function {
-            if let Some(detected) = call_detect_languages(py, func, date_string)? {
+            if let Some(detected) = call_detect_languages(
+                py,
+                func,
+                date_string,
+                cfg.language_detection_confidence_threshold,
+            )? {
                 cfg.languages = Some(detected);
             }
         }
@@ -732,7 +828,12 @@ fn search_dates(
     let mut cfg = extract_settings(date_formats, languages, None, None, false, settings)?;
     if cfg.languages.is_none() {
         if let Some(ref func) = detect_languages_function {
-            if let Some(detected) = call_detect_languages(py, func, text)? {
+            if let Some(detected) = call_detect_languages(
+                py,
+                func,
+                text,
+                cfg.language_detection_confidence_threshold,
+            )? {
                 cfg.languages = Some(detected);
             }
         }

@@ -132,6 +132,20 @@ pub fn parse_freshness(input: &str, settings: &Settings) -> DateData {
     DateData::empty()
 }
 
+#[inline]
+fn resolve_fast_path_locale(match_locale: Option<String>, settings: &Settings) -> String {
+    if let Some(loc) = match_locale {
+        return loc;
+    }
+    if let Some(first) = settings.languages.as_deref().and_then(|ls| ls.first()) {
+        let reg = LocaleRegistry::global();
+        if let Some(id) = reg.resolve_lang_id(first) {
+            return reg.locales[id].code.clone();
+        }
+    }
+    "en".to_string()
+}
+
 /// Full `dateparser.date.DateDataParser.get_date_data` equivalent returning
 /// `DateData { date_obj, period, locale, parts, part_of_day }`.
 pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
@@ -156,7 +170,7 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
         return DateData {
             date_obj: Some(finalize_datetime(m.naive, m.tz, settings)),
             period: apply_time_period(m.period, m.has_time, settings),
-            locale: Some("en".to_string()),
+            locale: Some(resolve_fast_path_locale(m.locale, settings)),
             parts: m.parts,
             part_of_day: None,
         };
@@ -167,15 +181,30 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
         return DateData {
             date_obj: Some(finalize_datetime(m.naive, m.tz, settings)),
             period: apply_time_period(m.period, m.has_time, settings),
-            locale: Some("en".to_string()),
+            locale: Some(resolve_fast_path_locale(m.locale, settings)),
             parts: m.parts,
             part_of_day: None,
         };
     }
 
-    // 2. Peel off optional trailing timezone before natural-language normalization
-    let (without_tz, tz) =
+    // 2. Peel off optional trailing timezone (or Unix ctime mid-string TZ) before normalization
+    let (without_tz_initial, mut tz) =
         extract_trailing_timezone_with_abbrevs(trimmed, &settings.timezone_abbreviations);
+    let owned_embedded_tz;
+    let without_tz: &str = if tz.is_none() {
+        if let Some((cleaned, etz)) = timezone::extract_embedded_timezone_before_year(
+            without_tz_initial,
+            &settings.timezone_abbreviations,
+        ) {
+            tz = Some(etz);
+            owned_embedded_tz = cleaned;
+            &owned_embedded_tz
+        } else {
+            without_tz_initial
+        }
+    } else {
+        without_tz_initial
+    };
     let normalized = normalize_digits_and_lower(without_tz);
     if normalized.is_empty() {
         return DateData::empty();
@@ -187,7 +216,7 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
             return DateData {
                 date_obj: Some(finalize_datetime(m.naive, m.tz.or(tz), settings)),
                 period: apply_time_period(m.period, m.has_time, settings),
-                locale: Some("en".to_string()),
+                locale: Some(resolve_fast_path_locale(m.locale, settings)),
                 parts: m.parts,
                 part_of_day: None,
             };
@@ -407,7 +436,7 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+    use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
     use settings::{DateOrder, PartOfDay, PreferDatesFrom, PreferDayOfMonth, StrictDateOrder};
 
     fn fixed_settings() -> Settings {
@@ -645,5 +674,355 @@ mod tests {
 
         assert!(search_dates_full("She can see her man, did you say?", &s).is_empty());
         assert!(search_dates_full("Python 3.12.1 on 192.168.1.1", &s).is_empty());
+    }
+
+    #[test]
+    fn test_v050_locale_region_date_order() {
+        let mut s_gb = fixed_settings();
+        s_gb.languages = Some(vec!["en-GB".to_string()]);
+        assert_eq!(
+            parse_with_settings("05/06/2026", &s_gb).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 6, 5).unwrap()
+        );
+
+        let mut s_us = fixed_settings();
+        s_us.languages = Some(vec!["en-US".to_string()]);
+        assert_eq!(
+            parse_with_settings("05/06/2026", &s_us).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 5, 6).unwrap()
+        );
+
+        let mut s_tr = fixed_settings();
+        s_tr.languages = Some(vec!["tr".to_string()]);
+        assert_eq!(
+            parse_with_settings("05/06/2026", &s_tr).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 6, 5).unwrap()
+        );
+
+        // Script subtag like "uz-Cyrl" must NOT be mistaken for a 2-letter region
+        assert_eq!(settings::extract_region_from_locale("uz-Cyrl"), None);
+        assert_eq!(settings::extract_region_from_locale("en-GB"), Some("GB"));
+        assert_eq!(settings::extract_region_from_locale("zh-Hans-TW"), Some("TW"));
+
+        // PREFER_LOCALE_DATE_ORDER = false falls back to MDY
+        let mut s_no_pref = fixed_settings();
+        s_no_pref.languages = Some(vec!["en-GB".to_string()]);
+        s_no_pref.prefer_locale_date_order = false;
+        assert_eq!(
+            parse_with_settings("05/06/2026", &s_no_pref).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 5, 6).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_v050_apostrophe_year_japanese_eras_and_european_connectors() {
+        let s = fixed_settings();
+
+        // Apostrophe 2-digit years
+        assert_eq!(
+            parse_with_settings("Nov 26 '26", &s).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 11, 26).unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("15 Jan ’99", &s).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(1999, 1, 15).unwrap()
+        );
+        let nov_26 = get_date_data("Nov '26", &s);
+        assert_eq!(nov_26.period, Period::Month);
+        assert_eq!(nov_26.date_obj.as_ref().unwrap().naive_local().year(), 2026);
+        assert_eq!(nov_26.date_obj.as_ref().unwrap().naive_local().month(), 11);
+
+        // Japanese Imperial Eras
+        let reiwa = get_date_data("令和8年11月26日", &s);
+        assert_eq!(reiwa.locale.as_deref(), Some("ja"));
+        assert_eq!(
+            reiwa.date_obj.unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 11, 26).unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("令和元年5月1日", &s).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2019, 5, 1).unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("平成31年4月30日", &s).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2019, 4, 30).unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("昭和64年1月7日", &s).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(1989, 1, 7).unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("大正15年12月25日", &s).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(1926, 12, 25).unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("明治45年7月30日", &s).unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(1912, 7, 30).unwrap()
+        );
+        assert!(parse_with_settings("令和0年11月26日", &s).is_none());
+
+        // Italian & Spanish prepositions/connectors
+        let it_dt = get_date_data("il 15 gennaio 2026 alle 14:30", &s);
+        assert_eq!(it_dt.locale.as_deref(), Some("it"));
+        assert_eq!(
+            it_dt.date_obj.unwrap().naive_local(),
+            NaiveDate::from_ymd_opt(2026, 1, 15)
+                .unwrap()
+                .and_hms_opt(14, 30, 0)
+                .unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("el 15 de enero de 2026 a las 14:30", &s)
+                .unwrap()
+                .naive_local(),
+            NaiveDate::from_ymd_opt(2026, 1, 15)
+                .unwrap()
+                .and_hms_opt(14, 30, 0)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_v050_negative_timestamp_micros_and_localized_date_formats() {
+        let s = fixed_settings();
+        // Disabled by default
+        assert!(parse_with_settings("-86400", &s).is_none());
+
+        // Enabled explicitly via PARSERS=[NegativeTimestamp]
+        let mut s_neg = fixed_settings();
+        s_neg.parsers = Some(vec![ParserKind::NegativeTimestamp]);
+        assert_eq!(
+            parse_with_settings("-86400", &s_neg).unwrap().naive_local(),
+            NaiveDate::from_ymd_opt(1969, 12, 31)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("-86400.5", &s_neg).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("1969-12-30 23:59:59.500", "%Y-%m-%d %H:%M:%S%.3f")
+                .unwrap()
+        );
+        assert!(parse_with_settings("-2026", &s_neg).is_none());
+
+        // 16-digit positive microsecond timestamp
+        assert_eq!(
+            parse_with_settings("1700000000123456", &s)
+                .unwrap()
+                .naive_local(),
+            DateTime::from_timestamp_micros(1700000000123456)
+                .unwrap()
+                .naive_utc()
+        );
+
+        // Localized strict custom date_formats (%B in Turkish & French)
+        let mut s_fmt = fixed_settings();
+        s_fmt.parsers = Some(vec![ParserKind::CustomFormats]);
+        s_fmt.date_formats = Some(vec!["%d %B %Y".to_string()]);
+        let tr_m = get_date_data("15 Ocak 2026", &s_fmt);
+        assert_eq!(tr_m.locale.as_deref(), Some("tr"));
+        assert_eq!(
+            tr_m.date_obj.unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap()
+        );
+        let fr_m = get_date_data("15 janvier 2026", &s_fmt);
+        assert_eq!(fr_m.locale.as_deref(), Some("fr"));
+        assert_eq!(
+            fr_m.date_obj.unwrap().naive_local().date(),
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap()
+        );
+        assert!(parse_with_settings("15-01-2026", &s_fmt).is_none());
+    }
+
+    #[test]
+    fn test_v050_js_ctime_tz_world_abbrevs_and_parenthetical_guard() {
+        let s = fixed_settings();
+
+        // JavaScript Date.toString() formats with parenthesized TZ comments
+        let js1 = parse_with_settings("Thu Nov 26 2026 14:30:00 GMT+0300 (GMT+03:00)", &s).unwrap();
+        assert!(js1.is_aware());
+        assert_eq!(
+            js1.naive_local(),
+            NaiveDateTime::parse_from_str("2026-11-26 14:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        let js2 = parse_with_settings("Thu Nov 26 2026 14:30:00 GMT+0300 (Turkey Time)", &s).unwrap();
+        assert!(js2.is_aware());
+        assert_eq!(
+            js2.naive_local(),
+            NaiveDateTime::parse_from_str("2026-11-26 14:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        // Guard against arbitrary parenthesized text
+        assert!(parse_with_settings("Meeting (urgent)", &s).is_none());
+
+        // Unix ctime mid-string timezone before trailing 4-digit year
+        let ct1 = parse_with_settings("Thu Nov 26 14:30:00 UTC 2026", &s).unwrap();
+        assert!(ct1.is_aware());
+        assert_eq!(
+            ct1.naive_local(),
+            NaiveDateTime::parse_from_str("2026-11-26 14:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        let ct2 = parse_with_settings("Mon Jan 15 09:00:00 CEST 2026", &s).unwrap();
+        assert!(ct2.is_aware());
+        assert_eq!(
+            ct2.naive_local(),
+            NaiveDateTime::parse_from_str("2026-01-15 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+
+        // Extended world timezone abbreviations + IST/BST backward-compat preserved
+        for tz_str in [
+            "15 Jan 2026 14:30 PKT",
+            "15 Jan 2026 14:30 WIB",
+            "15 Jan 2026 14:30 WITA",
+            "15 Jan 2026 14:30 WIT",
+            "15 Jan 2026 14:30 PHT",
+            "15 Jan 2026 14:30 NPT",
+            "15 Jan 2026 14:30 ACST",
+            "15 Jan 2026 14:30 ACDT",
+            "15 Jan 2026 14:30 CLT",
+            "15 Jan 2026 14:30 COT",
+            "15 Jan 2026 14:30 IRST",
+            "15 Jan 2026 14:30 AFT",
+            "15 Jan 2026 14:30 UZT",
+            "15 Jan 2026 14:30 ALMT",
+        ] {
+            let parsed = parse_with_settings(tz_str, &s).unwrap();
+            assert!(parsed.is_aware(), "expected aware for {}", tz_str);
+            assert_eq!(parsed.naive_local().hour(), 14);
+        }
+    }
+
+    #[test]
+    fn test_v050_no_spaces_12_14_prefixed_time_and_cjk_korean_relatives() {
+        let s = fixed_settings();
+
+        // 12/14-digit no-spaces-time gated behind PARSERS=[NoSpacesTime]
+        assert!(parse_with_settings("202601151430", &s).is_none());
+        let mut s_ns = fixed_settings();
+        s_ns.parsers = Some(vec![ParserKind::NoSpacesTime]);
+        assert_eq!(
+            parse_with_settings("202601151430", &s_ns).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2026-01-15 14:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("20260115143045", &s_ns).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2026-01-15 14:30:45", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        s_ns.date_order = Some(DateOrder::DMY);
+        assert_eq!(
+            parse_with_settings("150120261430", &s_ns).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2026-01-15 14:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+
+        // "just now", "at 5:30 PM", "2026-11-26 t 14:30", "tomorrow at 5"
+        assert_eq!(
+            parse_with_settings("just now", &s).unwrap().naive_local(),
+            s.relative_base.unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("at 5:30 PM", &s).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2026-11-26 17:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("2026-11-26 t 14:30", &s).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2026-11-26 14:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("tomorrow at 5", &s).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2026-11-27 05:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+
+        // Multi-unit attached & CJK/Korean relative+time
+        assert_eq!(
+            parse_with_settings("3日2時間前", &s).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2026-11-23 13:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("昨日の14:30", &s).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2026-11-25 14:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("昨日の午後2時30分", &s).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2026-11-25 14:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("어제 오후 2시 30분", &s).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2026-11-25 14:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("2일 3시간 전", &s).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2026-11-24 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+        assert_eq!(
+            parse_with_settings("1h30m ago", &s).unwrap().naive_local(),
+            NaiveDateTime::parse_from_str("2026-11-26 13:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        );
+    }
+
+    #[test]
+    fn test_v050_partial_formats_search_cjk_and_remaining_idioms() {
+        let s = fixed_settings();
+
+        // Partial date_formats
+        let mut s_fmt = fixed_settings();
+        s_fmt.parsers = Some(vec![ParserKind::CustomFormats]);
+        for (inp, fmt, exp) in [
+            ("November 2026", "%B %Y", "2026-11-26 00:00:00"),
+            ("2026-11", "%Y-%m", "2026-11-26 00:00:00"),
+            ("15 Ocak", "%d %B", "2026-01-15 00:00:00"),
+            ("14:30", "%H:%M", "2026-11-26 14:30:00"),
+            ("2026-330", "%Y-%j", "2026-11-26 00:00:00"),
+        ] {
+            s_fmt.date_formats = Some(vec![fmt.to_string()]);
+            assert_eq!(
+                parse_with_settings(inp, &s_fmt).unwrap().naive_local(),
+                NaiveDateTime::parse_from_str(exp, "%Y-%m-%d %H:%M:%S").unwrap(),
+                "failed partial custom format {} with {}",
+                inp,
+                fmt
+            );
+        }
+
+        // search_dates custom date_formats + precise CJK spans
+        let mut s_search_fmt = fixed_settings();
+        s_search_fmt.date_formats = Some(vec!["%Y_%m_%d".to_string()]);
+        let custom_found = search_dates_full("Release 2026_11_26 is live now.", &s_search_fmt);
+        assert_eq!(custom_found.len(), 2);
+        assert_eq!(custom_found[0].text, "2026_11_26");
+        assert_eq!(custom_found[1].text, "now");
+
+        let ja_found = search_dates_full("締め切りは2026年11月26日です。", &s);
+        assert_eq!(ja_found.len(), 1);
+        assert_eq!(ja_found[0].text, "2026年11月26日");
+
+        let zh_found = search_dates_full("会议定于2026年11月26日举行。", &s);
+        assert_eq!(zh_found.len(), 1);
+        assert_eq!(zh_found[0].text, "2026年11月26日");
+
+        let multi_cjk = search_dates_full("2026年11月20日から2026年11月26日まで", &s);
+        assert_eq!(multi_cjk.len(), 2);
+        assert_eq!(multi_cjk[0].text, "2026年11月20日");
+        assert_eq!(multi_cjk[1].text, "2026年11月26日");
+
+        // Remaining 9 multilingual idioms + approx markers
+        for (inp, exp) in [
+            ("~3 days ago", "2026-11-23 15:00:00"),
+            ("about 2 hours ago", "2026-11-26 13:00:00"),
+            ("yaklaşık 2 saat önce", "2026-11-26 13:00:00"),
+            ("約2時間前", "2026-11-26 13:00:00"),
+            ("12 noon", "2026-11-26 12:00:00"),
+            ("12 midnight", "2026-11-26 00:00:00"),
+            ("next Monday morning", "2026-11-30 09:00:00"),
+            ("через полчаса", "2026-11-26 15:30:00"),
+            ("半小时前", "2026-11-26 14:30:00"),
+            ("منذ يومين", "2026-11-24 15:00:00"),
+            ("לפני שעתיים", "2026-11-26 13:00:00"),
+        ] {
+            assert_eq!(
+                parse_with_settings(inp, &s).unwrap().naive_local(),
+                NaiveDateTime::parse_from_str(exp, "%Y-%m-%d %H:%M:%S").unwrap(),
+                "failed idiom {}",
+                inp
+            );
+        }
     }
 }

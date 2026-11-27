@@ -171,6 +171,71 @@ fn lookup_exact_in_locale(
     None
 }
 
+fn strip_approx_prefix(s: &str) -> String {
+    let mut cur = s.trim();
+    for _ in 0..2 {
+        cur = cur.trim_start_matches(['~', '≈']).trim_start();
+        let mut matched = false;
+        for p in [
+            "approximately ",
+            "approx. ",
+            "approx ",
+            "about ",
+            "around ",
+            "roughly ",
+            "nearly ",
+            "almost ",
+            "circa ",
+            "ca. ",
+            "environ ",
+            "etwa ",
+            "ungefähr ",
+            "ungefahr ",
+            "ongeveer ",
+            "około ",
+            "okolo ",
+            "около ",
+            "yaklaşık ",
+            "yaklasik ",
+            "sekitar ",
+            "약 ",
+            "約",
+        ] {
+            if let Some(rest) = cur.strip_prefix(p) {
+                let r = rest.trim_start();
+                if !r.is_empty() {
+                    cur = r;
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        if !matched {
+            break;
+        }
+    }
+    let out = cur.to_string();
+    for (pat, rep) in [
+        ("vor etwa ", "vor "),
+        ("vor ungefähr ", "vor "),
+        ("vor ungefahr ", "vor "),
+        ("il y a environ ", "il y a "),
+        ("há cerca de ", "há "),
+        ("ha cerca de ", "ha "),
+        ("hace aproximadamente ", "hace "),
+        ("hace unos ", "hace "),
+    ] {
+        if let Some(idx) = out.find(pat) {
+            let mut s_new = String::with_capacity(out.len());
+            s_new.push_str(&out[..idx]);
+            s_new.push_str(rep);
+            s_new.push_str(&out[idx + pat.len()..]);
+            return s_new;
+        }
+    }
+    out
+}
+
 /// Try parsing a normalized lowercase string as a relative date across candidate locales.
 pub fn try_parse_relative(
     normalized: &str,
@@ -184,22 +249,24 @@ pub fn try_parse_relative(
 
     let base = settings.effective_base();
     let trimmed_article = normalized.strip_prefix("the ").unwrap_or(normalized);
+    let approx_stripped = strip_approx_prefix(trimmed_article);
+    let eff = approx_stripped.trim();
     let folded_full = if settings.normalize {
-        fold_diacritics(trimmed_article)
+        fold_diacritics(eff)
     } else {
-        trimmed_article.to_string()
+        eff.to_string()
     };
 
     // 0. Special compound day + time-of-day idioms, half/fractional durations & conversational clocks
-    if let Some(m) = try_conversational_clock_or_fraction(trimmed_article, settings) {
+    if let Some(m) = try_conversational_clock_or_fraction(eff, settings) {
         return Some(m);
     }
-    if let Some(m) = try_compound_tod_idiom(trimmed_article, &folded_full, candidate_ids, registry, base, settings) {
+    if let Some(m) = try_compound_tod_idiom(eff, &folded_full, candidate_ids, registry, base, settings) {
         return Some(m);
     }
 
     // 1. O(1) Global Exact Relative Phrase lookup ("yesterday", "bugün", "yarın", "demain", "今日", "कल", "غدا")
-    if let Some(matches) = registry.exact_phrase_index.get(trimmed_article) {
+    if let Some(matches) = registry.exact_phrase_index.get(eff) {
         let mut matched_specs: Vec<(usize, RelativeSpec)> = Vec::new();
         if settings.use_given_language_order && !candidate_ids.is_empty() {
             for &cid in candidate_ids {
@@ -296,7 +363,7 @@ pub fn try_parse_relative(
     }
 
     // 2. Peel off optional explicit time component
-    let (phrase_no_time, extracted_time) = extract_trailing_or_leading_time(normalized);
+    let (phrase_no_time, extracted_time) = extract_trailing_or_leading_time(eff);
 
     for &lid in candidate_ids {
         let loc = &registry.locales[lid];
@@ -317,9 +384,9 @@ pub fn try_parse_relative(
             }
         }
 
-        // 2b. <relative_exact> [connector] <time_of_day> ("yesterday at noon", "yesterday morning", "dün akşam")
+        // 2b. <relative_exact|relative_weekday> [connector] <time_of_day> ("yesterday at noon", "next Monday morning")
         if extracted_time.is_none() {
-            if let Some((dt, pod)) = try_relative_plus_tod(normalized, loc, base, settings) {
+            if let Some((dt, pod)) = try_relative_plus_tod(eff, loc, base, settings) {
                 return Some(RelativeMatch {
                     naive: dt,
                     period: Period::Day,
@@ -335,7 +402,7 @@ pub fn try_parse_relative(
         let target_str = if extracted_time.is_some() {
             strip_connector_words(phrase_no_time, loc)
         } else {
-            normalized
+            eff
         };
 
         if let Some((spec_sign, amount, unit)) = try_affix_match(target_str, loc, settings.normalize) {
@@ -557,6 +624,12 @@ fn try_relative_plus_tod(
         settings.prefer_dates_from,
     ) {
         let dt = apply_relative_offset(base, spec.sign, spec.amount as f64, spec.unit)?;
+        return Some((dt.date().and_time(nt), pod));
+    }
+
+    if let Some((dt, _period)) =
+        try_relative_period_or_weekday(cleaned, loc, base, settings.normalize)
+    {
         return Some((dt.date().and_time(nt), pod));
     }
 
@@ -794,6 +867,24 @@ fn apply_token_duration_pairs(
         }
 
         if pending_num.is_none() && allow_single_char_attached_units {
+            if let Some(multi) = split_all_attached_num_units(clean) {
+                if multi.len() >= 2 {
+                    let mut all_ok = true;
+                    let mut resolved = Vec::with_capacity(multi.len());
+                    for (num, unit_str) in multi {
+                        if let Some(u) = lookup_unit(unit_str) {
+                            resolved.push((num, u));
+                        } else {
+                            all_ok = false;
+                            break;
+                        }
+                    }
+                    if all_ok {
+                        pairs.extend(resolved);
+                        continue;
+                    }
+                }
+            }
             if let Some((num, unit_str)) = split_attached_num_unit(clean) {
                 if let Some(u) = lookup_unit(unit_str) {
                     pairs.push((num, u));
@@ -869,6 +960,50 @@ fn split_attached_num_unit(s: &str) -> Option<(f64, &str)> {
         return None;
     }
     Some((num, unit))
+}
+
+fn split_all_attached_num_units(s: &str) -> Option<Vec<(f64, &str)>> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while pos < s.len() {
+        let rest = &s[pos..];
+        let mut num_end = 0usize;
+        let mut seen_sep = false;
+        for (i, ch) in rest.char_indices() {
+            if ch.is_ascii_digit() {
+                num_end = i + 1;
+            } else if (ch == '.' || ch == ',') && !seen_sep && num_end > 0 {
+                seen_sep = true;
+                num_end = i + 1;
+            } else {
+                break;
+            }
+        }
+        if num_end == 0 {
+            return None;
+        }
+        let num = parse_positive_number(&rest[..num_end])?;
+        pos += num_end;
+        let after_num = &s[pos..];
+        if after_num.is_empty() {
+            return None;
+        }
+        let unit_end = after_num
+            .find(|c: char| c.is_ascii_digit())
+            .unwrap_or(after_num.len());
+        let unit_raw = &after_num[..unit_end];
+        let unit = unit_raw.trim_end_matches(['と', '和', '및']);
+        if unit.is_empty() {
+            return None;
+        }
+        out.push((num, unit));
+        pos += unit_end;
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 fn classify_relative_modifier(tok: &str) -> Option<i8> {
@@ -1039,6 +1174,44 @@ pub fn try_conversational_clock_or_fraction(
 
     if matches!(
         s,
+        "just now"
+            | "right now"
+            | "hemen simdi"
+            | "hemen şimdi"
+            | "az once"
+            | "az önce"
+            | "gerade eben"
+            | "a l'instant"
+            | "à l'instant"
+            | "ahora mismo"
+    ) {
+        let locale = if s.contains("simdi")
+            || s.contains("şimdi")
+            || s.contains("once")
+            || s.contains("önce")
+        {
+            "tr"
+        } else if s == "gerade eben" {
+            "de"
+        } else if s.contains("instant") {
+            "fr"
+        } else if s == "ahora mismo" {
+            "es"
+        } else {
+            "en"
+        };
+        return Some(RelativeMatch {
+            naive: base,
+            period: Period::Day,
+            locale: locale.to_string(),
+            has_time: true,
+            parts: vec!["year", "month", "day", "time"],
+            part_of_day: None,
+        });
+    }
+
+    if matches!(
+        s,
         "half an hour ago" | "half hour ago" | "yarım saat önce" | "yarim saat once"
     ) {
         let dt = apply_relative_offset(base, -1, 30.0, TimeUnit::Minute)?;
@@ -1075,6 +1248,109 @@ pub fn try_conversational_clock_or_fraction(
             parts: vec!["year", "month", "day", "time"],
             part_of_day: None,
         });
+    }
+
+    // Half-unit idioms in Russian & Chinese/Japanese
+    let half_spec: Option<(i8, f64, TimeUnit, &'static str)> = match s {
+        "через полчаса" => Some((1, 30.0, TimeUnit::Minute, "ru")),
+        "полчаса назад" => Some((-1, 30.0, TimeUnit::Minute, "ru")),
+        "через полгода" => Some((1, 6.0, TimeUnit::Month, "ru")),
+        "полгода назад" => Some((-1, 6.0, TimeUnit::Month, "ru")),
+        "через полдня" => Some((1, 12.0, TimeUnit::Hour, "ru")),
+        "полдня назад" => Some((-1, 12.0, TimeUnit::Hour, "ru")),
+        "半小时前" | "半小時前" => Some((-1, 30.0, TimeUnit::Minute, "zh")),
+        "半時間前" => Some((-1, 30.0, TimeUnit::Minute, "ja")),
+        "半小时后" | "半小時後" | "半小时後" => Some((1, 30.0, TimeUnit::Minute, "zh")),
+        "半年前" => Some((-1, 6.0, TimeUnit::Month, "zh")),
+        "半年后" | "半年後" => Some((1, 6.0, TimeUnit::Month, "zh")),
+        "半天前" => Some((-1, 12.0, TimeUnit::Hour, "zh")),
+        "半天后" | "半天後" => Some((1, 12.0, TimeUnit::Hour, "zh")),
+        _ => None,
+    };
+    if let Some((sign, amt, unit, loc_code)) = half_spec {
+        let dt = apply_relative_offset(base, sign, amt, unit)?;
+        return Some(RelativeMatch {
+            naive: dt,
+            period: period_for_unit(unit),
+            locale: loc_code.to_string(),
+            has_time: false,
+            parts: parts_for_relative(false, Some(unit)),
+            part_of_day: None,
+        });
+    }
+
+    // Arabic dual/singular idioms with منذ / قبل / بعد / خلال
+    let ar_pair: Option<(i8, &str)> = if let Some(rest) = s.strip_prefix("منذ ") {
+        Some((-1, rest.trim()))
+    } else if let Some(rest) = s.strip_prefix("قبل ") {
+        Some((-1, rest.trim()))
+    } else if let Some(rest) = s.strip_prefix("بعد ") {
+        Some((1, rest.trim()))
+    } else if let Some(rest) = s.strip_prefix("خلال ") {
+        Some((1, rest.trim()))
+    } else {
+        None
+    };
+    if let Some((sign, noun)) = ar_pair {
+        let ar_unit: Option<(f64, TimeUnit)> = match noun {
+            "ثانيتين" | "ثانيتان" => Some((2.0, TimeUnit::Second)),
+            "دقيقتين" | "دقيقتان" => Some((2.0, TimeUnit::Minute)),
+            "ساعتين" | "ساعتان" => Some((2.0, TimeUnit::Hour)),
+            "يومين" | "يومان" => Some((2.0, TimeUnit::Day)),
+            "اسبوعين" | "أسبوعين" | "اسبوعان" | "أسبوعان" => Some((2.0, TimeUnit::Week)),
+            "شهرين" | "شهران" => Some((2.0, TimeUnit::Month)),
+            "سنتين" | "عامين" | "سنتان" | "عامان" => Some((2.0, TimeUnit::Year)),
+            "ثانية" => Some((1.0, TimeUnit::Second)),
+            "دقيقة" => Some((1.0, TimeUnit::Minute)),
+            "ساعة" => Some((1.0, TimeUnit::Hour)),
+            "يوم" => Some((1.0, TimeUnit::Day)),
+            "اسبوع" | "أسبوع" => Some((1.0, TimeUnit::Week)),
+            "شهر" => Some((1.0, TimeUnit::Month)),
+            "سنة" | "عام" => Some((1.0, TimeUnit::Year)),
+            _ => None,
+        };
+        if let Some((amt, unit)) = ar_unit {
+            let dt = apply_relative_offset(base, sign, amt, unit)?;
+            return Some(RelativeMatch {
+                naive: dt,
+                period: period_for_unit(unit),
+                locale: "ar".to_string(),
+                has_time: false,
+                parts: parts_for_relative(false, Some(unit)),
+                part_of_day: None,
+            });
+        }
+    }
+
+    // Hebrew dual idioms with לפני / בעוד / עוד
+    let he_pair: Option<(i8, &str)> = if let Some(rest) = s.strip_prefix("לפני ") {
+        Some((-1, rest.trim()))
+    } else if let Some(rest) = s.strip_prefix("בעוד ").or_else(|| s.strip_prefix("עוד ")) {
+        Some((1, rest.trim()))
+    } else {
+        None
+    };
+    if let Some((sign, noun)) = he_pair {
+        let he_unit: Option<(f64, TimeUnit)> = match noun {
+            "דקתיים" => Some((2.0, TimeUnit::Minute)),
+            "שעתיים" => Some((2.0, TimeUnit::Hour)),
+            "יומיים" => Some((2.0, TimeUnit::Day)),
+            "שבועיים" => Some((2.0, TimeUnit::Week)),
+            "חודשיים" => Some((2.0, TimeUnit::Month)),
+            "שנתיים" => Some((2.0, TimeUnit::Year)),
+            _ => None,
+        };
+        if let Some((amt, unit)) = he_unit {
+            let dt = apply_relative_offset(base, sign, amt, unit)?;
+            return Some(RelativeMatch {
+                naive: dt,
+                period: period_for_unit(unit),
+                locale: "he".to_string(),
+                has_time: false,
+                parts: parts_for_relative(false, Some(unit)),
+                part_of_day: None,
+            });
+        }
     }
 
     if let Some(m) = try_fractional_duration(s, base) {
@@ -1260,6 +1536,25 @@ fn parse_clock_hour_spec(raw: &str) -> Option<u32> {
 }
 
 fn try_conversational_clock(s: &str, settings: &Settings) -> Option<RelativeMatch> {
+    // Explicit 12 noon / 12 midnight
+    let noon_midnight: Option<(u32, u32)> = match s {
+        "12 noon" | "12:00 noon" | "12 pm noon" | "12 p.m. noon" => Some((12, 0)),
+        "12 midnight" | "12:00 midnight" | "12 am midnight" | "12 a.m. midnight" => Some((0, 0)),
+        _ => None,
+    };
+    if let Some((hh, mm)) = noon_midnight {
+        let nt = NaiveTime::from_hms_opt(hh, mm, 0)?;
+        let nd = resolve_time_only_date(nt, settings);
+        return Some(RelativeMatch {
+            naive: nd.and_time(nt),
+            period: Period::Day,
+            locale: "en".to_string(),
+            has_time: true,
+            parts: vec!["time"],
+            part_of_day: None,
+        });
+    }
+
     // English: "[a ]quarter past <H>", "[a ]quarter to <H>", "half past <H>"
     let trimmed = s.strip_prefix("a ").unwrap_or(s);
     let en_clock: Option<(u32, u32)> = if let Some(rest) = trimmed.strip_prefix("quarter past ") {
@@ -1313,34 +1608,113 @@ fn try_conversational_clock(s: &str, settings: &Settings) -> Option<RelativeMatc
     None
 }
 
-/// Extract a trailing time from strings like "yesterday at 5pm", "hier à 14h30", "dün saat 15:30".
+/// Extract a trailing time from strings like "yesterday at 5pm", "hier à 14h30", "dün saat 15:30",
+/// "어제 오후 2시 30분", "昨日の14:30", or "tomorrow at 5".
 pub fn extract_trailing_or_leading_time(s: &str) -> (&str, Option<NaiveTime>) {
-    let tokens: Vec<&str> = s.split_whitespace().collect();
-    if tokens.len() < 2 {
-        return (s, None);
+    // Track token (start, end) byte offsets safely inside `s`
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut in_tok = false;
+    let mut tok_start = 0usize;
+    for (idx, ch) in s.char_indices() {
+        if ch.is_whitespace() {
+            if in_tok {
+                ranges.push((tok_start, idx));
+                in_tok = false;
+            }
+        } else if !in_tok {
+            tok_start = idx;
+            in_tok = true;
+        }
+    }
+    if in_tok {
+        ranges.push((tok_start, s.len()));
     }
 
-    if tokens.len() >= 3 {
-        let last2 = format!("{} {}", tokens[tokens.len() - 2], tokens[tokens.len() - 1]);
-        if let Some(t) = parse_time_str(&last2) {
-            let cut = s.len() - tokens[tokens.len() - 1].len() - tokens[tokens.len() - 2].len() - 1;
-            if cut < s.len() {
+    // 1. Multi-token trailing time suffixes (2..=4 tokens, e.g. "오후 2시 30분", "pm 2:26", "5:30 pm")
+    if ranges.len() >= 3 {
+        let max_k = (ranges.len() - 1).min(4);
+        for k in (2..=max_k).rev() {
+            let cut = ranges[ranges.len() - k].0;
+            let cand = s[cut..].trim();
+            if let Some(t) = parse_time_str(cand) {
                 return (s[..cut].trim_end(), Some(t));
             }
         }
     }
 
-    let last = tokens[tokens.len() - 1];
-    if last.contains(':')
-        || last.contains('h')
-        || last.ends_with("am")
-        || last.ends_with("pm")
-        || last.ends_with("a.m.")
-        || last.ends_with("p.m.")
-    {
-        if let Some(t) = parse_time_str(last) {
-            let cut = s.len() - last.len();
-            return (s[..cut].trim_end(), Some(t));
+    // 2. Single trailing time token or bare hour after explicit time preposition ("tomorrow at 5")
+    if ranges.len() >= 2 {
+        let (last_s, last_e) = ranges[ranges.len() - 1];
+        let last = &s[last_s..last_e];
+        if last.contains(':')
+            || last.contains('h')
+            || last.contains('시')
+            || last.contains('時')
+            || last.contains('时')
+            || last.contains('点')
+            || last.ends_with("am")
+            || last.ends_with("pm")
+            || last.ends_with("a.m.")
+            || last.ends_with("p.m.")
+        {
+            if let Some(t) = parse_time_str(last) {
+                return (s[..last_s].trim_end(), Some(t));
+            }
+        }
+
+        if ranges.len() >= 3 {
+            let (prev_s, prev_e) = ranges[ranges.len() - 2];
+            let prev = &s[prev_s..prev_e];
+            if matches!(
+                prev,
+                "at" | "um" | "à" | "saat" | "alle" | "kl" | "klo" | "las" | "às" | "в" | "o" | "om"
+            ) && (1..=2).contains(&last.len())
+                && last.bytes().all(|b| b.is_ascii_digit())
+            {
+                if let Ok(h) = last.parse::<u32>() {
+                    if h <= 23 {
+                        if let Some(t) = NaiveTime::from_hms_opt(h, 0, 0) {
+                            return (s[..prev_s].trim_end(), Some(t));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Spaceless CJK / Korean relative + time ("昨日の14:30", "昨日14:30", "昨日の午後2時30分", "어제14:30")
+    if let Some((left, right)) = s.rsplit_once('の') {
+        if let Some(t) = parse_time_str(right.trim()) {
+            let prefix = left.trim_end();
+            if !prefix.is_empty() {
+                return (prefix, Some(t));
+            }
+        }
+    }
+    if s.contains(':') || s.contains('時') || s.contains('点') || s.contains('시') {
+        for marker in ["午前", "午後", "上午", "下午", "오전", "오후"] {
+            if let Some(pos) = s.rfind(marker) {
+                if pos > 0 {
+                    if let Some(t) = parse_time_str(&s[pos..]) {
+                        let prefix = s[..pos].trim_end_matches(|c: char| c.is_whitespace() || c == 'の');
+                        if !prefix.is_empty() {
+                            return (prefix, Some(t));
+                        }
+                    }
+                }
+            }
+        }
+        let mut prev_non_ascii = false;
+        for (idx, ch) in s.char_indices() {
+            if idx > 0 && ch.is_ascii_digit() && prev_non_ascii {
+                if let Some(t) = parse_time_str(&s[idx..]) {
+                    let prefix = s[..idx].trim_end_matches(|c: char| c.is_whitespace() || c == 'の');
+                    if !prefix.is_empty() {
+                        return (prefix, Some(t));
+                    }
+                }
+            }
+            prev_non_ascii = !ch.is_ascii() && !ch.is_whitespace() && ch != 'の';
         }
     }
 
@@ -1351,10 +1725,19 @@ fn strip_connector_words<'a>(s: &'a str, loc: &CompiledLocale) -> &'a str {
     let mut cur = s.trim();
     loop {
         let mut trimmed = false;
-        if let Some(sp) = cur.rfind(' ') {
+        if let Some(stripped) = cur.strip_suffix('の') {
+            if !stripped.is_empty() {
+                cur = stripped.trim_end();
+                trimmed = true;
+            }
+        } else if let Some(sp) = cur.rfind(' ') {
             let tail = &cur[sp + 1..];
-            if matches!(tail, "at" | "on" | "à" | "a" | "um" | "am" | "saat" | "las" | "в")
-                || loc.skip.contains(tail)
+            if matches!(
+                tail,
+                "at" | "on" | "à" | "a" | "um" | "am" | "saat" | "las" | "às" | "в" | "о"
+                    | "o" | "om" | "alle" | "kl" | "klo" | "la" | "pukul" | "lúc" | "στις"
+                    | "בשעה" | "الساعة"
+            ) || loc.skip.contains(tail)
             {
                 cur = cur[..sp].trim_end();
                 trimmed = true;

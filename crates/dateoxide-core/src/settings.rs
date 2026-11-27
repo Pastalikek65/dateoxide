@@ -228,6 +228,7 @@ impl StartOfWeek {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParserKind {
     Timestamp,
+    NegativeTimestamp,
     RelativeTime,
     CustomFormats,
     AbsoluteTime,
@@ -239,6 +240,7 @@ impl ParserKind {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "timestamp" => Some(Self::Timestamp),
+            "negative-timestamp" => Some(Self::NegativeTimestamp),
             "relative-time" => Some(Self::RelativeTime),
             "custom-formats" => Some(Self::CustomFormats),
             "absolute-time" => Some(Self::AbsoluteTime),
@@ -308,6 +310,7 @@ pub struct Settings {
     pub languages: Option<Vec<String>>,
     pub default_languages: Vec<String>,
     pub use_given_language_order: bool,
+    pub language_detection_confidence_threshold: f64,
     pub date_formats: Option<Vec<String>>,
     pub require_parts: Vec<DatePart>,
     pub normalize: bool,
@@ -341,6 +344,7 @@ impl Default for Settings {
             languages: None,
             default_languages: Vec::new(),
             use_given_language_order: false,
+            language_detection_confidence_threshold: 0.5,
             date_formats: None,
             require_parts: Vec::new(),
             normalize: true,
@@ -358,6 +362,30 @@ impl Default for Settings {
     }
 }
 
+/// Extract an ISO 3166-1 alpha-2 region subtag from a BCP-47 locale tag (e.g. `"en-GB"` -> `"GB"`,
+/// `"en_CA"` -> `"CA"`, `"zh-Hans-TW"` -> `"TW"`), ignoring 4-letter script subtags like `"uz-Cyrl"`.
+pub fn extract_region_from_locale(code: &str) -> Option<&str> {
+    let mut parts = code.trim().split(['-', '_']);
+    let _lang = parts.next()?;
+    for sub in parts {
+        if sub.len() == 2 && sub.bytes().all(|b| b.is_ascii_alphabetic()) {
+            return Some(sub);
+        }
+    }
+    None
+}
+
+/// Map a 2-letter region/country code to its conventional numeric date order.
+pub fn region_to_date_order(reg: &str) -> Option<DateOrder> {
+    let code = reg.trim().to_ascii_uppercase();
+    match code.as_str() {
+        "US" | "PH" | "FM" | "AS" | "UM" => Some(DateOrder::MDY),
+        "CN" | "JP" | "KR" | "TW" | "HU" | "LT" | "SE" | "ZA" | "CA" => Some(DateOrder::YMD),
+        r if r.len() == 2 && r.bytes().all(|b| b.is_ascii_alphabetic()) => Some(DateOrder::DMY),
+        _ => None,
+    }
+}
+
 impl Settings {
     pub fn effective_base(&self) -> NaiveDateTime {
         self.relative_base
@@ -367,7 +395,7 @@ impl Settings {
     #[inline]
     pub fn allows_parser(&self, kind: ParserKind) -> bool {
         match &self.parsers {
-            None => true,
+            None => !matches!(kind, ParserKind::NegativeTimestamp),
             Some(list) => list.contains(&kind),
         }
     }
@@ -377,13 +405,20 @@ impl Settings {
             return order;
         }
         if let Some(ref reg) = self.region {
-            let code = reg.trim().to_ascii_uppercase();
-            return match code.as_str() {
-                "US" | "PH" | "FM" | "AS" | "UM" => DateOrder::MDY,
-                "CN" | "JP" | "KR" | "TW" | "HU" | "LT" | "SE" | "ZA" | "CA" => DateOrder::YMD,
-                r if r.len() == 2 && r.bytes().all(|b| b.is_ascii_alphabetic()) => DateOrder::DMY,
-                _ => fallback,
-            };
+            return region_to_date_order(reg).unwrap_or(fallback);
+        }
+        if self.prefer_locale_date_order {
+            if let Some(first) = self.languages.as_deref().and_then(|ls| ls.first()) {
+                if let Some(reg) = extract_region_from_locale(first) {
+                    if let Some(order) = region_to_date_order(reg) {
+                        return order;
+                    }
+                }
+                let reg = crate::locale::LocaleRegistry::global();
+                if let Some(id) = reg.resolve_lang_id(first) {
+                    return reg.locales[id].date_order;
+                }
+            }
         }
         fallback
     }

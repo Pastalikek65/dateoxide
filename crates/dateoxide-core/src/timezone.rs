@@ -60,41 +60,53 @@ pub fn parse_tz_spec(s: &str) -> Option<TzSpec> {
         return Some(TzSpec::Iana(tz));
     }
 
-    // Common timezone abbreviations
+    // Common & world timezone abbreviations
     let secs = match trimmed.to_ascii_uppercase().as_str() {
-        "EST" => -5 * 3600,
-        "EDT" => -4 * 3600,
-        "CST" => -6 * 3600,
-        "CDT" => -5 * 3600,
-        "MST" => -7 * 3600,
-        "MDT" => -6 * 3600,
-        "PST" => -8 * 3600,
-        "PDT" => -7 * 3600,
-        "AKST" => -9 * 3600,
-        "AKDT" => -8 * 3600,
-        "HST" => -10 * 3600,
-        "CET" => 1 * 3600,
-        "CEST" => 2 * 3600,
-        "EET" => 2 * 3600,
-        "EEST" => 3 * 3600,
+        // UTC / Universal
+        "UT" | "WT" | "AZOST" | "EGST" => 0,
+        // Americas
+        "SST" | "NUT" => -11 * 3600,
+        "HST" | "HAST" | "CKT" | "TAHT" => -10 * 3600,
+        "MART" | "MIT" => -9 * 3600 - 1800,
+        "AKST" | "HADT" | "HDT" => -9 * 3600,
+        "PST" | "PT" | "AKDT" => -8 * 3600,
+        "MST" | "PDT" => -7 * 3600,
+        "CST" | "MDT" => -6 * 3600,
+        "EST" | "CDT" | "ACT" | "COT" | "ECT" | "ET" | "PET" => -5 * 3600,
+        "AST" | "EDT" | "BOT" | "CLT" | "FKT" | "GYT" | "PYT" | "VET" => -4 * 3600,
+        "NST" | "NT" => -3 * 3600 - 1800,
+        "ADT" | "ARST" | "ART" | "BRT" | "CLST" | "FKST" | "GFT" | "PYST" | "SRT" | "UYT" => -3 * 3600,
+        "NDT" => -2 * 3600 - 1800,
+        "BRST" | "FNT" | "UYST" => -2 * 3600,
+        "CVT" | "AZOT" | "EGT" => -1 * 3600,
+        // Europe / Africa / Middle East
         "WET" => 0,
-        "WEST" => 1 * 3600,
-        "BST" => 1 * 3600,
-        "TRT" => 3 * 3600,
-        "MSK" => 3 * 3600,
-        "GST" => 4 * 3600,
-        "IST" => 5 * 3600 + 1800,
-        "ICT" => 7 * 3600,
-        "SGT" | "HKT" | "AWST" => 8 * 3600,
-        "JST" | "KST" => 9 * 3600,
-        "AEST" => 10 * 3600,
-        "AEDT" => 11 * 3600,
-        "NZST" => 12 * 3600,
-        "NZDT" => 13 * 3600,
-        "BRT" | "ART" => -3 * 3600,
-        "WAT" => 1 * 3600,
-        "CAT" | "SAST" => 2 * 3600,
-        "EAT" => 3 * 3600,
+        "CET" | "WEST" | "BST" | "WAT" | "MET" | "MEZ" | "DFT" => 1 * 3600,
+        "CEST" | "EET" | "CAT" | "SAST" | "MEST" | "MESZ" | "WAST" => 2 * 3600,
+        "EEST" | "TRT" | "MSK" | "EAT" | "FET" | "IDT" => 3 * 3600,
+        "IRST" => 3 * 3600 + 1800,
+        "GST" | "AMT" | "AZT" | "GET" | "MSD" | "MUT" | "RET" | "SCT" | "SAMT" => 4 * 3600,
+        "IRDT" | "AFT" => 4 * 3600 + 1800,
+        // Asia / Pacific
+        "PKT" | "UZT" | "TJT" | "TMT" | "MVT" | "YEKT" | "ORAT" | "AQTT" => 5 * 3600,
+        "IST" | "SLT" => 5 * 3600 + 1800,
+        "NPT" => 5 * 3600 + 2700,
+        "ALMT" | "BTT" | "IOT" | "KGT" | "OMST" | "QYZT" | "VOST" | "PKST" | "XJT" | "BDT" => 6 * 3600,
+        "MMT" | "CCT" => 6 * 3600 + 1800,
+        "ICT" | "WIB" | "THA" | "KRAT" | "NOVT" | "CXT" | "HOVT" => 7 * 3600,
+        "SGT" | "HKT" | "AWST" | "PHT" | "MYT" | "WITA" | "BNT" | "ULAT" | "IRKT" | "CHOT" | "WST" => 8 * 3600,
+        "ACWST" => 8 * 3600 + 2700,
+        "JST" | "KST" | "WIT" | "TLT" | "YAKT" => 9 * 3600,
+        "ACST" => 9 * 3600 + 1800,
+        "AEST" | "CHST" | "PGT" | "VLAT" => 10 * 3600,
+        "ACDT" | "LHST" => 10 * 3600 + 1800,
+        "AEDT" | "SBT" | "VUT" | "NCT" | "MAGT" | "KOST" | "PONT" | "LHDT" => 11 * 3600,
+        "NFT" => 11 * 3600 + 1800,
+        "NZST" | "FJT" | "GILT" | "MHT" | "TVT" | "ANAT" | "PETT" | "WFT" => 12 * 3600,
+        "CHAST" => 12 * 3600 + 2700,
+        "NZDT" | "FJST" | "TOT" | "PHOT" | "WSST" => 13 * 3600,
+        "CHADT" => 13 * 3600 + 2700,
+        "LINT" | "WSDT" => 14 * 3600,
         _ => return None,
     };
 
@@ -147,29 +159,10 @@ pub fn extract_trailing_timezone(input: &str) -> (&str, Option<TzSpec>) {
     extract_trailing_timezone_with_abbrevs(input, empty)
 }
 
-/// Peel off a trailing timezone token from a date string, honoring custom abbreviations.
-pub fn extract_trailing_timezone_with_abbrevs<'a>(
-    input: &'a str,
+fn extract_trailing_timezone_non_paren<'a>(
+    s: &'a str,
     custom: &FxHashMap<String, String>,
 ) -> (&'a str, Option<TzSpec>) {
-    let s = input.trim();
-    if s.is_empty() {
-        return (s, None);
-    }
-
-    // Handle trailing "(UTC)" / "(EST)" / "(CEST)"
-    if s.ends_with(')') {
-        if let Some(open) = s.rfind('(') {
-            let inside = &s[open + 1..s.len() - 1];
-            if let Some(tz) = parse_tz_spec_with_abbrevs(inside, custom) {
-                let prefix = s[..open].trim_end();
-                if !prefix.is_empty() {
-                    return (prefix, Some(tz));
-                }
-            }
-        }
-    }
-
     // Handle trailing 'Z' attached to a timestamp like "2026-11-26T15:30:00Z"
     if (s.ends_with('Z') || s.ends_with('z')) && s.len() >= 10 {
         let prev = s.as_bytes()[s.len() - 2];
@@ -202,7 +195,16 @@ pub fn extract_trailing_timezone_with_abbrevs<'a>(
         let last = &s[sp + 1..];
         let upper = last.to_ascii_uppercase();
         let is_custom = !custom.is_empty() && (custom.contains_key(&upper) || custom.contains_key(last));
+        let is_two_letter_tz = last.len() == 2
+            && matches!(last, "UT" | "ET" | "PT")
+            && s[..sp]
+                .trim_end()
+                .split_whitespace()
+                .next_back()
+                .map(|prev| prev.contains(':'))
+                .unwrap_or(false);
         let looks_like_tz = is_custom
+            || is_two_letter_tz
             || last.contains('/')
             || last.contains('+')
             || last.contains('-')
@@ -220,6 +222,88 @@ pub fn extract_trailing_timezone_with_abbrevs<'a>(
     }
 
     (s, None)
+}
+
+/// Peel off a trailing timezone token from a date string, honoring custom abbreviations
+/// and JavaScript / RFC-2822 parenthesized timezone comments such as
+/// `"Thu Nov 26 2026 14:30:00 GMT+0300 (Turkey Time)"`.
+pub fn extract_trailing_timezone_with_abbrevs<'a>(
+    input: &'a str,
+    custom: &FxHashMap<String, String>,
+) -> (&'a str, Option<TzSpec>) {
+    let s = input.trim();
+    if s.is_empty() {
+        return (s, None);
+    }
+
+    if s.ends_with(')') {
+        if let Some(open) = s.rfind('(') {
+            if open > 0 {
+                let inside = s[open + 1..s.len() - 1].trim();
+                let prefix = s[..open].trim_end();
+                if !prefix.is_empty() {
+                    let (prefix2, prefix_tz) = extract_trailing_timezone_non_paren(prefix, custom);
+                    if prefix_tz.is_some() && !prefix2.is_empty() {
+                        return (prefix2, prefix_tz);
+                    }
+                    if let Some(paren_tz) = parse_tz_spec_with_abbrevs(inside, custom) {
+                        return (prefix, Some(paren_tz));
+                    }
+                }
+            }
+        }
+    }
+
+    extract_trailing_timezone_non_paren(s, custom)
+}
+
+/// Extract a Unix `ctime` / `date` mid-string timezone token immediately preceding a trailing
+/// 4-digit year (e.g. `"Thu Nov 26 14:30:00 UTC 2026"`, `"Mon Jan 15 09:00:00 CEST 2026"`).
+pub fn extract_embedded_timezone_before_year(
+    input: &str,
+    custom: &FxHashMap<String, String>,
+) -> Option<(String, TzSpec)> {
+    let tokens: Vec<&str> = input.split_whitespace().collect();
+    if tokens.len() < 4 {
+        return None;
+    }
+    let len = tokens.len();
+    let year_tok = tokens[len - 1];
+    if year_tok.len() != 4 || !year_tok.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let year: u32 = year_tok.parse().ok()?;
+    if !(1000..=2999).contains(&year) {
+        return None;
+    }
+
+    let tz_tok = tokens[len - 2];
+    let time_tok = tokens[len - 3];
+    if !time_tok.contains(':') {
+        return None;
+    }
+
+    let upper = tz_tok.to_ascii_uppercase();
+    let is_custom = !custom.is_empty() && (custom.contains_key(&upper) || custom.contains_key(tz_tok));
+    let looks_like_tz = is_custom
+        || tz_tok.contains('/')
+        || tz_tok.contains('+')
+        || tz_tok.contains('-')
+        || tz_tok.eq_ignore_ascii_case("utc")
+        || tz_tok.eq_ignore_ascii_case("gmt")
+        || matches!(tz_tok, "UT" | "ET" | "PT")
+        || (tz_tok.len() >= 3
+            && tz_tok.len() <= 5
+            && tz_tok.chars().all(|c| c.is_ascii_uppercase()));
+    if !looks_like_tz {
+        return None;
+    }
+
+    let tz = parse_tz_spec_with_abbrevs(tz_tok, custom)?;
+    let mut cleaned_tokens = Vec::with_capacity(len - 1);
+    cleaned_tokens.extend_from_slice(&tokens[..len - 2]);
+    cleaned_tokens.push(year_tok);
+    Some((cleaned_tokens.join(" "), tz))
 }
 
 /// Equivalent of `dateparser.timezone_parser.pop_tz_offset_from_string`.

@@ -36,6 +36,7 @@ _VALID_PREFER_MONTH_OF_YEAR = {"current", "first", "last"}
 _VALID_START_OF_WEEK = {"monday", "sunday"}
 _VALID_PARSERS = {
     "timestamp",
+    "negative-timestamp",
     "relative-time",
     "custom-formats",
     "absolute-time",

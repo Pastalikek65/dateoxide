@@ -1,7 +1,10 @@
+use crate::locale::{fold_diacritics, normalize_digits_and_lower, CompiledLocale, LocaleRegistry};
 use crate::settings::{
-    DateOrder, DatePart, ParserKind, Period, PreferDatesFrom, Settings, StrictDateOrder,
+    DateOrder, DatePart, ParserKind, Period, PreferDatesFrom, PreferMonthOfYear, Settings,
+    StrictDateOrder,
 };
 use crate::timezone::{extract_trailing_timezone_with_abbrevs, TzSpec};
+use chrono::format::{parse as chrono_parse, Parsed, StrftimeItems};
 use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 
 #[derive(Debug, Clone)]
@@ -11,6 +14,296 @@ pub struct FastPathMatch {
     pub period: Period,
     pub has_time: bool,
     pub parts: Vec<&'static str>,
+    pub locale: Option<String>,
+}
+
+const ENG_MONTHS_FULL: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+const ENG_MONTHS_ABBR: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+const ENG_WEEKDAYS_FULL: [&str; 7] = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+];
+
+const ENG_WEEKDAYS_ABBR: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+fn try_strptime_any(
+    s: &str,
+    fmt: &str,
+    locale: Option<String>,
+    settings: &Settings,
+) -> Option<FastPathMatch> {
+    if let Ok(dt) = DateTime::parse_from_str(s, fmt) {
+        return Some(FastPathMatch {
+            naive: dt.naive_local(),
+            tz: Some(TzSpec::Fixed(*dt.offset())),
+            period: Period::Day,
+            has_time: true,
+            parts: vec!["year", "month", "day", "time"],
+            locale,
+        });
+    }
+    if let Ok(ndt) = NaiveDateTime::parse_from_str(s, fmt) {
+        return Some(FastPathMatch {
+            naive: ndt,
+            tz: None,
+            period: Period::Day,
+            has_time: true,
+            parts: vec!["year", "month", "day", "time"],
+            locale,
+        });
+    }
+    if let Ok(nd) = NaiveDate::parse_from_str(s, fmt) {
+        return Some(FastPathMatch {
+            naive: nd.and_hms_opt(0, 0, 0)?,
+            tz: None,
+            period: Period::Day,
+            has_time: false,
+            parts: vec!["year", "month", "day"],
+            locale,
+        });
+    }
+
+    // Partial strptime fallback via chrono::format::Parsed (e.g. "%B %Y", "%Y-%m", "%d %B", "%H:%M", "%Y-%j")
+    let mut parsed = Parsed::new();
+    chrono_parse(&mut parsed, s, StrftimeItems::new(fmt)).ok()?;
+
+    let has_year = parsed.year.is_some();
+    let has_month = parsed.month.is_some();
+    let has_day = parsed.day.is_some();
+    let has_ordinal = parsed.ordinal.is_some();
+    let has_time = parsed.hour_div_12.is_some()
+        || parsed.hour_mod_12.is_some()
+        || parsed.minute.is_some()
+        || parsed.second.is_some();
+
+    if !has_year && !has_month && !has_day && !has_ordinal && !has_time {
+        return None;
+    }
+
+    if settings.strict_parsing && (!has_year || (!(has_month && has_day) && !has_ordinal)) {
+        return None;
+    }
+    if settings.require_parts.contains(&DatePart::Year) && !has_year {
+        return None;
+    }
+    if settings.require_parts.contains(&DatePart::Month) && !has_month && !has_ordinal {
+        return None;
+    }
+    if settings.require_parts.contains(&DatePart::Day) && !has_day && !has_ordinal {
+        return None;
+    }
+
+    let time = if has_time {
+        if parsed.minute.is_none() {
+            parsed.minute = Some(0);
+        }
+        if parsed.second.is_none() {
+            parsed.second = Some(0);
+        }
+        parsed.to_naive_time().ok()?
+    } else {
+        NaiveTime::from_hms_opt(0, 0, 0)?
+    };
+
+    let base = settings.effective_base();
+    let nd = if has_ordinal {
+        let y = parsed.year.unwrap_or(base.year());
+        if !(1..=9999).contains(&y) {
+            return None;
+        }
+        NaiveDate::from_yo_opt(y, parsed.ordinal?)?
+    } else if !has_year && !has_month && !has_day && has_time {
+        resolve_time_only_date(time, settings)
+    } else {
+        let mut y = parsed.year.unwrap_or(base.year());
+        if !(1..=9999).contains(&y) {
+            return None;
+        }
+        let m = parsed.month.unwrap_or_else(|| match settings.prefer_month_of_year {
+            PreferMonthOfYear::First => 1,
+            PreferMonthOfYear::Last => 12,
+            PreferMonthOfYear::Current => base.month(),
+        });
+        if !(1..=12).contains(&m) {
+            return None;
+        }
+        let d = parsed
+            .day
+            .unwrap_or_else(|| resolve_missing_day(y, m, base.day(), settings.prefer_day_of_month));
+        if d < 1 || d > days_in_month(y, m) {
+            return None;
+        }
+        if !has_year {
+            if let Some(cand) = NaiveDate::from_ymd_opt(y, m, d) {
+                match settings.prefer_dates_from {
+                    PreferDatesFrom::Past if cand > base.date() => y -= 1,
+                    PreferDatesFrom::Future if cand < base.date() => y += 1,
+                    _ => {}
+                }
+            }
+        }
+        let final_d = d.min(days_in_month(y, m));
+        NaiveDate::from_ymd_opt(y, m, final_d)?
+    };
+
+    let tz = parsed.offset.and_then(FixedOffset::east_opt).map(TzSpec::Fixed);
+    let period = if has_day || has_ordinal || (!has_year && !has_month && has_time) {
+        Period::Day
+    } else if has_month {
+        Period::Month
+    } else {
+        Period::Year
+    };
+
+    let mut parts = Vec::with_capacity(4);
+    if has_year {
+        parts.push("year");
+    }
+    if has_month || has_ordinal {
+        parts.push("month");
+    }
+    if has_day || has_ordinal {
+        parts.push("day");
+    }
+    if has_time {
+        parts.push("time");
+    }
+
+    Some(FastPathMatch {
+        naive: nd.and_time(time),
+        tz,
+        period,
+        has_time,
+        parts,
+        locale,
+    })
+}
+
+fn translate_input_for_strptime(
+    norm: &str,
+    fmt: &str,
+    loc: &CompiledLocale,
+    use_folded: bool,
+) -> Option<String> {
+    let want_full_month = fmt.contains("%B");
+    let want_abbr_month = fmt.contains("%b") || fmt.contains("%h");
+    let want_full_wd = fmt.contains("%A");
+    let want_abbr_wd = fmt.contains("%a");
+    let want_ampm = fmt.contains("%p") || fmt.contains("%P");
+
+    if !want_full_month && !want_abbr_month && !want_full_wd && !want_abbr_wd && !want_ampm {
+        return None;
+    }
+
+    let mut pairs: Vec<(&str, &'static str)> = Vec::new();
+    if want_full_month || want_abbr_month {
+        let map = if use_folded { &loc.folded_months } else { &loc.months };
+        for (name, &m) in map {
+            if (1..=12).contains(&m) {
+                let idx = (m - 1) as usize;
+                let rep = if want_full_month {
+                    ENG_MONTHS_FULL[idx]
+                } else {
+                    ENG_MONTHS_ABBR[idx]
+                };
+                pairs.push((name.as_str(), rep));
+            }
+        }
+    }
+    if want_full_wd || want_abbr_wd {
+        let map = if use_folded {
+            &loc.folded_weekdays
+        } else {
+            &loc.weekdays
+        };
+        for (name, &w) in map {
+            if (w as usize) < 7 {
+                let rep = if want_full_wd {
+                    ENG_WEEKDAYS_FULL[w as usize]
+                } else {
+                    ENG_WEEKDAYS_ABBR[w as usize]
+                };
+                pairs.push((name.as_str(), rep));
+            }
+        }
+    }
+    if want_ampm && !use_folded {
+        for name in &loc.am {
+            pairs.push((name.as_str(), "AM"));
+        }
+        for name in &loc.pm {
+            pairs.push((name.as_str(), "PM"));
+        }
+    }
+
+    if pairs.is_empty() {
+        return None;
+    }
+    pairs.sort_unstable_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+    let mut out = String::with_capacity(norm.len() + 8);
+    let mut pos = 0usize;
+    let mut changed = false;
+
+    while pos < norm.len() {
+        let prev_is_alpha = norm[..pos]
+            .chars()
+            .next_back()
+            .map(|c| c.is_alphabetic())
+            .unwrap_or(false);
+
+        let mut matched: Option<(usize, &str)> = None;
+        if !prev_is_alpha {
+            let rest = &norm[pos..];
+            for &(pat, rep) in &pairs {
+                if let Some(after) = rest.strip_prefix(pat) {
+                    let next_is_alpha = after.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false);
+                    if !next_is_alpha {
+                        matched = Some((pat.len(), rep));
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some((plen, rep)) = matched {
+            out.push_str(rep);
+            pos += plen;
+            changed = true;
+        } else {
+            let ch = norm[pos..].chars().next().unwrap();
+            out.push(ch);
+            pos += ch.len_utf8();
+        }
+    }
+
+    if changed {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 /// Try explicit user-provided strptime formats (`date_formats`).
@@ -24,34 +317,72 @@ pub fn try_custom_formats(input: &str, settings: &Settings) -> Option<FastPathMa
     }
     let s = input.trim();
     for fmt in formats {
-        if let Ok(dt) = DateTime::parse_from_str(s, fmt) {
-            return Some(FastPathMatch {
-                naive: dt.naive_local(),
-                tz: Some(TzSpec::Fixed(*dt.offset())),
-                period: Period::Day,
-                has_time: true,
-                parts: vec!["year", "month", "day", "time"],
-            });
-        }
-        if let Ok(ndt) = NaiveDateTime::parse_from_str(s, fmt) {
-            return Some(FastPathMatch {
-                naive: ndt,
-                tz: None,
-                period: Period::Day,
-                has_time: true,
-                parts: vec!["year", "month", "day", "time"],
-            });
-        }
-        if let Ok(nd) = NaiveDate::parse_from_str(s, fmt) {
-            return Some(FastPathMatch {
-                naive: nd.and_hms_opt(0, 0, 0)?,
-                tz: None,
-                period: Period::Day,
-                has_time: false,
-                parts: vec!["year", "month", "day"],
-            });
+        if let Some(m) = try_strptime_any(s, fmt, Some("en".to_string()), settings) {
+            return Some(m);
         }
     }
+
+    // Localized strptime fallback when formats use locale-dependent directives (%B/%b/%A/%a/%p)
+    let needs_locale = formats.iter().any(|f| {
+        f.contains("%B")
+            || f.contains("%b")
+            || f.contains("%h")
+            || f.contains("%A")
+            || f.contains("%a")
+            || f.contains("%p")
+            || f.contains("%P")
+    });
+    if !needs_locale {
+        return None;
+    }
+
+    let norm = normalize_digits_and_lower(s);
+    if norm.is_empty() {
+        return None;
+    }
+
+    // Fast retry for Unicode digits in case format had numeric-only mismatch? No, focus on localized names.
+    let registry = LocaleRegistry::global();
+    let tokens: Vec<&str> = norm
+        .split(|c: char| {
+            c.is_whitespace() || c == ',' || c == '/' || c == '-' || c == '.' || c == '[' || c == ']'
+        })
+        .map(|t| t.trim_matches(|c: char| c == '.' || c == '(' || c == ')'))
+        .filter(|t| !t.is_empty())
+        .collect();
+    let candidates = registry.detect_candidates(
+        &norm,
+        &tokens,
+        settings.languages.as_deref(),
+        &settings.default_languages,
+        settings.normalize,
+        settings.use_given_language_order,
+    );
+
+    let folded_norm = if settings.normalize {
+        Some(fold_diacritics(&norm))
+    } else {
+        None
+    };
+
+    for &lid in &candidates {
+        let loc = &registry.locales[lid];
+        for fmt in formats {
+            if let Some(translated) = translate_input_for_strptime(&norm, fmt, loc, false) {
+                if let Some(m) = try_strptime_any(&translated, fmt, Some(loc.code.clone()), settings) {
+                    return Some(m);
+                }
+            }
+            if let Some(ref fn_s) = folded_norm {
+                if let Some(translated) = translate_input_for_strptime(fn_s, fmt, loc, true) {
+                    if let Some(m) = try_strptime_any(&translated, fmt, Some(loc.code.clone()), settings) {
+                        return Some(m);
+                    }
+                }
+            }
+        }
+    }
+
     None
 }
 
@@ -75,6 +406,7 @@ pub fn try_fast_path(input: &str, settings: &Settings) -> Option<FastPathMatch> 
                 period: Period::Day,
                 has_time: true,
                 parts: vec!["year", "month", "day", "time"],
+                locale: None,
             });
         }
     }
@@ -92,6 +424,7 @@ pub fn try_fast_path(input: &str, settings: &Settings) -> Option<FastPathMatch> 
                 period: Period::Day,
                 has_time: true,
                 parts: vec!["year", "month", "day", "time"],
+                locale: None,
             });
         }
     }
@@ -112,6 +445,13 @@ pub fn try_fast_path(input: &str, settings: &Settings) -> Option<FastPathMatch> 
         }
     }
 
+    // 3b. Negative Unix timestamp (only when "negative-timestamp" is explicitly in PARSERS)
+    if core.starts_with('-') && settings.allows_parser(ParserKind::NegativeTimestamp) {
+        if let Some(m) = try_negative_timestamp(core, tz, settings) {
+            return Some(m);
+        }
+    }
+
     // 4. Pure ASCII digits (Unix timestamp or compact YYYYMMDD)
     if core.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
         if let Some(m) = try_timestamp_or_compact(core, tz, settings) {
@@ -126,7 +466,147 @@ pub fn try_fast_path(input: &str, settings: &Settings) -> Option<FastPathMatch> 
         }
     }
 
+    // 6. Prefixed standalone times ("at 5:30 PM", "saat 14:30", "alle 18:00")
+    if allow_base {
+        if let Some(m) = try_prefixed_time_only(core, tz, settings) {
+            return Some(m);
+        }
+    }
+
     None
+}
+
+fn try_prefixed_time_only(
+    core: &str,
+    tz: Option<TzSpec>,
+    settings: &Settings,
+) -> Option<FastPathMatch> {
+    if settings.strict_parsing
+        || settings.require_parts.contains(&DatePart::Year)
+        || settings.require_parts.contains(&DatePart::Month)
+        || settings.require_parts.contains(&DatePart::Day)
+    {
+        return None;
+    }
+
+    let lower = core.to_ascii_lowercase();
+    let prefixes = [
+        "a las ",
+        "alle ",
+        "saat ",
+        "klo ",
+        "kl. ",
+        "at ",
+        "um ",
+        "om ",
+        "kl ",
+        "às ",
+        "à ",
+        "в ",
+        "о ",
+    ];
+    let mut rest: Option<&str> = None;
+    for p in prefixes {
+        if lower.starts_with(p) {
+            let sliced = core[p.len()..].trim();
+            if !sliced.is_empty() {
+                rest = Some(sliced);
+                break;
+            }
+        }
+    }
+    let time_s = rest?;
+    let tl = time_s.to_ascii_lowercase();
+    let looks_like_time = time_s.contains(':')
+        || ((time_s.contains('h') || time_s.contains('H'))
+            && time_s.as_bytes().first().map(|b| b.is_ascii_digit()).unwrap_or(false))
+        || time_s.contains('시')
+        || time_s.contains('時')
+        || time_s.contains('时')
+        || time_s.contains('点')
+        || tl.ends_with("am")
+        || tl.ends_with("pm")
+        || tl.ends_with("a.m.")
+        || tl.ends_with("p.m.")
+        || tl.ends_with("a.m")
+        || tl.ends_with("p.m");
+    if !looks_like_time {
+        return None;
+    }
+    let time = parse_time_str(time_s)?;
+    let date = resolve_time_only_date(time, settings);
+    Some(FastPathMatch {
+        naive: date.and_time(time),
+        tz,
+        period: Period::Day,
+        has_time: true,
+        parts: vec!["time"],
+        locale: None,
+    })
+}
+
+fn try_negative_timestamp(
+    core: &str,
+    tz: Option<TzSpec>,
+    settings: &Settings,
+) -> Option<FastPathMatch> {
+    if settings.strict_parsing {
+        return None;
+    }
+    let abs_str = core.strip_prefix('-')?;
+    if abs_str.is_empty() || !abs_str.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return None;
+    }
+    let dt = if let Some((int_part, frac_part)) = abs_str.split_once('.') {
+        if !(5..=10).contains(&int_part.len())
+            || frac_part.is_empty()
+            || frac_part.len() > 9
+            || !int_part.bytes().all(|b| b.is_ascii_digit())
+            || !frac_part.bytes().all(|b| b.is_ascii_digit())
+        {
+            return None;
+        }
+        let secs: i64 = int_part.parse().ok()?;
+        let mut nanos_str = frac_part.to_string();
+        while nanos_str.len() < 9 {
+            nanos_str.push('0');
+        }
+        let nanos: u32 = nanos_str.parse().ok()?;
+        if nanos == 0 {
+            DateTime::from_timestamp(-secs, 0)?
+        } else {
+            DateTime::from_timestamp(-(secs + 1), 1_000_000_000 - nanos)?
+        }
+    } else {
+        match abs_str.len() {
+            5..=10 => {
+                let secs: i64 = abs_str.parse().ok()?;
+                DateTime::from_timestamp(-secs, 0)?
+            }
+            13 => {
+                let ms: i64 = abs_str.parse().ok()?;
+                DateTime::from_timestamp_millis(-ms)?
+            }
+            16 => {
+                let us: i64 = abs_str.parse().ok()?;
+                DateTime::from_timestamp_micros(-us)?
+            }
+            _ => return None,
+        }
+    };
+
+    if !(1..=9999).contains(&dt.year()) {
+        return None;
+    }
+
+    Some(FastPathMatch {
+        naive: dt.naive_utc(),
+        tz: tz.or_else(|| FixedOffset::east_opt(0).map(TzSpec::Fixed)),
+        period: Period::Day,
+        has_time: true,
+        parts: vec!["year", "month", "day", "time"],
+        locale: None,
+    })
 }
 
 fn try_compact_iso_datetime(core: &str, tz: Option<TzSpec>) -> Option<FastPathMatch> {
@@ -177,6 +657,7 @@ fn try_compact_iso_datetime(core: &str, tz: Option<TzSpec>) -> Option<FastPathMa
         period: Period::Day,
         has_time: true,
         parts: vec!["year", "month", "day", "time"],
+        locale: None,
     })
 }
 
@@ -267,7 +748,17 @@ fn try_iso_week_date(
     let nd = NaiveDate::from_isoywd_opt(year, week, wd)?;
     let has_time = time_part.is_some();
     let time = match time_part {
-        Some(tp) => parse_time_str(tp)?,
+        Some(tp) => {
+            let clean_tp = tp
+                .strip_prefix("t ")
+                .or_else(|| tp.strip_prefix("T "))
+                .or_else(|| tp.strip_prefix("at "))
+                .or_else(|| tp.strip_prefix("AT "))
+                .or_else(|| tp.strip_prefix("@ "))
+                .map(|r| r.trim())
+                .unwrap_or(tp);
+            parse_time_str(clean_tp)?
+        }
         None => NaiveTime::from_hms_opt(0, 0, 0)?,
     };
     let mut parts = vec!["year", "month", "day"];
@@ -280,6 +771,7 @@ fn try_iso_week_date(
         period: if weekday_opt.is_some() { Period::Day } else { Period::Week },
         has_time,
         parts,
+        locale: None,
     })
 }
 
@@ -312,6 +804,7 @@ fn try_timestamp_or_compact(
                     period: Period::Day,
                     has_time: true,
                     parts: vec!["time"],
+                    locale: None,
                 });
             }
             8 => {
@@ -321,67 +814,38 @@ fn try_timestamp_or_compact(
                 {
                     return None;
                 }
-                let order = settings.effective_date_order(DateOrder::YMD);
-                let try_ymd = || -> Option<NaiveDate> {
-                    let y: i32 = core[0..4].parse().ok()?;
-    if !(1..=9999).contains(&y) {
-        return None;
-    }
-                    let m: u32 = core[4..6].parse().ok()?;
-                    let d: u32 = core[6..8].parse().ok()?;
-                    if (1900..=2199).contains(&y) {
-                        NaiveDate::from_ymd_opt(y, m, d)
-                    } else {
-                        None
-                    }
+                let nd = parse_compact_8digit_date(core, settings)?;
+                Some(FastPathMatch {
+                    naive: nd.and_hms_opt(0, 0, 0)?,
+                    tz,
+                    period: Period::Day,
+                    has_time: false,
+                    parts: vec!["year", "month", "day"],
+                    locale: None,
+                })
+            }
+            12 | 14 if settings.parsers.is_some()
+                && settings.allows_parser(ParserKind::NoSpacesTime) =>
+            {
+                let date_part = &core[0..8];
+                let time_part = &core[8..];
+                let nd = parse_compact_8digit_date(date_part, settings)?;
+                let hh: u32 = time_part[0..2].parse().ok()?;
+                let mm: u32 = time_part[2..4].parse().ok()?;
+                let ss: u32 = if time_part.len() == 6 {
+                    time_part[4..6].parse().ok()?
+                } else {
+                    0
                 };
-                let try_dmy = || -> Option<NaiveDate> {
-                    let d: u32 = core[0..2].parse().ok()?;
-                    let m: u32 = core[2..4].parse().ok()?;
-                    let y: i32 = core[4..8].parse().ok()?;
-                    if (1900..=2199).contains(&y) {
-                        NaiveDate::from_ymd_opt(y, m, d)
-                    } else {
-                        None
-                    }
-                };
-                let try_mdy = || -> Option<NaiveDate> {
-                    let m: u32 = core[0..2].parse().ok()?;
-                    let d: u32 = core[2..4].parse().ok()?;
-                    let y: i32 = core[4..8].parse().ok()?;
-                    if (1900..=2199).contains(&y) {
-                        NaiveDate::from_ymd_opt(y, m, d)
-                    } else {
-                        None
-                    }
-                };
-                let nd = match order {
-                    DateOrder::DMY => try_dmy().or_else(|| {
-                        if settings.strict_date_order == StrictDateOrder::All { None } else { try_ymd().or_else(try_mdy) }
-                    }),
-                    DateOrder::MDY => try_mdy().or_else(|| {
-                        if settings.strict_date_order == StrictDateOrder::All { None } else { try_ymd().or_else(try_dmy) }
-                    }),
-                    _ => try_ymd().or_else(|| {
-                        if settings.strict_date_order == StrictDateOrder::All {
-                            None
-                        } else if settings.allows_parser(ParserKind::NoSpacesTime) || settings.date_order.is_some() {
-                            try_dmy().or_else(try_mdy)
-                        } else {
-                            None
-                        }
-                    }),
-                };
-                if let Some(nd) = nd {
-                    return Some(FastPathMatch {
-                        naive: nd.and_hms_opt(0, 0, 0)?,
-                        tz,
-                        period: Period::Day,
-                        has_time: false,
-                        parts: vec!["year", "month", "day"],
-                    });
-                }
-                None
+                let time = NaiveTime::from_hms_opt(hh, mm, ss)?;
+                Some(FastPathMatch {
+                    naive: nd.and_time(time),
+                    tz,
+                    period: Period::Day,
+                    has_time: true,
+                    parts: vec!["year", "month", "day", "time"],
+                    locale: None,
+                })
             }
             9..=10 => {
                 if settings.strict_parsing || !settings.allows_parser(ParserKind::Timestamp) {
@@ -395,6 +859,7 @@ fn try_timestamp_or_compact(
                     period: Period::Day,
                     has_time: true,
                     parts: vec!["year", "month", "day", "time"],
+                    locale: None,
                 })
             }
             13 => {
@@ -409,6 +874,25 @@ fn try_timestamp_or_compact(
                     period: Period::Day,
                     has_time: true,
                     parts: vec!["year", "month", "day", "time"],
+                    locale: None,
+                })
+            }
+            16 => {
+                if settings.strict_parsing || !settings.allows_parser(ParserKind::Timestamp) {
+                    return None;
+                }
+                let us: i64 = core.parse().ok()?;
+                let dt = DateTime::from_timestamp_micros(us)?;
+                if !(1..=9999).contains(&dt.year()) {
+                    return None;
+                }
+                Some(FastPathMatch {
+                    naive: dt.naive_utc(),
+                    tz: tz.or_else(|| FixedOffset::east_opt(0).map(TzSpec::Fixed)),
+                    period: Period::Day,
+                    has_time: true,
+                    parts: vec!["year", "month", "day", "time"],
+                    locale: None,
                 })
             }
             _ => None,
@@ -437,9 +921,73 @@ fn try_timestamp_or_compact(
                 period: Period::Day,
                 has_time: true,
                 parts: vec!["year", "month", "day", "time"],
+                locale: None,
             });
         }
         None
+    }
+}
+
+fn parse_compact_8digit_date(s: &str, settings: &Settings) -> Option<NaiveDate> {
+    if s.len() != 8 || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let order = settings.effective_date_order(DateOrder::YMD);
+    let try_ymd = || -> Option<NaiveDate> {
+        let y: i32 = s[0..4].parse().ok()?;
+        let m: u32 = s[4..6].parse().ok()?;
+        let d: u32 = s[6..8].parse().ok()?;
+        if (1900..=2199).contains(&y) {
+            NaiveDate::from_ymd_opt(y, m, d)
+        } else {
+            None
+        }
+    };
+    let try_dmy = || -> Option<NaiveDate> {
+        let d: u32 = s[0..2].parse().ok()?;
+        let m: u32 = s[2..4].parse().ok()?;
+        let y: i32 = s[4..8].parse().ok()?;
+        if (1900..=2199).contains(&y) {
+            NaiveDate::from_ymd_opt(y, m, d)
+        } else {
+            None
+        }
+    };
+    let try_mdy = || -> Option<NaiveDate> {
+        let m: u32 = s[0..2].parse().ok()?;
+        let d: u32 = s[2..4].parse().ok()?;
+        let y: i32 = s[4..8].parse().ok()?;
+        if (1900..=2199).contains(&y) {
+            NaiveDate::from_ymd_opt(y, m, d)
+        } else {
+            None
+        }
+    };
+    match order {
+        DateOrder::DMY => try_dmy().or_else(|| {
+            if settings.strict_date_order == StrictDateOrder::All {
+                None
+            } else {
+                try_ymd().or_else(try_mdy)
+            }
+        }),
+        DateOrder::MDY => try_mdy().or_else(|| {
+            if settings.strict_date_order == StrictDateOrder::All {
+                None
+            } else {
+                try_ymd().or_else(try_dmy)
+            }
+        }),
+        _ => try_ymd().or_else(|| {
+            if settings.strict_date_order == StrictDateOrder::All {
+                None
+            } else if settings.allows_parser(ParserKind::NoSpacesTime) || settings.date_order.is_some()
+            {
+                try_dmy().or_else(try_mdy)
+            } else {
+                None
+            }
+        }),
     }
 }
 
@@ -476,6 +1024,7 @@ fn try_numeric_datetime(
                     period: Period::Day,
                     has_time: true,
                     parts: vec!["time"],
+                    locale: None,
                 });
             }
         }
@@ -528,7 +1077,17 @@ fn try_numeric_datetime(
 
     let has_time = time_part.is_some();
     let time = match time_part {
-        Some(tp) => parse_time_str(tp)?,
+        Some(tp) => {
+            let clean_tp = tp
+                .strip_prefix("t ")
+                .or_else(|| tp.strip_prefix("T "))
+                .or_else(|| tp.strip_prefix("at "))
+                .or_else(|| tp.strip_prefix("AT "))
+                .or_else(|| tp.strip_prefix("@ "))
+                .map(|r| r.trim())
+                .unwrap_or(tp);
+            parse_time_str(clean_tp)?
+        }
         None => NaiveTime::from_hms_opt(0, 0, 0)?,
     };
 
@@ -559,6 +1118,7 @@ fn try_numeric_datetime(
             period: Period::Month,
             has_time,
             parts: p,
+            locale: None,
         });
     }
 
@@ -584,6 +1144,7 @@ fn try_numeric_datetime(
         period: Period::Day,
         has_time,
         parts: p,
+        locale: None,
     })
 }
 
@@ -697,8 +1258,8 @@ pub fn parse_time_str(input: &str) -> Option<NaiveTime> {
     let mut is_pm = false;
     let mut is_am = false;
 
-    // Leading AM/PM/CJK/Korean markers ("PM 2:26", "下午 02:26:26", "오후 2:26")
-    for prefix in ["下午", "오후", "p.m.", "p.m", "pm", "PM"] {
+    // Leading AM/PM/CJK/Korean markers ("PM 2:26", "下午 02:26:26", "午後2時30分", "오후 2시 30분")
+    for prefix in ["下午", "午後", "오후", "p.m.", "p.m", "pm", "PM"] {
         if let Some(rest) = s.strip_prefix(prefix) {
             if rest.starts_with(char::is_whitespace) || rest.starts_with(|c: char| c.is_ascii_digit()) {
                 s = rest.trim_start();
@@ -708,7 +1269,7 @@ pub fn parse_time_str(input: &str) -> Option<NaiveTime> {
         }
     }
     if !is_pm {
-        for prefix in ["上午", "오전", "a.m.", "a.m", "am", "AM"] {
+        for prefix in ["上午", "午前", "오전", "a.m.", "a.m", "am", "AM"] {
             if let Some(rest) = s.strip_prefix(prefix) {
                 if rest.starts_with(char::is_whitespace) || rest.starts_with(|c: char| c.is_ascii_digit()) {
                     s = rest.trim_start();
@@ -746,6 +1307,13 @@ pub fn parse_time_str(input: &str) -> Option<NaiveTime> {
     // Trailing "Uhr" (German)
     if let Some(rest) = s.strip_suffix("Uhr").or_else(|| s.strip_suffix("uhr")) {
         s = rest.trim_end();
+    }
+
+    // CJK / Korean clock times ("2시 30분", "2時30分", "2时30分15秒", "14点30分")
+    if s.contains('시') || s.contains('時') || s.contains('时') || s.contains('点') {
+        if let Some(t) = parse_cjk_korean_clock(s, is_am, is_pm) {
+            return Some(t);
+        }
     }
 
     // French / European "14h30" or "09h15" or "14h"
@@ -834,6 +1402,52 @@ pub fn parse_time_str(input: &str) -> Option<NaiveTime> {
 
     apply_ampm(&mut h, is_am, is_pm)?;
     NaiveTime::from_hms_nano_opt(h, m, sec, nano)
+}
+
+fn parse_cjk_korean_clock(s: &str, is_am: bool, is_pm: bool) -> Option<NaiveTime> {
+    let mut rest = s.trim();
+    let hour_idx = rest.find(['시', '時', '时', '点'])?;
+    let h_str = rest[..hour_idx].trim();
+    if h_str.is_empty() || h_str.len() > 2 || !h_str.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let mut h: u32 = h_str.parse().ok()?;
+    let sep_len = rest[hour_idx..].chars().next()?.len_utf8();
+    rest = rest[hour_idx + sep_len..].trim();
+
+    let mut m: u32 = 0;
+    let mut sec: u32 = 0;
+    if !rest.is_empty() {
+        if let Some(min_idx) = rest.find(['분', '分']) {
+            let m_str = rest[..min_idx].trim();
+            if m_str.is_empty() || m_str.len() > 2 || !m_str.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            m = m_str.parse().ok()?;
+            let min_len = rest[min_idx..].chars().next()?.len_utf8();
+            rest = rest[min_idx + min_len..].trim();
+        }
+        if !rest.is_empty() {
+            if let Some(sec_idx) = rest.find(['초', '秒']) {
+                let sec_str = rest[..sec_idx].trim();
+                if sec_str.is_empty()
+                    || sec_str.len() > 2
+                    || !sec_str.bytes().all(|b| b.is_ascii_digit())
+                {
+                    return None;
+                }
+                sec = sec_str.parse().ok()?;
+                let sec_len = rest[sec_idx..].chars().next()?.len_utf8();
+                rest = rest[sec_idx + sec_len..].trim();
+            }
+        }
+        if !rest.is_empty() {
+            return None;
+        }
+    }
+
+    apply_ampm(&mut h, is_am, is_pm)?;
+    NaiveTime::from_hms_opt(h, m, sec)
 }
 
 fn apply_ampm(h: &mut u32, is_am: bool, is_pm: bool) -> Option<()> {

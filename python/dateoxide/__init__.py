@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from . import (
         calendars,
         conf,
+        custom_language_detection,
         date,
         freshness_date_parser,
         search,
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
 _LAZY_SUBMODULES = {
     "calendars",
     "conf",
+    "custom_language_detection",
     "date",
     "freshness_date_parser",
     "search",
@@ -74,6 +76,7 @@ __all__ = [
     "apply_settings",
     "calendars",
     "conf",
+    "custom_language_detection",
     "date",
     "freshness_date_parser",
     "parse",
