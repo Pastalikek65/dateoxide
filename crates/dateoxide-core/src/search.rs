@@ -104,6 +104,13 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
         return Vec::new();
     }
 
+    let explicit_lang_ids: Option<Vec<usize>> = parse_settings.languages.as_ref().map(|codes| {
+        codes
+            .iter()
+            .filter_map(|c| registry.resolve_lang_id(c))
+            .collect()
+    });
+
     let mut kinds = Vec::with_capacity(spans.len());
     for &(start, end) in &spans {
         let raw = &text[start..end];
@@ -114,7 +121,12 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
                     | '،' | '؛' | '؟' | '。' | '，' | '、' | '；' | '！' | '？'
             )
         });
-        kinds.push(classify_token(trimmed, registry, settings.normalize));
+        kinds.push(classify_token(
+            trimmed,
+            registry,
+            settings.normalize,
+            explicit_lang_ids.as_deref(),
+        ));
     }
 
     let has_custom_formats = settings
@@ -208,7 +220,11 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
         while j < spans.len() && (j - i) < 10 {
             let prev_raw = &text[spans[j - 1].0..spans[j - 1].1];
             let prev_ends_sentence =
-                prev_raw.ends_with([';', '!', '?', '。', '！', '？', '؛', '؟'])
+                prev_raw.ends_with([';', '!', '?', '。', '！', '？', '؛', '؟', '、', '，', '：'])
+                    || (prev_raw.ends_with(':')
+                        && !prev_raw[..prev_raw.len() - 1]
+                            .bytes()
+                            .all(|b| b.is_ascii_digit()))
                     || (prev_raw.ends_with('.')
                         && !prev_raw[..prev_raw.len() - 1]
                             .bytes()
@@ -431,7 +447,77 @@ fn collect_word_spans(s: &str) -> Vec<(usize, usize)> {
     out
 }
 
-fn classify_token(tok: &str, registry: &LocaleRegistry, normalize: bool) -> TokenKind {
+fn classify_token_explicit(
+    lower: &str,
+    lower_untrimmed: &str,
+    registry: &LocaleRegistry,
+    normalize: bool,
+    explicit_ids: &[usize],
+) -> Option<TokenKind> {
+    let folded_cow = if normalize {
+        Some(fold_diacritics(lower))
+    } else {
+        None
+    };
+    let folded = folded_cow.as_deref();
+
+    let is_article_connector = matches!(
+        lower,
+        "el" | "la" | "le" | "de" | "del" | "al" | "the" | "of" | "on" | "at" | "o" | "в" | "о"
+    );
+    for &lid in explicit_ids {
+        let loc = &registry.locales[lid];
+        for cand in [Some(lower_untrimmed), Some(lower), folded].into_iter().flatten() {
+            if loc.months.contains_key(cand)
+                || loc.folded_months.contains_key(cand)
+                || loc.weekdays.contains_key(cand)
+                || loc.folded_weekdays.contains_key(cand)
+                || loc.units.contains_key(cand)
+                || loc.folded_units.contains_key(cand)
+                || loc.ago.contains(cand)
+                || loc.folded_ago.contains(cand)
+                || loc.in_words.contains(cand)
+                || loc.folded_in_words.contains(cand)
+                || loc.time_of_day.contains_key(cand)
+                || loc.folded_time_of_day.contains_key(cand)
+                || loc.am.contains(cand)
+                || loc.folded_am.contains(cand)
+                || loc.pm.contains(cand)
+                || loc.folded_pm.contains(cand)
+                || (!is_article_connector
+                    && (loc
+                        .relative_exact
+                        .keys()
+                        .any(|p| p.split_whitespace().any(|w| w == cand))
+                        || loc.relative_affix.iter().any(|a| {
+                            a.prefix.split_whitespace().any(|w| w == cand)
+                                || a.suffix.split_whitespace().any(|w| w == cand)
+                        })))
+            {
+                return Some(TokenKind::Signal);
+            }
+        }
+    }
+    for &lid in explicit_ids {
+        let loc = &registry.locales[lid];
+        for cand in [Some(lower), folded].into_iter().flatten() {
+            if loc.word_numbers.contains_key(cand)
+                || loc.ordinals.contains_key(cand)
+                || loc.folded_ordinals.contains_key(cand)
+            {
+                return Some(TokenKind::Numeral);
+            }
+        }
+    }
+    None
+}
+
+fn classify_token(
+    tok: &str,
+    registry: &LocaleRegistry,
+    normalize: bool,
+    explicit_ids: Option<&[usize]>,
+) -> TokenKind {
     if tok.is_empty() {
         return TokenKind::Other;
     }
@@ -453,12 +539,20 @@ fn classify_token(tok: &str, registry: &LocaleRegistry, normalize: bool) -> Toke
     let trimmed_tok = tok.trim_matches(|c: char| matches!(c, '\'' | '’' | 'ꞌ' | 'ʻ' | ',' | '.'));
     let lower = normalize_digits_and_lower(if trimmed_tok.is_empty() { tok } else { trimmed_tok });
 
-    if matches!(
-        lower.as_str(),
-        "or" | "if" | "so" | "as" | "by" | "is" | "are" | "was" | "were" | "be" | "to" | "for"
-            | "from" | "not" | "but" | "with" | "us" | "we" | "me" | "my" | "it" | "its" | "let"
-            | "ok"
-    ) {
+    if let Some(ids) = explicit_ids {
+        if let Some(kind) = classify_token_explicit(&lower, &lower_untrimmed, registry, normalize, ids) {
+            return kind;
+        }
+    }
+
+    if explicit_ids.is_none()
+        && matches!(
+            lower.as_str(),
+            "or" | "if" | "so" | "as" | "by" | "is" | "are" | "was" | "were" | "be" | "to"
+                | "for" | "from" | "not" | "but" | "with" | "us" | "we" | "me" | "my" | "it"
+                | "its" | "let" | "ok"
+        )
+    {
         return TokenKind::Other;
     }
 
@@ -887,7 +981,7 @@ fn should_skip_ambiguous_phrase(
                 | "she" | "out" | "man" | "see" | "did" | "say" | "use" | "way" | "new" | "old"
                 | "for" | "not" | "but" | "you" | "all" | "one" | "two" | "who" | "how" | "why"
                 | "its" | "him" | "our" | "run" | "sit" | "try" | "ask" | "own" | "big" | "end"
-                | "far" | "off" | "yet" | "per" | "via" | "ok"
+                | "far" | "off" | "yet" | "per" | "via" | "ok" | "no"
         ) {
             return true;
         }

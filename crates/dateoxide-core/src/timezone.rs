@@ -319,7 +319,7 @@ pub fn pop_tz_offset_from_string(
 
 /// Resolve a local `NaiveDateTime` inside an IANA timezone, shifting past DST spring-forward gaps.
 #[inline]
-fn resolve_iana_local(tz: Tz, naive: NaiveDateTime) -> chrono::DateTime<Tz> {
+pub fn resolve_iana_local(tz: Tz, naive: NaiveDateTime) -> chrono::DateTime<Tz> {
     if let Some(dt) = tz.from_local_datetime(&naive).earliest() {
         return dt;
     }

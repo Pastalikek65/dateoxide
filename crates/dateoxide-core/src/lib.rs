@@ -284,17 +284,21 @@ pub fn get_date_data(input: &str, settings: &Settings) -> DateData {
     }
 
     // Conversational NLP engine (period boundaries, quarters, seasons, business days, chained relatives, clocks)
-    if let Some(m) = nlp::try_parse_nlp(normalized, settings) {
-        return build_datedata(
-            m.naive,
-            tz,
-            m.period,
-            m.has_time,
-            m.locale,
-            m.parts,
-            m.part_of_day,
-            settings,
-        );
+    match nlp::try_parse_nlp(normalized, settings) {
+        nlp::NlpOutcome::Matched(m) => {
+            return build_datedata(
+                m.naive,
+                tz,
+                m.period,
+                m.has_time,
+                m.locale,
+                m.parts,
+                m.part_of_day,
+                settings,
+            );
+        }
+        nlp::NlpOutcome::Invalid => return DateData::empty(),
+        nlp::NlpOutcome::NoMatch => {}
     }
 
     // 3. Lazy-load the compact 205-language registry and detect top candidates in O(tokens)

@@ -275,8 +275,16 @@ pub fn normalize_non_decimal_numerals(input: &str) -> Cow<'_, str> {
         }
 
         if is_cjk_numeral_char(ch) {
+            if ch == '四' && chars.get(i + 1..i + 3) == Some(&['半', '期'][..]) {
+                out.push(ch);
+                i += 1;
+                continue;
+            }
             let start = i;
             while i < chars.len() && is_cjk_numeral_char(chars[i]) {
+                if chars[i] == '四' && chars.get(i + 1..i + 3) == Some(&['半', '期'][..]) {
+                    break;
+                }
                 i += 1;
             }
             let prev = if start > 0 { Some(chars[start - 1]) } else { None };
@@ -291,13 +299,8 @@ pub fn normalize_non_decimal_numerals(input: &str) -> Cow<'_, str> {
             });
             let is_japanese_day_compound =
                 start + 1 == i && chars[start] == '一' && next == Some('昨');
-            let is_japanese_quarter =
-                start + 1 == i && chars[start] == '四' && chars.get(i..i + 2) == Some(&['半', '期'][..]);
             let run: String = chars[start..i].iter().collect();
-            if (!after_weekday_marker || has_date_unit_after)
-                && !is_japanese_day_compound
-                && !is_japanese_quarter
-            {
+            if (!after_weekday_marker || has_date_unit_after) && !is_japanese_day_compound {
                 if let Some(val) = parse_cjk_numeral(&run) {
                     out.push_str(&val.to_string());
                     continue;

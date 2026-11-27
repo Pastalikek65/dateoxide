@@ -6,14 +6,24 @@ use crate::fast_path::{days_in_month, parse_time_str, resolve_time_only_date};
 use crate::locale::{fold_diacritics, settings_allows_locale, LocaleRegistry, TimeUnit};
 use crate::relative::{apply_relative_offset, RelativeMatch};
 use crate::settings::{ParserKind, Period, PreferDatesFrom, Settings};
-use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+
+/// Result of conversational NLP parsing; `Invalid` rejects syntactically matched
+/// but calendar-impossible phrases (e.g. `"fifth Wednesday of March 2026"`) so they
+/// do not silently fall through to absolute parsing.
+#[derive(Debug, Clone)]
+pub enum NlpOutcome {
+    Matched(RelativeMatch),
+    Invalid,
+    NoMatch,
+}
 
 /// Try parsing advanced conversational NLP date/time expressions.
-pub fn try_parse_nlp(normalized: &str, settings: &Settings) -> Option<RelativeMatch> {
+pub fn try_parse_nlp(normalized: &str, settings: &Settings) -> NlpOutcome {
     let base = settings.effective_base();
     let trimmed = normalized.trim();
     if trimmed.is_empty() {
-        return None;
+        return NlpOutcome::NoMatch;
     }
     let folded_cow = fold_diacritics(trimmed);
     let s = folded_cow.as_ref();
@@ -24,43 +34,44 @@ pub fn try_parse_nlp(normalized: &str, settings: &Settings) -> Option<RelativeMa
     // 1. Quarters & Seasons (AbsoluteTime || RelativeTime)
     if allow_abs || allow_rel {
         if let Some(m) = try_quarters_and_seasons(s, trimmed, base, settings) {
-            return Some(m);
+            return NlpOutcome::Matched(m);
         }
-        if let Some(m) = try_ordinal_weekday_of_month(s, base, settings) {
-            return Some(m);
+        match try_ordinal_weekday_of_month(s, base, settings) {
+            NlpOutcome::NoMatch => {}
+            other => return other,
         }
     }
 
     if !allow_rel {
-        return None;
+        return NlpOutcome::NoMatch;
     }
 
     // 2. Anchored period boundaries
     if let Some(m) = try_period_boundaries(s, trimmed, base, settings) {
-        return Some(m);
+        return NlpOutcome::Matched(m);
     }
 
     // 3. Business / working days
     if let Some(m) = try_business_days(s, trimmed, base, settings) {
-        return Some(m);
+        return NlpOutcome::Matched(m);
     }
 
     // 4. Chained & over-next relatives
     if let Some(m) = try_chained_relatives(s, trimmed, base, settings) {
-        return Some(m);
+        return NlpOutcome::Matched(m);
     }
 
     // 5. Indefinite & multilingual fractionals (birkaç, полтора, 1時間半前, 3点半, 3시 반)
     if let Some(m) = try_indefinite_and_cjk_fractionals(s, trimmed, base, settings) {
-        return Some(m);
+        return NlpOutcome::Matched(m);
     }
 
     // 6. Conversational clocks & compound day + TOD + time
     if let Some(m) = try_conversational_clocks_ext(s, trimmed, base, settings) {
-        return Some(m);
+        return NlpOutcome::Matched(m);
     }
 
-    None
+    NlpOutcome::NoMatch
 }
 
 fn matched_day(naive: NaiveDateTime, locale: &str, has_time: bool) -> RelativeMatch {
@@ -400,13 +411,15 @@ fn try_period_boundaries(
             if let Some(k) = kind {
                 let mut parts = rest.split_whitespace();
                 if let Some(m_tok) = parts.next() {
-                    let y_opt = parts
-                        .next()
-                        .and_then(|t| if t.len() == 4 { t.parse::<i32>().ok() } else { None })
-                        .filter(|y| (1..=9999).contains(y));
-                    if parts.next().is_none() {
+                    let y_opt: Option<i32> = match parts.next() {
+                        None => Some(base.year()),
+                        Some(t) if t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()) => {
+                            t.parse::<i32>().ok().filter(|y| (1..=9999).contains(y))
+                        }
+                        Some(_) => None,
+                    };
+                    if let (Some(y), None) = (y_opt, parts.next()) {
                         if let Some(&m) = loc.months.get(m_tok) {
-                            let y = y_opt.unwrap_or_else(|| base.year());
                             let d = match k {
                                 ModKind::Start => 1,
                                 ModKind::Mid => 15,
@@ -484,16 +497,19 @@ fn try_ordinal_weekday_of_month(
     s: &str,
     base: NaiveDateTime,
     settings: &Settings,
-) -> Option<RelativeMatch> {
+) -> NlpOutcome {
     if !settings_allows_locale(settings, "en") {
-        return None;
+        return NlpOutcome::NoMatch;
     }
     let reg = LocaleRegistry::global();
-    let en = &reg.locales[reg.resolve_lang_id("en")?];
+    let Some(en_id) = reg.resolve_lang_id("en") else {
+        return NlpOutcome::NoMatch;
+    };
+    let en = &reg.locales[en_id];
 
     let toks: Vec<&str> = s.split_whitespace().collect();
     if toks.len() < 4 || toks.len() > 5 {
-        return None;
+        return NlpOutcome::NoMatch;
     }
 
     let nth: Option<u32> = match toks[0] {
@@ -502,42 +518,67 @@ fn try_ordinal_weekday_of_month(
         "third" | "3rd" => Some(3),
         "fourth" | "4th" => Some(4),
         "fifth" | "5th" => Some(5),
+        "sixth" | "6th" => Some(6),
+        "seventh" | "7th" => Some(7),
+        "eighth" | "8th" => Some(8),
         "last" => None,
-        _ => return None,
+        _ => return NlpOutcome::NoMatch,
     };
 
-    let target_wd = *en.weekdays.get(toks[1])? as u32;
+    let Some(&target_wd_u8) = en.weekdays.get(toks[1]) else {
+        return NlpOutcome::NoMatch;
+    };
+    let target_wd = target_wd_u8 as u32;
     if !matches!(toks[2], "of" | "in") {
-        return None;
+        return NlpOutcome::NoMatch;
     }
-    let m = *en.months.get(toks[3])? as u32;
+    let Some(&m_u8) = en.months.get(toks[3]) else {
+        return NlpOutcome::NoMatch;
+    };
+    let m = m_u8 as u32;
     let y = if toks.len() == 5 {
         let yt = toks[4];
         if yt.len() == 4 && yt.bytes().all(|b| b.is_ascii_digit()) {
-            yt.parse::<i32>().ok().filter(|v| (1..=9999).contains(v))?
+            let Some(yv) = yt.parse::<i32>().ok().filter(|v| (1..=9999).contains(v)) else {
+                return NlpOutcome::Invalid;
+            };
+            yv
         } else {
-            return None;
+            return NlpOutcome::NoMatch;
         }
     } else {
         base.year()
     };
 
     let nd = if let Some(k) = nth {
-        let first = NaiveDate::from_ymd_opt(y, m, 1)?;
+        let Some(first) = NaiveDate::from_ymd_opt(y, m, 1) else {
+            return NlpOutcome::Invalid;
+        };
         let diff = (target_wd + 7 - first.weekday().num_days_from_monday()) % 7;
         let d = 1 + diff + (k - 1) * 7;
         if d > days_in_month(y, m) {
-            return None;
+            return NlpOutcome::Invalid;
         }
-        NaiveDate::from_ymd_opt(y, m, d)?
+        let Some(dt) = NaiveDate::from_ymd_opt(y, m, d) else {
+            return NlpOutcome::Invalid;
+        };
+        dt
     } else {
         let last_day = days_in_month(y, m);
-        let last = NaiveDate::from_ymd_opt(y, m, last_day)?;
+        let Some(last) = NaiveDate::from_ymd_opt(y, m, last_day) else {
+            return NlpOutcome::Invalid;
+        };
         let diff = (last.weekday().num_days_from_monday() + 7 - target_wd) % 7;
-        NaiveDate::from_ymd_opt(y, m, last_day - diff)?
+        let Some(dt) = NaiveDate::from_ymd_opt(y, m, last_day - diff) else {
+            return NlpOutcome::Invalid;
+        };
+        dt
     };
 
-    Some(matched_day(nd.and_hms_opt(0, 0, 0)?, "en", false))
+    match nd.and_hms_opt(0, 0, 0) {
+        Some(ndt) => NlpOutcome::Matched(matched_day(ndt, "en", false)),
+        None => NlpOutcome::Invalid,
+    }
 }
 
 fn add_business_days(base: NaiveDateTime, sign: i8, mut count: i64) -> Option<NaiveDateTime> {
@@ -959,14 +1000,32 @@ fn try_conversational_clocks_ext(
     // Compound English "<today|yesterday|tomorrow> [morning|afternoon|evening|night] at <time>"
     if settings_allows_locale(settings, "en") {
         if let Some((day_part, time_part)) = s.split_once(" at ") {
-            let day_offset: Option<i64> = match day_part.trim() {
-                "yesterday" | "yesterday morning" | "yesterday afternoon" | "yesterday evening" => Some(-1),
-                "today" | "this morning" | "this afternoon" | "this evening" | "tonight" => Some(0),
-                "tomorrow" | "tomorrow morning" | "tomorrow afternoon" | "tomorrow evening" => Some(1),
+            let day_info: Option<(i64, bool)> = match day_part.trim() {
+                "yesterday" | "yesterday morning" => Some((-1, false)),
+                "yesterday afternoon" | "yesterday evening" => Some((-1, true)),
+                "today" | "this morning" => Some((0, false)),
+                "this afternoon" | "this evening" | "tonight" => Some((0, true)),
+                "tomorrow" | "tomorrow morning" => Some((1, false)),
+                "tomorrow afternoon" | "tomorrow evening" => Some((1, true)),
                 _ => None,
             };
-            if let Some(off) = day_offset {
-                if let Some(nt) = parse_time_str(time_part.trim()) {
+            if let Some((off, is_pm_tod)) = day_info {
+                let t_trimmed = time_part.trim();
+                let has_explicit_meridiem = t_trimmed.contains("am")
+                    || t_trimmed.contains("pm")
+                    || t_trimmed.contains("a.m")
+                    || t_trimmed.contains("p.m");
+                let nt_opt = parse_time_str(t_trimmed).or_else(|| {
+                    t_trimmed
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|&h| (1..=12).contains(&h))
+                        .and_then(|h| NaiveTime::from_hms_opt(h, 0, 0))
+                });
+                if let Some(mut nt) = nt_opt {
+                    if is_pm_tod && !has_explicit_meridiem && (1..=11).contains(&nt.hour()) {
+                        nt = NaiveTime::from_hms_opt(nt.hour() + 12, nt.minute(), nt.second())?;
+                    }
                     let d = base.date().checked_add_signed(Duration::days(off))?;
                     return Some(matched_day(d.and_time(nt), "en", true));
                 }

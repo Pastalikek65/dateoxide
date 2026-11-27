@@ -152,7 +152,15 @@ fn extract_cjk_era_year(s: &str) -> Option<Result<(i32, String, bool), ()>> {
 }
 
 fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch> {
-    if s.contains("四半期") || s.contains("季度") || s.contains("분기") {
+    if s.contains("四半期") || s.contains("季度") || s.contains("분기") || s.contains('、') {
+        return None;
+    }
+    let rel_check = s
+        .replace("午前", "")
+        .replace("午後", "")
+        .replace("오전", "")
+        .replace("오후", "");
+    if rel_check.contains(['前', '後', '后', '전', '후']) {
         return None;
     }
     let mut year: Option<i32> = None;
@@ -222,14 +230,27 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
             cur_num.clear();
             match ch {
                 '年' | '년' => {
+                    if year.is_some() {
+                        return None;
+                    }
                     year = Some(if len <= 2 {
                         expand_two_digit_year(val)
                     } else {
                         val as i32
                     });
                 }
-                '月' | '월' => month = Some(val),
-                '日' | '号' | '일' => day = Some(val),
+                '月' | '월' => {
+                    if month.is_some() {
+                        return None;
+                    }
+                    month = Some(val);
+                }
+                '日' | '号' | '일' => {
+                    if day.is_some() {
+                        return None;
+                    }
+                    day = Some(val);
+                }
                 '時' | '时' | '点' | '點' | '시' => {
                     hour = val;
                     has_time = true;
@@ -276,6 +297,8 @@ fn try_cjk_or_korean_date(s: &str, settings: &Settings) -> Option<AbsoluteMatch>
                 }
                 _ => loose_nums.push((val, len)),
             }
+        } else if ch == ':' {
+            return None;
         }
         idx += 1;
     }
@@ -477,6 +500,7 @@ fn try_parse_in_locale(
     let mut day: Option<u32> = None;
     let mut day_pos: Option<usize> = None;
     let mut weekday_seen: Option<u8> = None;
+    let mut ambiguous_ord_wd: Option<(u32, u8, usize)> = None;
     let mut time: Option<NaiveTime> = None;
     let mut part_of_day: Option<PartOfDay> = None;
     let mut ampm: Option<bool> = None;
@@ -656,6 +680,13 @@ fn try_parse_in_locale(
                         s
                     };
                     if let Some(wd) = lookup_weekday(&cand, loc, settings.normalize) {
+                        if span == 1 && day.is_none() {
+                            if let Some(ord) = crate::numerals::lookup_ordinal(clean, loc, settings.normalize) {
+                                if (1..=31).contains(&ord) {
+                                    ambiguous_ord_wd = Some((ord, wd, i));
+                                }
+                            }
+                        }
                         weekday_seen = Some(wd);
                         matched_locale_signal = true;
                         matched_span = span;
@@ -766,6 +797,14 @@ fn try_parse_in_locale(
         }
 
         return None;
+    }
+
+    if let Some((ord, _wd, pos)) = ambiguous_ord_wd {
+        if month.is_some() && day.is_none() && free_nums.is_empty() {
+            day = Some(ord);
+            day_pos = Some(pos);
+            weekday_seen = None;
+        }
     }
 
     if !roman_cands.is_empty() {

@@ -2,7 +2,7 @@ use crate::fast_path::{days_in_month, parse_time_str};
 use crate::locale::TimeUnit;
 use crate::relative::apply_relative_offset;
 use crate::settings::{ParsedDateTime, Period, Settings};
-use crate::timezone::{finalize_datetime_checked, is_valid_year_range};
+use crate::timezone::{finalize_datetime_checked, is_valid_year_range, resolve_iana_local};
 use crate::{get_date_data, parse_with_settings};
 use chrono::{Datelike, Duration, NaiveDate};
 
@@ -158,12 +158,17 @@ fn try_iso_interval(s: &str, settings: &Settings) -> Option<(ParsedDateTime, Par
     let start_dt = parse_with_settings(left.trim(), settings)?;
     let r = right.trim();
     if r.starts_with('P') || r.starts_with('p') {
-        let end_naive = apply_iso_duration(start_dt.naive_local(), r)?;
-        let delta = end_naive - start_dt.naive_local();
+        let (date_shifted, time_delta) = apply_iso_duration_split(start_dt.naive_local(), r)?;
         let end_dt = match start_dt {
-            ParsedDateTime::Naive(_) => ParsedDateTime::Naive(end_naive),
-            ParsedDateTime::FixedOffset(f) => ParsedDateTime::FixedOffset(f.checked_add_signed(delta)?),
-            ParsedDateTime::Tz(t) => ParsedDateTime::Tz(t.checked_add_signed(delta)?),
+            ParsedDateTime::Naive(_) => ParsedDateTime::Naive(date_shifted.checked_add_signed(time_delta)?),
+            ParsedDateTime::FixedOffset(f) => {
+                let d_delta = date_shifted - start_dt.naive_local();
+                ParsedDateTime::FixedOffset(f.checked_add_signed(d_delta + time_delta)?)
+            }
+            ParsedDateTime::Tz(t) => {
+                let localized = resolve_iana_local(t.timezone(), date_shifted);
+                ParsedDateTime::Tz(localized.checked_add_signed(time_delta)?)
+            }
         };
         if !is_valid_year_range(&end_dt) {
             return None;
@@ -177,13 +182,17 @@ fn try_iso_interval(s: &str, settings: &Settings) -> Option<(ParsedDateTime, Par
     None
 }
 
-fn apply_iso_duration(mut cur: chrono::NaiveDateTime, dur: &str) -> Option<chrono::NaiveDateTime> {
+fn apply_iso_duration_split(
+    mut cur: chrono::NaiveDateTime,
+    dur: &str,
+) -> Option<(chrono::NaiveDateTime, Duration)> {
     let body = dur.strip_prefix('P').or_else(|| dur.strip_prefix('p'))?;
     if body.is_empty() {
         return None;
     }
     let mut in_time = false;
     let mut num_buf = String::new();
+    let mut time_delta = Duration::zero();
     let mut applied = false;
     for ch in body.chars() {
         if ch == 'T' || ch == 't' {
@@ -197,25 +206,33 @@ fn apply_iso_duration(mut cur: chrono::NaiveDateTime, dur: &str) -> Option<chron
             num_buf.push(ch);
             continue;
         }
+        let val_i: i64 = num_buf.parse().ok()?;
         let val: f64 = num_buf.parse().ok()?;
         num_buf.clear();
-        let unit = match (in_time, ch.to_ascii_uppercase()) {
-            (false, 'Y') => TimeUnit::Year,
-            (false, 'M') => TimeUnit::Month,
-            (false, 'W') => TimeUnit::Week,
-            (false, 'D') => TimeUnit::Day,
-            (true, 'H') => TimeUnit::Hour,
-            (true, 'M') => TimeUnit::Minute,
-            (true, 'S') => TimeUnit::Second,
-            _ => return None,
-        };
-        cur = apply_relative_offset(cur, 1, val, unit)?;
+        if in_time {
+            let add = match ch.to_ascii_uppercase() {
+                'H' => Duration::hours(val_i),
+                'M' => Duration::minutes(val_i),
+                'S' => Duration::seconds(val_i),
+                _ => return None,
+            };
+            time_delta += add;
+        } else {
+            let unit = match ch.to_ascii_uppercase() {
+                'Y' => TimeUnit::Year,
+                'M' => TimeUnit::Month,
+                'W' => TimeUnit::Week,
+                'D' => TimeUnit::Day,
+                _ => return None,
+            };
+            cur = apply_relative_offset(cur, 1, val, unit)?;
+        }
         applied = true;
     }
     if !num_buf.is_empty() || !applied {
         return None;
     }
-    Some(cur)
+    Some((cur, time_delta))
 }
 
 fn try_tight_time_range(s: &str, settings: &Settings) -> Option<(ParsedDateTime, ParsedDateTime)> {
@@ -343,7 +360,17 @@ fn try_split_connector_range(
                     if raw_direct.naive_local().year() == end_year {
                         let start_dt =
                             snap_range_endpoint(raw_direct, direct_dd.period, &direct_dd.parts, false);
-                        return Some((start_dt, end_dt));
+                        let mut final_end = end_dt;
+                        if start_dt.naive_local() > final_end.naive_local()
+                            && !right.chars().any(|c| c.is_ascii_digit())
+                        {
+                            if let Some(shifted) = shift_parsed_days(&final_end, 7) {
+                                if is_valid_year_range(&shifted) {
+                                    final_end = shifted;
+                                }
+                            }
+                        }
+                        return Some((start_dt, final_end));
                     }
                 }
             }
