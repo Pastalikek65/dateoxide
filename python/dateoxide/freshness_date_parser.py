@@ -17,7 +17,13 @@ class FreshnessDateDataParser:
         settings: Any = None,
         languages: Sequence[str] | None = None,
     ) -> DateData:
-        return parse_freshness(date_string, languages=list(languages) if languages else None, settings=settings)
+        if isinstance(languages, (str, bytes)):
+            raise TypeError("languages must be a sequence of language codes, not str/bytes")
+        return parse_freshness(
+            date_string,
+            languages=list(languages) if languages is not None else None,
+            settings=settings,
+        )
 
     def parse(
         self,

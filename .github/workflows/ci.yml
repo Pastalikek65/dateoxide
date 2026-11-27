@@ -14,7 +14,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test -p dateoxide-core --release
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo check -p dateoxide-core --no-default-features
+      - run: cargo test -p dateoxide-core --no-default-features
       - name: Verify crate packaging & dual-license files
         run: |
           cargo package -p dateoxide-core --list | grep -qx "LICENSE"
@@ -51,5 +51,6 @@ jobs:
       - name: Type-check & verify .pyi stubs on Ubuntu Python 3.12
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
         run: |
-          mypy python/dateoxide
+          mypy --strict python/dateoxide
           python -m mypy.stubtest dateoxide
+          python -m mypy.stubtest dateoxide._dateoxide

@@ -1010,7 +1010,9 @@ fn try_parse_in_locale(
         && ((month.is_some()
             && month_token_ascii
             && month_token_len <= 3
-            && ((day.is_some() && year.is_none()) || year_expanded_from_two || month_token_len <= 2))
+            && ((day.is_some() && year.is_none())
+                || year_expanded_from_two
+                || (month_token_len <= 2 && day.is_none() && year.is_some())))
             || (weekday_seen.is_some() && month.is_none() && day.is_none() && year.is_some()))
     {
         return None;

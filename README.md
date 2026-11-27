@@ -20,7 +20,7 @@ cargo add dateoxide-core     # Pure Rust crate
 - **Zero memory leak & low RAM footprint** (`+0.75 MB` after import, `+9.71 MB` RSS delta after 20 languages and still `+9.71 MB` after 50,000 unique parses vs `+28.72 MB` for `dateparser` after just 1,500 parses)
 - **16.0x faster cold import** (`5.51 ms` vs `87.98 ms`) via PEP 562 lazy submodules
 - **Zero ReDoS** — linear-time parsing with zero catastrophic backtracking
-- **3,700 Python tests + 18 Rust tests + `mypy` + `stubtest` passing cleanly** — including 1,010 upstream `scrapinghub/dateparser` test vectors, exact assertions across all 205 languages and **76 Unicode 16.0 `Nd` numeral scripts**, 87 extreme multilingual/non-Latin tests, conversational NLP & ISO-8601 ranges, seeded Unicode fuzzing & differential checks, O(N) DoS bounds, and 3,792 official Saudi Umm al-Qura Hijri dates
+- **3,708 Python tests + 18 Rust tests + `mypy --strict` + `stubtest` passing cleanly** — including 1,010 upstream `scrapinghub/dateparser` test vectors, exact assertions across all 205 languages and **76 Unicode 16.0 `Nd` numeral scripts**, 87 extreme multilingual/non-Latin tests, conversational NLP & ISO-8601 ranges, seeded Unicode fuzzing & differential checks, O(N) DoS bounds, and 3,792 official Saudi Umm al-Qura Hijri dates
 - **Official Saudi Umm al-Qura Hijri Calendar (1343–1500 AH)** embedded directly in pure Rust (3,792/3,792 month-start & month-end dates verified against `hijridate`, with zero runtime dependencies), plus partial/full Jalali, Minguo, Thai Buddhist Era (`พ.ศ.`), and French Republican support
 - **Complete `dateparser` parity & beyond**:
   - `parse()`, `DateDataParser`, `parse_batch()` (any iterable/generator), `parse_batch_timestamps()`

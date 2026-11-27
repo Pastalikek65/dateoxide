@@ -49,7 +49,7 @@ class DateDataParser:
         try_previous_locales: bool = False,
         use_given_order: bool = False,
         settings: Settings | Mapping[str, Any] | None = None,
-        detect_languages_function: Callable[..., Sequence[str]] | None = None,
+        detect_languages_function: Callable[..., Sequence[str] | None] | None = None,
     ) -> DateDataParser: ...
     def get_date_data(
         self,
@@ -76,7 +76,7 @@ def parse(
     locales: Sequence[str] | None = None,
     region: str | None = None,
     settings: Settings | Mapping[str, Any] | None = None,
-    detect_languages_function: Callable[..., Sequence[str]] | None = None,
+    detect_languages_function: Callable[..., Sequence[str] | None] | None = None,
 ) -> datetime | None: ...
 
 def parse_batch(
@@ -111,7 +111,7 @@ def search_dates(
     languages: Sequence[str] | None = None,
     settings: Settings | Mapping[str, Any] | None = None,
     add_detected_language: Literal[False] = False,
-    detect_languages_function: Callable[..., Sequence[str]] | None = None,
+    detect_languages_function: Callable[..., Sequence[str] | None] | None = None,
     strategy: str = "split",
     date_formats: Sequence[str] | None = None,
     add_period: Literal[False] = False,
@@ -124,7 +124,7 @@ def search_dates(
     languages: Sequence[str] | None = None,
     settings: Settings | Mapping[str, Any] | None = None,
     add_detected_language: Literal[True] = ...,
-    detect_languages_function: Callable[..., Sequence[str]] | None = None,
+    detect_languages_function: Callable[..., Sequence[str] | None] | None = None,
     strategy: str = "split",
     date_formats: Sequence[str] | None = None,
     add_period: Literal[False] = False,
@@ -137,7 +137,7 @@ def search_dates(
     languages: Sequence[str] | None = None,
     settings: Settings | Mapping[str, Any] | None = None,
     add_detected_language: Literal[False] = False,
-    detect_languages_function: Callable[..., Sequence[str]] | None = None,
+    detect_languages_function: Callable[..., Sequence[str] | None] | None = None,
     strategy: str = "split",
     date_formats: Sequence[str] | None = None,
     add_period: Literal[True] = ...,
@@ -150,7 +150,7 @@ def search_dates(
     languages: Sequence[str] | None = None,
     settings: Settings | Mapping[str, Any] | None = None,
     add_detected_language: Literal[True] = ...,
-    detect_languages_function: Callable[..., Sequence[str]] | None = None,
+    detect_languages_function: Callable[..., Sequence[str] | None] | None = None,
     strategy: str = "split",
     date_formats: Sequence[str] | None = None,
     add_period: Literal[True] = ...,
@@ -163,7 +163,7 @@ def search_dates(
     languages: Sequence[str] | None = None,
     settings: Settings | Mapping[str, Any] | None = None,
     add_detected_language: bool = False,
-    detect_languages_function: Callable[..., Sequence[str]] | None = None,
+    detect_languages_function: Callable[..., Sequence[str] | None] | None = None,
     strategy: str = "split",
     date_formats: Sequence[str] | None = None,
     add_period: bool = False,

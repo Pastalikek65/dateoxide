@@ -744,9 +744,9 @@ pub fn parse_cardinal_slice(
             }
             if current >= 10 && current % 10 == 0 {
                 let vi_unit = match folded_tok.as_ref() {
-                    "mot" if current >= 20 => Some(1),
-                    "tu" if current >= 20 => Some(4),
-                    "lam" => Some(5),
+                    "mốt" | "mot" if current >= 20 => Some(1),
+                    "tư" | "tu" if current >= 20 => Some(4),
+                    "lăm" | "lam" => Some(5),
                     _ => None,
                 };
                 if let Some(u) = vi_unit {

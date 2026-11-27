@@ -246,15 +246,18 @@ pub fn search_dates_full(text: &str, settings: &Settings) -> Vec<SearchMatch> {
             }
             if seen_year {
                 let tok_j_year = is_four_digit_year_token(tok_j);
-                let is_time_or_offset = tok_j.contains(':')
-                    || kinds[j] == TokenKind::Tz
-                    || (tok_j.starts_with(['+', '-'])
-                        && tok_j[1..].bytes().all(|b| b.is_ascii_digit() || b == b':'))
-                    || matches!(
-                        tok_j.trim_end_matches('.').to_ascii_lowercase().as_str(),
-                        "am" | "pm" | "a.m" | "p.m" | "at" | "um" | "à" | "saat"
-                    );
-                if tok_j_year || (!is_time_or_offset && ((j - i) >= 3 || tok_j.contains('-'))) {
+                let prev_is_time_conn = matches!(
+                    prev_raw
+                        .trim_matches(|c: char| !c.is_alphabetic())
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "at" | "um" | "om" | "kl" | "klo" | "las" | "la" | "alle" | "às" | "as"
+                        | "saat" | "pukul" | "ora" | "v" | "o"
+                ) || matches!(prev_raw, "الساعة" | "เวลา" | "في");
+                let is_bare_day_num = tok_j.len() <= 2
+                    && tok_j.bytes().all(|b| b.is_ascii_digit())
+                    && !prev_is_time_conn;
+                if tok_j_year || tok_j.contains('-') || tok_j.contains('/') || is_bare_day_num {
                     break;
                 }
             }

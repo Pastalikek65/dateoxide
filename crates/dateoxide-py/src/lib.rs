@@ -12,6 +12,34 @@ use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 
 static PART_OF_DAY_CLS: OnceLock<Py<PyAny>> = OnceLock::new();
+static MAPPING_CLS: OnceLock<Py<PyAny>> = OnceLock::new();
+static DATETIME_TYPES: OnceLock<(Py<PyAny>, Py<PyAny>)> = OnceLock::new();
+
+fn mapping_to_dict<'py>(
+    py: Python<'py>,
+    obj: &Bound<'py, PyAny>,
+    err_msg: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    if let Ok(d) = obj.downcast::<PyDict>() {
+        return Ok(d.clone());
+    }
+    let mapping_cls = MAPPING_CLS.get_or_init(|| {
+        py.import("collections.abc")
+            .and_then(|m| m.getattr("Mapping"))
+            .map(|c| c.unbind())
+            .expect("collections.abc.Mapping must exist")
+    });
+    if obj.is_instance(mapping_cls.bind(py))? {
+        let items = obj.call_method0("items")?;
+        let d = PyDict::new(py);
+        for item in items.try_iter()? {
+            let (k, v): (PyObject, PyObject) = item?.extract()?;
+            d.set_item(k, v)?;
+        }
+        return Ok(d);
+    }
+    Err(PyTypeError::new_err(err_msg.to_string()))
+}
 
 pyo3::create_exception!(_dateoxide, SettingValidationError, PyValueError);
 
@@ -93,24 +121,6 @@ fn tzspec_to_py(py: Python<'_>, tz: TzSpec) -> PyResult<PyObject> {
     }
 }
 
-fn extract_time_field(obj: &Bound<'_, PyAny>, attr: &str) -> PyResult<Option<NaiveTime>> {
-    if let Ok(dict) = obj.downcast::<PyDict>() {
-        if let Some(v) = dict.get_item(attr)? {
-            if !v.is_none() {
-                return Ok(Some(v.extract()?));
-            }
-        }
-        return Ok(None);
-    }
-    if obj.hasattr(attr)? {
-        let v = obj.getattr(attr)?;
-        if !v.is_none() {
-            return Ok(Some(v.extract()?));
-        }
-    }
-    Ok(None)
-}
-
 fn validate_language_codes(codes: &[String]) -> PyResult<()> {
     let reg = dateoxide_core::locale::LocaleRegistry::global();
     let unknown: Vec<String> = codes
@@ -162,7 +172,7 @@ fn extract_settings(
         return Ok(cfg);
     }
 
-    // Accept either dict or dateoxide.conf.Settings instance (via .as_effective_dict() / .as_dict())
+    // Accept dict, Mapping (e.g. MappingProxyType), or dateoxide.conf.Settings instance
     let owned_dict;
     let dict: &Bound<'_, PyDict> = if let Ok(d) = raw_settings.downcast::<PyDict>() {
         d
@@ -179,9 +189,12 @@ fn extract_settings(
         })?;
         &owned_dict
     } else {
-        return Err(PyTypeError::new_err(
+        owned_dict = mapping_to_dict(
+            raw_settings.py(),
+            raw_settings,
             "settings must be a dict or a Settings instance",
-        ));
+        )?;
+        &owned_dict
     };
 
     for key in dict.keys() {
@@ -321,7 +334,13 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("TIMEZONE_ABBREVIATIONS")? {
         if !v.is_none() {
-            let map: std::collections::HashMap<String, String> = v
+            let abbr_dict = mapping_to_dict(
+                v.py(),
+                &v,
+                "TIMEZONE_ABBREVIATIONS must be a mapping of string keys and values",
+            )
+            .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
+            let map: std::collections::HashMap<String, String> = abbr_dict
                 .extract()
                 .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             for (k, val) in map {
@@ -339,7 +358,8 @@ fn extract_settings(
             let def_langs: Vec<String> = v
                 .extract()
                 .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
-            validate_language_codes(&def_langs)?;
+            validate_language_codes(&def_langs)
+                .map_err(|e| SettingValidationError::new_err(e.to_string()))?;
             cfg.default_languages = def_langs;
         }
     }
@@ -474,30 +494,74 @@ fn extract_settings(
     }
     if let Some(v) = dict.get_item("PARTS_OF_DAY")? {
         if !v.is_none() {
-            if let Some(t) = extract_time_field(&v, "early_morning")
-                .map_err(|e| SettingValidationError::new_err(e.to_string()))?
+            const VALID_POD_KEYS: [&str; 5] =
+                ["early_morning", "morning", "afternoon", "evening", "night"];
+            let py_ref = v.py();
+            let (time_cls, dt_cls) = DATETIME_TYPES.get_or_init(|| {
+                let dm = py_ref.import("datetime").expect("datetime module");
+                (
+                    dm.getattr("time").expect("datetime.time").unbind(),
+                    dm.getattr("datetime").expect("datetime.datetime").unbind(),
+                )
+            });
+            let extract_strict_time = |val: &Bound<'_, PyAny>| -> PyResult<NaiveTime> {
+                if !val.is_instance(time_cls.bind(py_ref))?
+                    || val.is_instance(dt_cls.bind(py_ref))?
+                {
+                    return Err(SettingValidationError::new_err(
+                        "PARTS_OF_DAY values must be datetime.time instances",
+                    ));
+                }
+                val.extract::<NaiveTime>()
+                    .map_err(|e| SettingValidationError::new_err(e.to_string()))
+            };
+            if let Ok(pod_dict) = mapping_to_dict(py_ref, &v, "") {
+                for (k, val) in pod_dict.iter() {
+                    let k_str: String = k.extract().map_err(|_| {
+                        SettingValidationError::new_err("PARTS_OF_DAY keys must be strings")
+                    })?;
+                    if !VALID_POD_KEYS.contains(&k_str.as_str()) {
+                        return Err(SettingValidationError::new_err(format!(
+                            "{:?} is not a valid PARTS_OF_DAY key",
+                            k_str
+                        )));
+                    }
+                    if val.is_none() {
+                        continue;
+                    }
+                    let t = extract_strict_time(&val)?;
+                    match k_str.as_str() {
+                        "early_morning" => cfg.parts_of_day.early_morning = t,
+                        "morning" => cfg.parts_of_day.morning = t,
+                        "afternoon" => cfg.parts_of_day.afternoon = t,
+                        "evening" => cfg.parts_of_day.evening = t,
+                        "night" => cfg.parts_of_day.night = t,
+                        _ => unreachable!(),
+                    }
+                }
+            } else if VALID_POD_KEYS
+                .iter()
+                .all(|k| v.hasattr(*k).unwrap_or(false))
             {
-                cfg.parts_of_day.early_morning = t;
-            }
-            if let Some(t) = extract_time_field(&v, "morning")
-                .map_err(|e| SettingValidationError::new_err(e.to_string()))?
-            {
-                cfg.parts_of_day.morning = t;
-            }
-            if let Some(t) = extract_time_field(&v, "afternoon")
-                .map_err(|e| SettingValidationError::new_err(e.to_string()))?
-            {
-                cfg.parts_of_day.afternoon = t;
-            }
-            if let Some(t) = extract_time_field(&v, "evening")
-                .map_err(|e| SettingValidationError::new_err(e.to_string()))?
-            {
-                cfg.parts_of_day.evening = t;
-            }
-            if let Some(t) = extract_time_field(&v, "night")
-                .map_err(|e| SettingValidationError::new_err(e.to_string()))?
-            {
-                cfg.parts_of_day.night = t;
+                for key in VALID_POD_KEYS {
+                    let val = v.getattr(key)?;
+                    if val.is_none() {
+                        continue;
+                    }
+                    let t = extract_strict_time(&val)?;
+                    match key {
+                        "early_morning" => cfg.parts_of_day.early_morning = t,
+                        "morning" => cfg.parts_of_day.morning = t,
+                        "afternoon" => cfg.parts_of_day.afternoon = t,
+                        "evening" => cfg.parts_of_day.evening = t,
+                        "night" => cfg.parts_of_day.night = t,
+                        _ => unreachable!(),
+                    }
+                }
+            } else {
+                return Err(SettingValidationError::new_err(
+                    "PARTS_OF_DAY must be a PartsOfDay instance or mapping of time objects",
+                ));
             }
         }
     }
@@ -699,10 +763,25 @@ impl PyDateData {
             Some(l) => format!("'{}'", l),
             None => "None".to_string(),
         };
-        let parts_repr = format!("({})", self.parts_vec.iter().map(|p| format!("'{}'", p)).collect::<Vec<_>>().join(", "));
+        let parts_repr = if self.parts_vec.len() == 1 {
+            format!("('{}',)", self.parts_vec[0])
+        } else {
+            format!(
+                "({})",
+                self.parts_vec
+                    .iter()
+                    .map(|p| format!("'{}'", p))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let pod_suffix = match &self.part_of_day {
+            Some(pod) => format!(", part_of_day={}", pod.bind(py).repr()?),
+            None => String::new(),
+        };
         Ok(format!(
-            "DateData(date_obj={}, period='{}', locale={}, parts={})",
-            dt_repr, self.period, loc_repr, parts_repr
+            "DateData(date_obj={}, period='{}', locale={}, parts={}{})",
+            dt_repr, self.period, loc_repr, parts_repr, pod_suffix
         ))
     }
 
@@ -1232,13 +1311,20 @@ fn pop_tz_offset_from_string(
     py: Python<'_>,
     date_string: &str,
     as_offset: bool,
-    timezone_abbreviations: Option<&Bound<'_, PyDict>>,
+    timezone_abbreviations: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<(String, Option<PyObject>)> {
     let mut map = rustc_hash::FxHashMap::default();
-    if let Some(d) = timezone_abbreviations {
-        let extracted: std::collections::HashMap<String, String> = d.extract()?;
-        for (k, v) in extracted {
-            map.insert(k.to_ascii_uppercase(), v);
+    if let Some(raw_map) = timezone_abbreviations {
+        if !raw_map.is_none() {
+            let d = mapping_to_dict(
+                py,
+                raw_map,
+                "timezone_abbreviations must be a mapping of str to str",
+            )?;
+            let extracted: std::collections::HashMap<String, String> = d.extract()?;
+            for (k, v) in extracted {
+                map.insert(k.to_ascii_uppercase(), v);
+            }
         }
     }
     let (cleaned, tz_pair) = dateoxide_core::timezone::pop_tz_token_and_offset(
@@ -1329,20 +1415,21 @@ fn detect_time_span(py: Python<'_>, text: &str) -> PyResult<Option<Py<PyDict>>> 
 #[pyo3(signature = (span_info, base_date=None, settings=None))]
 fn generate_time_span(
     py: Python<'_>,
-    span_info: &Bound<'_, PyDict>,
+    span_info: &Bound<'_, PyAny>,
     base_date: Option<&Bound<'_, PyAny>>,
     settings: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<(PyObject, PyObject)> {
+    let span_dict = mapping_to_dict(py, span_info, "span_info must be a mapping")?;
     let cfg = extract_settings(None, None, None, None, false, settings)?;
-    let span_type: String = span_info
+    let span_type: String = span_dict
         .get_item("type")?
         .ok_or_else(|| PyValueError::new_err("span_info missing 'type'"))?
         .extract()?;
-    let direction: String = span_info
+    let direction: String = span_dict
         .get_item("direction")?
         .ok_or_else(|| PyValueError::new_err("span_info missing 'direction'"))?
         .extract()?;
-    let number: u32 = match span_info.get_item("number")? {
+    let number: u32 = match span_dict.get_item("number")? {
         Some(v) if !v.is_none() => v.extract()?,
         _ => 1,
     };

@@ -10,7 +10,28 @@ import math
 import sys
 from typing import Any, Callable, Mapping
 
-from ._dateoxide import SettingValidationError, parse as _raw_parse, pop_tz_offset_from_string as _pop_tz
+from ._dateoxide import (
+    SettingValidationError,
+    parse as _raw_parse,
+    pop_tz_offset_from_string as _pop_tz,
+    supported_languages as _supported_languages,
+)
+
+_SUPPORTED_LANG_SET: frozenset[str] | None = None
+_VALID_PART_OF_DAY_KEYS = frozenset({"early_morning", "morning", "afternoon", "evening", "night"})
+
+
+def _is_supported_lang_code(code: str) -> bool:
+    global _SUPPORTED_LANG_SET
+    if _SUPPORTED_LANG_SET is None:
+        _SUPPORTED_LANG_SET = frozenset(c.lower().replace("_", "-") for c in _supported_languages())
+    norm = code.strip().lower().replace("_", "-")
+    if not norm:
+        return False
+    if norm in _SUPPORTED_LANG_SET:
+        return True
+    base = norm.split("-", 1)[0]
+    return base in _SUPPORTED_LANG_SET
 
 if sys.version_info >= (3, 11):
     from enum import StrEnum as _StrEnumBase
@@ -268,6 +289,29 @@ def check_settings(cfg: Settings | Mapping[str, Any]) -> None:
             for item in val_seq:
                 if not isinstance(item, str):
                     raise SettingValidationError(f"{seq_key} items must be strings")
+                if seq_key == "DEFAULT_LANGUAGES" and not _is_supported_lang_code(item):
+                    raise SettingValidationError(f"Unknown language code in DEFAULT_LANGUAGES: {item!r}")
+    if "PARTS_OF_DAY" in d and d["PARTS_OF_DAY"] is not None:
+        pod = d["PARTS_OF_DAY"]
+        if isinstance(pod, Mapping):
+            for pk, pv in pod.items():
+                if not isinstance(pk, str) or pk not in _VALID_PART_OF_DAY_KEYS:
+                    raise SettingValidationError(f"Invalid PARTS_OF_DAY key: {pk!r}")
+                if pv is not None and (not isinstance(pv, time) or isinstance(pv, datetime)):
+                    raise SettingValidationError(
+                        f"PARTS_OF_DAY[{pk!r}] must be a datetime.time object"
+                    )
+        elif isinstance(pod, PartsOfDay):
+            for pk in _VALID_PART_OF_DAY_KEYS:
+                pv = getattr(pod, pk, None)
+                if not isinstance(pv, time) or isinstance(pv, datetime):
+                    raise SettingValidationError(
+                        f"PARTS_OF_DAY.{pk} must be a datetime.time object"
+                    )
+        else:
+            raise SettingValidationError(
+                "PARTS_OF_DAY must be a PartsOfDay instance or mapping of time objects"
+            )
     for bool_key in (
         "PREFER_LOCALE_DATE_ORDER",
         "STRICT_PARSING",
@@ -304,8 +348,12 @@ def check_settings(cfg: Settings | Mapping[str, Any]) -> None:
         ):
             raise SettingValidationError(f"Invalid LANGUAGE_DETECTION_CONFIDENCE_THRESHOLD: {thr!r}")
     abbrevs = d.get("TIMEZONE_ABBREVIATIONS")
-    if abbrevs is not None and not isinstance(abbrevs, Mapping):
-        raise SettingValidationError("TIMEZONE_ABBREVIATIONS must be a mapping")
+    if abbrevs is not None:
+        if not isinstance(abbrevs, Mapping):
+            raise SettingValidationError("TIMEZONE_ABBREVIATIONS must be a mapping")
+        for ak, av in abbrevs.items():
+            if not isinstance(ak, str) or not isinstance(av, str):
+                raise SettingValidationError("TIMEZONE_ABBREVIATIONS keys and values must be strings")
     tz_val = d.get("TIMEZONE")
     if tz_val is not None:
         if not isinstance(tz_val, str) or not tz_val.strip():
@@ -348,3 +396,13 @@ def apply_settings(f: Callable[..., Any]) -> Callable[..., Any]:
 
 # Expose raw parse reference if needed internally
 _ = _raw_parse
+
+__all__ = [
+    "PartOfDay",
+    "PartsOfDay",
+    "SettingValidationError",
+    "Settings",
+    "apply_settings",
+    "check_settings",
+    "settings",
+]

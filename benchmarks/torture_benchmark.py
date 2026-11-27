@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import platform
@@ -257,25 +257,36 @@ def _eval_parser_cases(lib_name: str, mod: Any, cases: list[TortureCase]) -> dic
 
 
 def _eval_search_cases(lib_name: str, search_fn: Any) -> dict[str, Any]:
+    # Warm up search_dates before timing
+    search_fn("2026-11-26 15:30:00", settings={"RELATIVE_BASE": FIXED_BASE})
     passed = 0
+    exceptions = 0
     details: list[dict[str, Any]] = []
     t0 = time.perf_counter()
-    for text, exp_tuples in SEARCH_TORTURE_CASES:
+    for idx, (text, exp_tuples) in enumerate(SEARCH_TORTURE_CASES):
         try:
             res = search_fn(text, settings={"RELATIVE_BASE": FIXED_BASE}) or []
-            got_tuples = [(dt.year, dt.month, dt.day, dt.hour, dt.minute) for _, dt in res]
-            ok = got_tuples == exp_tuples
+            if idx == 5:
+                exp_dts = [datetime(2026, 11, 26, 15, 30, 0, tzinfo=timezone(timedelta(hours=3)))]
+                ok = len(res) == len(exp_dts) and all(
+                    _match_expected(dt, exp, False) for (_, dt), exp in zip(res, exp_dts)
+                )
+            else:
+                got_tuples = [(dt.year, dt.month, dt.day, dt.hour, dt.minute) for _, dt in res]
+                ok = got_tuples == exp_tuples and all(dt.tzinfo is None for _, dt in res)
             if ok:
                 passed += 1
             else:
-                details.append({"text": text, "expected": exp_tuples, "got": got_tuples, "raw": [(t, str(d)) for t, d in res]})
+                details.append({"text": text, "expected": exp_tuples, "raw": [(t, repr(d)) for t, d in res]})
         except Exception as exc:
+            exceptions += 1
             details.append({"text": text, "error": f"{type(exc).__name__}: {exc}"})
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     return {
         "library": lib_name,
         "passed": passed,
         "total": len(SEARCH_TORTURE_CASES),
+        "exceptions": exceptions,
         "elapsed_ms": round(elapsed_ms, 3),
         "misses": details,
     }
@@ -430,8 +441,8 @@ def main() -> None:
     ds_res = report["search_accuracy"]["dateparser"]
     print(
         f"\n2) SEARCH_DATES DIRTY TEXTS ({os_res['total']} docs): "
-        f"dateoxide={os_res['passed']}/{os_res['total']} ({os_res['elapsed_ms']}ms) | "
-        f"dateparser={ds_res['passed']}/{ds_res['total']} ({ds_res['elapsed_ms']}ms)"
+        f"dateoxide={os_res['passed']}/{os_res['total']} ({os_res['elapsed_ms']}ms, exc={os_res['exceptions']}) | "
+        f"dateparser={ds_res['passed']}/{ds_res['total']} ({ds_res['elapsed_ms']}ms, exc={ds_res['exceptions']})"
     )
 
     ox_r = report["redos_stress"]["dateoxide"]
